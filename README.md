@@ -59,19 +59,32 @@ acroscope frame <session> <video> <t>... [--osd] JPEGs of frames; --osd enlarges
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
 acroscope untag <session> <id>
 acroscope moments <session>
+acroscope automatch <session> [clips...] [--write]   match clips to arms from the OSD timers (see below)
+acroscope osd <session> <clip>                   the timer readings and arm runs of a clip
 acroscope transcode <session> [clips...] [--replace]   H.264 proxies in the cache, or replace the clips in place
 acroscope serve [--port 8070]
 ```
 
 Sessions and clips accept unique fragments: `acroscope events 10-07 007`. Times are seconds or `m:ss.s`.
 
-### Matching a clip to an arm (how the agent does it)
+### Matching clips to arms
 
-1. `acroscope arms <bbl>` for the arm lengths and battery voltages.
-2. `acroscope frame <session> <clip> 0:10 0:40 1:10 --osd` and read the OSD: the top-right timer is the time since
-   arming (resets every arm), the one below it the total armed time on the pack. `offset = video time - arm time`.
-3. Confirm with the arm-length sequence and the vbat on the OSD vs the arm's `vbat_start`/`vbat_end`.
-4. `acroscope match ...`, then `acroscope events` to fine-tune the offset on a sharp event (a crash or a flip start).
+`acroscope automatch <session> [clips] --write` does it from the footage: it reads the two OSD timers (time since
+arming, total armed time) at 2 fps with digit templates learned from labelled frames, turns the timer runs into arm
+starts in video time, and aligns them to the log's arms by length and by the total counter against the boot's
+cumulative length. Offsets come out within about half a second, and the method carries across the static stretches
+`cobra-compress.py` cuts out. Arms shorter than about 2 s and arms whose timer never shows up readable stay
+unmatched, as do clips without the OSD.
+
+By hand, when needed: `acroscope arms <bbl>` lists the arms and the **boots** (power cycles; the log's time field is
+the FC uptime, so one offset covers every arm of a boot). Read one frame per boot with `acroscope frame ... --osd`,
+record `acroscope match <session> <clip> <bbl> <arm> <offset> --boot`, and refine on a sharp event: an impact in
+`acroscope events`, or the STATS screen the OSD shows right after a disarm (its TOTAL ARM equals the arm length).
+`acroscope unmatch` removes matches. The OSD seconds are floor values, so a single frame gives ±1 s.
+
+The digit templates live in `acroscope/static/osd-templates.json`; `acroscope osd-learn scripts/osd-labels.json`
+rebuilds them when the OSD font or layout changes (label a few frames by eye first, and label the exact frame the
+reader sees: `acroscope osd` and the ASCII dumps in the labels workflow, not a JPEG from another extraction).
 
 ## Player
 
