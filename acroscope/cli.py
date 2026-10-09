@@ -62,7 +62,8 @@ def cmd_sessions(a):
     for r in s.get("arms", []):
         vids = ", ".join(f"{x['video'][-7:-4]} +{x['offset']}" for x in r["videos"]) or "no clip"
         flags = ("" if r["motors_spun"] else " (motors off)") + ("" if r["complete"] else " (cut off)")
-        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  {r['vbat_start']:.2f}→{r['vbat_end']:.2f} V  {vids}{flags}")
+        vb = f"{r['vbat_start']:.2f}→{r['vbat_end']:.2f} V" if r.get("vbat_start") is not None else "no frames"
+        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  {vb:12}  {vids}{flags}")
     print("\n## moments")
     for m in s["moments"]:
         print(f"  {m['id']:4} {m['video'][-7:-4]} {fmt_time(m['start'])}-{fmt_time(m['end'])}  {m['title']}  [{', '.join(m['tags'])}]" + (f"  | {m['note']}" if m.get("note") else ""))
