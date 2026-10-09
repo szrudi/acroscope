@@ -196,13 +196,16 @@ def _load(path: Path) -> Arm:
     return Arm(meta, t, cols)
 
 
-def index_bbl(name: str, force: bool = False, progress=None) -> dict:
+def index_bbl(name: str, force: bool = False, progress=None, cached_only: bool = False) -> dict | None:
     """Decode every arm of a .bbl into the cache (once) and return the index {file, stem, date, arms: [meta…]}.
-    The per-arm meta leaves out `fields`/`events`/`headers` details that only matter when loading."""
+    The per-arm meta leaves out `fields`/`events`/`headers` details that only matter when loading.
+    With cached_only, return None instead of decoding (a 16 MB file takes ~30 s plus the download)."""
     path = resolve_bbl(name)
     idx_path = cache("arms", path.stem, "arms.json")
     if idx_path.exists() and not force:
         return json.loads(idx_path.read_text())
+    if cached_only:
+        return None
     if path.stat().st_size == 0:
         idx = {"file": path.name, "stem": path.stem, "date": bbl_date(path), "arms": [], "empty": True}
         idx_path.write_text(json.dumps(idx, indent=1))

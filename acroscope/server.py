@@ -5,6 +5,8 @@ import mimetypes
 import os
 import re
 import shutil
+import subprocess
+import sys
 import threading
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,6 +18,55 @@ from .config import TAGS, VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
 _lock = threading.Lock()
+_busy: set[str] = set()          # blackbox files being decoded / sessions being probed right now
+_busy_lock = threading.Lock()
+
+
+def _background(key: str, fn):
+    """Run fn once in a thread, keyed so repeated requests don't start it twice."""
+    with _busy_lock:
+        if key in _busy:
+            return
+        _busy.add(key)
+
+    def run():
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            print(f"background {key}: {type(e).__name__}: {e}")
+        finally:
+            with _busy_lock:
+                _busy.discard(key)
+    threading.Thread(target=run, name=key, daemon=True).start()
+
+
+def _cli(*args: str):
+    """Run an acroscope CLI command in a child process. Decoding is pure Python and would hold the GIL for
+    30 s per file inside this server; a child process keeps requests responsive and uses another core."""
+    subprocess.run([sys.executable, "-m", "acroscope.cli", *args], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _decode_async(bbl: str):
+    _background(f"decode:{bbl}", lambda: _cli("arms", bbl))
+
+
+def _probe_async(session: str):
+    _background(f"probe:{session}", lambda: _cli("refresh", session))
+
+
+def warm_up():
+    """At start: decode every blackbox file and probe every clip the session files refer to, one child process at
+    a time, so the first page open never waits on the Drive mount. Sessions without a file get one."""
+    def run():
+        for d in sessions.session_dirs():
+            s = sessions.load(d.name)
+            for b in s["blackbox"]:
+                if blackbox.index_bbl(b, cached_only=True) is None:
+                    _cli("arms", b)
+            if not sessions.session_path(d.name).exists() or any(v.get("codec") is None for v in s["videos"]):
+                _cli("refresh", d.name)
+        print("warm-up done", flush=True)
+    _background("warm-up", run)
 
 
 @lru_cache(maxsize=64)
@@ -133,11 +184,22 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:2] == ["api", "session"] and len(parts) >= 3:
                 name = parts[2]
                 if len(parts) == 3:
-                    o = sessions.overview(name)
+                    if not sessions.session_path(name).exists():
+                        sessions.refresh(name, probe_videos=False)
+                    o = sessions.overview(name, cached_only=True)
+                    for b in o["arms_pending"]:
+                        _decode_async(b)
                     for v in o["videos"]:
                         p = VIDEOS_DIR / name / v["file"]
                         v["playable"] = video.playable(p).name if p.exists() else None
-                        v["codec"] = video.probe(video.playable(p))["codec"] if p.exists() else None
+                        if v["playable"] != v["file"]:
+                            v["codec"] = "h264"          # the proxy
+                        elif v.get("codec") is None and p.exists():
+                            info = video.probe(p, cached_only=True)
+                            v["codec"] = info["codec"] if info else None
+                    if any(v.get("duration") is None or v.get("codec") is None for v in o["videos"]):
+                        o["probe_pending"] = True
+                        _probe_async(name)
                     return self._json(o)
                 if parts[3] == "events":
                     s = sessions.load(name)
@@ -204,10 +266,12 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
 
-def serve(host="0.0.0.0", port=8070):
+def serve(host="0.0.0.0", port=8070, warm: bool = True):
     srv = ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
     print(f"acroscope player on http://{host}:{port}/  (data {VIDEOS_DIR.parent})")
+    if warm:
+        warm_up()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

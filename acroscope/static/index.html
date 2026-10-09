@@ -96,6 +96,7 @@ const api = (p, o) => fetch(p, o).then(r => r.json());
 const canHevc = v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') || v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"');
 
 async function init() {
+  $('#status').textContent = 'loading sessions…';
   TAGS = await api('/api/tags');
   const list = await api('/api/sessions');
   const sel = $('#session');
@@ -111,10 +112,25 @@ async function loadSession(name, wantClip) {
   S = await api('/api/session/' + encodeURIComponent(name));
   localStorage.setItem('acro.session', name);
   armLen = {}; for (const a of S.arms || []) armLen[a.bbl + '#' + a.index] = a;
-  $('#status').textContent = S.note || '';
+  const pending = (S.arms_pending || []).length || S.probe_pending;
+  $('#status').textContent = pending ? ((S.arms_pending || []).length ? 'decoding blackbox in the background, arms appear when done… ' : 'probing clips… ') + (S.note || '') : (S.note || '');
+  clearTimeout(window._poll);
+  if (pending) window._poll = setTimeout(() => { if (S.session === name) refreshSession(); }, 8000);
   renderClips();
   const c = S.videos.find(x => x.file === wantClip) || S.videos.find(x => S.moments.some(m => m.video === x.file)) || S.videos[0];
   if (c) loadClip(c.file); else { clip = null; v.removeAttribute('src'); renderMoments(); drawStrip(); }
+}
+
+async function refreshSession() {
+  const name = S.session, keep = clip;
+  const n = await api('/api/session/' + encodeURIComponent(name));
+  if (S.session !== name) return;
+  S = n; armLen = {}; for (const a of S.arms || []) armLen[a.bbl + '#' + a.index] = a;
+  const pending = (S.arms_pending || []).length || S.probe_pending;
+  $('#status').textContent = pending ? 'decoding blackbox in the background… ' + (S.note || '') : (S.note || '');
+  renderClips(); drawStrip();
+  if (keep && !pending) { series = await api(`/api/session/${encodeURIComponent(name)}/series?video=${encodeURIComponent(keep)}`); sugg = await api(`/api/session/${encodeURIComponent(name)}/events?video=${encodeURIComponent(keep)}`); renderSugg(); drawStrip(); }
+  if (pending) window._poll = setTimeout(refreshSession, 8000);
 }
 
 function renderClips() {

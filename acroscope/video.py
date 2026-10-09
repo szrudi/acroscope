@@ -26,12 +26,15 @@ def resolve_video(session: str, file: str) -> Path:
     raise FileNotFoundError(f"{session}/{file}: no such clip")
 
 
-def probe(path: Path) -> dict:
-    """{duration, codec, width, height, fps, size} for a clip, cached."""
+def probe(path: Path, cached_only: bool = False) -> dict | None:
+    """{duration, codec, width, height, fps, size} for a clip, cached. With cached_only, None when not probed yet
+    (ffprobe over the Drive mount can take half a minute per clip the first time; never do that in a request)."""
     st = path.stat()
     cp = cache("probe", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.json")
     if cp.exists():
         return json.loads(cp.read_text())
+    if cached_only:
+        return None
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
          "format=duration:stream=codec_name,width,height,r_frame_rate", "-of", "json", str(path)],
@@ -71,7 +74,8 @@ def proxy_path(path: Path) -> Path:
 
 def playable(path: Path) -> Path:
     """The file to serve to the browser: the clip itself when it is H.264 already, else its proxy (if made)."""
-    if probe(path).get("codec") == "h264":
+    info = probe(path, cached_only=True)
+    if info and info.get("codec") == "h264":
         return path
     px = proxy_path(path)
     return px if px.exists() else path

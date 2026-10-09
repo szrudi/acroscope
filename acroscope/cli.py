@@ -225,7 +225,7 @@ def cmd_transcode(a):
 
 def cmd_serve(a):
     from .server import serve
-    serve(a.host, a.port)
+    serve(a.host, a.port, warm=not a.no_warm)
 
 
 def main(argv=None):
@@ -266,7 +266,8 @@ def main(argv=None):
     p = sp.add_parser("import-xspf", help="one-off: import videos/<session>/moments.xspf into the session file"); p.add_argument("session"); p.set_defaults(f=cmd_import_xspf)
     p = sp.add_parser("transcode", help="H.264 for the player: proxies in the cache, or --replace the clips in the data dir")
     p.add_argument("session"); p.add_argument("videos", nargs="*"); p.add_argument("--replace", action="store_true"); p.add_argument("--force", action="store_true"); p.set_defaults(f=cmd_transcode)
-    p = sp.add_parser("serve", help="run the player (http)"); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8070); p.set_defaults(f=cmd_serve)
+    p = sp.add_parser("serve", help="run the player (http)"); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8070)
+    p.add_argument("--no-warm", action="store_true", help="don't decode/probe everything in the background at start"); p.set_defaults(f=cmd_serve)
 
     a = ap.parse_args(argv)
     a.f(a)

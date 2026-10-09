@@ -69,8 +69,9 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
             known[f.name] = {"file": f.name, "duration": None, "note": ""}
     if probe_videos:
         for v in known.values():
-            if v.get("duration") is None and (d / v["file"]).exists():
-                v["duration"] = video.probe(d / v["file"])["duration"]
+            if (v.get("duration") is None or v.get("codec") is None) and (d / v["file"]).exists():
+                info = video.probe(d / v["file"])
+                v["duration"], v["codec"] = info["duration"], info["codec"]
     s["videos"] = sorted(known.values(), key=lambda v: v["file"])
     if not s["blackbox"]:
         s["blackbox"] = [b.name for b in blackbox.all_bbls() if blackbox.bbl_date(b) == s["date"] and b.stat().st_size]
@@ -143,16 +144,21 @@ def untag(session: str, mid: str) -> bool:
     return len(s["moments"]) < before
 
 
-def overview(session: str, with_arms: bool = True) -> dict:
-    """Session file plus the arm index of its blackbox files and coverage (which arms have a clip)."""
+def overview(session: str, with_arms: bool = True, cached_only: bool = False) -> dict:
+    """Session file plus the arm index of its blackbox files and coverage (which arms have a clip).
+    With cached_only, blackbox files not decoded yet are listed in `arms_pending` instead of decoded here."""
     s = load(session)
     out = dict(s)
     if with_arms:
         arms = []
+        out["arms_pending"] = []
         for b in s["blackbox"]:
             try:
-                idx = blackbox.index_bbl(b)
+                idx = blackbox.index_bbl(b, cached_only=cached_only)
             except FileNotFoundError:
+                continue
+            if idx is None:
+                out["arms_pending"].append(b)
                 continue
             for a in idx["arms"]:
                 matched = [m for m in s["matches"] if m["bbl"] == idx["file"] and m["arm"] == a["index"]]
