@@ -21,7 +21,8 @@ def resolve_video(session: str, file: str) -> Path:
     if file.isdigit():
         hits = sorted(d.glob(f"*_{int(file):03d}.*"))
         hits = [h for h in hits if h.suffix.lower() in (".mp4", ".mov", ".mkv")]
-        if len(hits) == 1:
+        hits.sort(key=lambda h: h.suffix.lower() != ".mp4")   # the compressed .mp4 wins over an original .mov beside it
+        if hits:
             return hits[0]
     raise FileNotFoundError(f"{session}/{file}: no such clip")
 
