@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acroscope"
+version = "0.1.0"
+description = "FPV trick-learning tool: find, measure and tag tricks and crashes in DVR footage with blackbox data"
+requires-python = ">=3.11"
+dependencies = ["orangebox>=0.5.0"]
+
+[project.scripts]
+acroscope = "acroscope.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["acroscope*"]
+
+[tool.setuptools.package-data]
+acroscope = ["static/*"]

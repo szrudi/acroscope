@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>acroscope</title>
+<style>
+  :root { --bg:#14161a; --panel:#1c1f25; --line:#2b3039; --fg:#e6e8ec; --dim:#9aa3b2; --acc:#f5a524; --acc2:#4cc2ff; --bad:#ff6b6b; --ok:#5fd68b; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; height:100vh; display:grid; grid-template-rows:44px 1fr; }
+  header { display:flex; align-items:center; gap:14px; padding:0 14px; border-bottom:1px solid var(--line); background:var(--panel) }
+  header h1 { font-size:16px; margin:0; color:var(--acc); letter-spacing:.5px }
+  header select { background:var(--bg); color:var(--fg); border:1px solid var(--line); padding:4px 8px; border-radius:6px; font-size:14px }
+  header .keys { margin-left:auto; color:var(--dim); font-size:12px }
+  kbd { background:#2a2f38; border:1px solid #3a404b; border-radius:4px; padding:0 5px; font:12px ui-monospace, monospace }
+  main { display:grid; grid-template-columns:260px 1fr 360px; min-height:0 }
+  aside, section { min-height:0; overflow:auto }
+  aside { border-right:1px solid var(--line); background:var(--panel) }
+  .right { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column }
+  .clip { padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; display:grid; grid-template-columns:1fr auto; gap:2px 8px }
+  .clip:hover { background:#232832 } .clip.on { background:#2a3140; border-left:3px solid var(--acc) }
+  .clip .n { font-weight:600 } .clip .d { color:var(--dim); font-variant-numeric:tabular-nums }
+  .clip .arms { grid-column:1/3; color:var(--dim); font-size:12px } .clip .arms b { color:var(--acc2); font-weight:500 }
+  .clip .warn { color:var(--bad) } .clip .cnt { color:var(--acc) }
+  .center { display:flex; flex-direction:column; padding:10px 14px; gap:8px }
+  video { width:100%; max-height:62vh; background:#000; border-radius:6px; outline:none }
+  #strip { width:100%; height:54px; display:block; cursor:pointer; border-radius:4px; background:#0f1115 }
+  .readout { display:flex; gap:18px; color:var(--dim); font-variant-numeric:tabular-nums; font-size:13px; min-height:20px }
+  .readout b { color:var(--fg); font-weight:500 }
+  .editor { display:none; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--panel); gap:8px; flex-direction:column }
+  .editor.open { display:flex }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+  input, textarea { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 8px; font:inherit }
+  input.t { width:80px; font-variant-numeric:tabular-nums } input.title { flex:1; min-width:200px } textarea { width:100%; min-height:54px; resize:vertical }
+  button { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:5px 10px; cursor:pointer; font:inherit }
+  button:hover { background:#343a46 } button.primary { background:var(--acc); color:#1a1200; border-color:var(--acc); font-weight:600 }
+  button.small { padding:2px 7px; font-size:12px }
+  .chip { display:inline-block; padding:2px 9px; border-radius:12px; border:1px solid var(--line); cursor:pointer; font-size:12px; user-select:none }
+  .chip.on { background:var(--acc2); color:#001; border-color:var(--acc2) }
+  .tag { display:inline-block; padding:0 7px; border-radius:10px; font-size:11px; background:#2f3542; color:var(--acc2); margin-right:3px }
+  .right h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin:0; padding:10px 12px 6px; display:flex; align-items:center; gap:8px }
+  .right h2 label { font-weight:400; text-transform:none; letter-spacing:0; margin-left:auto; cursor:pointer }
+  .list { overflow:auto } .moments { flex:1 } .sugg { max-height:40%; border-top:1px solid var(--line) }
+  .m { padding:7px 12px; border-bottom:1px solid var(--line); cursor:pointer; display:grid; grid-template-columns:52px 1fr auto; gap:2px 8px; align-items:start }
+  .m:hover { background:#232832 } .m.on { background:#2a3140; border-left:3px solid var(--acc) }
+  .m img { width:52px; height:35px; object-fit:cover; border-radius:3px; background:#000; grid-row:1/3 }
+  .m .t { color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums }
+  .m .ttl { font-weight:500 } .m .note { grid-column:2/4; color:var(--dim); font-size:12px; white-space:pre-wrap; display:none } .m.on .note { display:block }
+  .m .act { display:flex; gap:4px; grid-row:1/3; align-self:center }
+  .empty { padding:12px; color:var(--dim) }
+  .why { grid-column:2/4; color:var(--dim); font-size:12px }
+  @media (max-width: 1000px) { main { grid-template-columns:1fr } aside, .right { border:0; border-top:1px solid var(--line) } video { max-height:45vh } }
+</style>
+</head>
+<body>
+<header>
+  <h1>acroscope</h1>
+  <select id="session"></select>
+  <span id="status" style="color:var(--dim)"></span>
+  <span class="keys"><kbd>space</kbd> play <kbd>←</kbd><kbd>→</kbd> 2 s <kbd>,</kbd><kbd>.</kbd> frame <kbd>i</kbd><kbd>o</kbd> in/out <kbd>t</kbd> tag <kbd>n</kbd><kbd>p</kbd> next/prev <kbd>l</kbd> loop</span>
+</header>
+<main>
+  <aside id="clips"></aside>
+  <section class="center">
+    <video id="v" controls preload="metadata"></video>
+    <canvas id="strip" height="54"></canvas>
+    <div class="readout" id="readout"></div>
+    <div class="editor" id="editor">
+      <div class="row">
+        <span id="edId" style="color:var(--dim);min-width:40px"></span>
+        in <input class="t" id="edIn"> <button class="small" onclick="setIn()">now</button>
+        out <input class="t" id="edOut"> <button class="small" onclick="setOut()">now</button>
+        <input class="title" id="edTitle" placeholder="title">
+      </div>
+      <div class="row" id="edTags"></div>
+      <textarea id="edNote" placeholder="note"></textarea>
+      <div class="row"><button class="primary" onclick="saveMoment()">save</button><button onclick="closeEditor()">cancel</button>
+        <span id="edWhy" style="color:var(--dim);font-size:12px"></span></div>
+    </div>
+  </section>
+  <div class="right">
+    <h2>moments <span id="mcount"></span><label><input type="checkbox" id="allClips"> all clips</label></h2>
+    <div class="list moments" id="moments"></div>
+    <h2>suggested (untagged)</h2>
+    <div class="list sugg" id="sugg"></div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const v = $('#v'), strip = $('#strip'), ctx = strip.getContext('2d');
+let S = null, clip = null, series = [], sugg = [], TAGS = [], cur = null, loopM = null, armLen = {};
+const COLORS = {flip:'#f5a524', roll:'#ffd166', powerloop:'#4cc2ff', 'split-s':'#8ab4ff', dive:'#9b7bff', orbit:'#5fd68b', crash:'#ff6b6b', 'gyro-kick':'#ff9f6b', 'motor-loss':'#ff6bd6', poi:'#9aa3b2'};
+const fmt = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); };
+const parse = s => { s = String(s).trim(); if (s.includes(':')) { const [m, x] = s.split(':'); return +m * 60 + +x; } return +s; };
+const api = (p, o) => fetch(p, o).then(r => r.json());
+const canHevc = v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') || v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"');
+
+async function init() {
+  TAGS = await api('/api/tags');
+  const list = await api('/api/sessions');
+  const sel = $('#session');
+  sel.innerHTML = list.slice().reverse().map(s => `<option value="${s.session}">${s.session}${s.has_file ? '' : ' (new)'} · ${s.videos} clips · ${s.moments} moments</option>`).join('');
+  sel.onchange = () => loadSession(sel.value);
+  const last = localStorage.getItem('acro.session');
+  sel.value = list.some(s => s.session === last) ? last : (list.filter(s => s.moments).pop() || list[list.length - 1]).session;
+  loadSession(sel.value, localStorage.getItem('acro.clip'));
+}
+
+async function loadSession(name, wantClip) {
+  $('#status').textContent = 'loading…';
+  S = await api('/api/session/' + encodeURIComponent(name));
+  localStorage.setItem('acro.session', name);
+  armLen = {}; for (const a of S.arms || []) armLen[a.bbl + '#' + a.index] = a;
+  $('#status').textContent = S.note || '';
+  renderClips();
+  const c = S.videos.find(x => x.file === wantClip) || S.videos.find(x => S.moments.some(m => m.video === x.file)) || S.videos[0];
+  if (c) loadClip(c.file); else { clip = null; v.removeAttribute('src'); renderMoments(); drawStrip(); }
+}
+
+function renderClips() {
+  $('#clips').innerHTML = S.videos.map(x => {
+    const ms = S.matches.filter(m => m.video === x.file);
+    const n = S.moments.filter(m => m.video === x.file).length;
+    const arms = ms.length ? ms.map(m => `<b>arm ${m.arm}</b> +${m.offset}s`).join(', ') : 'no log';
+    const warn = (x.codec === 'hevc' && !canHevc) ? ' <span class="warn">H.265: this browser may not play it</span>' : '';
+    return `<div class="clip ${clip === x.file ? 'on' : ''}" data-f="${x.file}"><span class="n">${x.file.replace(/\.mp4$/, '').slice(-3)}</span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${x.note}</span>` : ''}</div>`;
+  }).join('') || '<div class="empty">no clips</div>';
+  document.querySelectorAll('.clip').forEach(el => el.onclick = () => loadClip(el.dataset.f));
+}
+
+async function loadClip(file) {
+  clip = file; cur = null; loopM = null; closeEditor();
+  localStorage.setItem('acro.clip', file);
+  v.src = `/video/${encodeURIComponent(S.session)}/${encodeURIComponent(file)}`;
+  renderClips(); renderMoments(); drawStrip();
+  series = await api(`/api/session/${encodeURIComponent(S.session)}/series?video=${encodeURIComponent(file)}`);
+  sugg = await api(`/api/session/${encodeURIComponent(S.session)}/events?video=${encodeURIComponent(file)}`);
+  renderSugg(); drawStrip();
+}
+
+function momentsShown() { return $('#allClips').checked ? S.moments : S.moments.filter(m => m.video === clip); }
+
+function renderMoments() {
+  const ms = momentsShown();
+  $('#mcount').textContent = `(${ms.length})`;
+  $('#moments').innerHTML = ms.map(m => `<div class="m ${cur === m.id ? 'on' : ''}" data-id="${m.id}">
+    <img loading="lazy" src="/frame/${encodeURIComponent(S.session)}/${encodeURIComponent(m.video)}/${(m.start + Math.min(2, (m.end - m.start) / 2)).toFixed(2)}">
+    <span class="ttl">${esc(m.title)} ${(m.tags || []).map(t => `<span class="tag">${t}</span>`).join('')}</span>
+    <span class="act"><button class="small" data-edit="${m.id}" title="edit">✎</button><button class="small" data-del="${m.id}" title="delete">✕</button></span>
+    <span class="t">${$('#allClips').checked ? m.video.slice(-7, -4) + ' · ' : ''}${fmt(m.start)}–${fmt(m.end)}${m.metrics ? ' · ' + metricLine(m.metrics) : ''}</span>
+    <span class="note">${esc(m.note || '')}</span></div>`).join('') || '<div class="empty">no moments yet: set in/out with <kbd>i</kbd> <kbd>o</kbd>, then <kbd>t</kbd></div>';
+  document.querySelectorAll('.m').forEach(el => el.onclick = e => {
+    if (e.target.dataset.edit) return editMoment(e.target.dataset.edit);
+    if (e.target.dataset.del) return delMoment(e.target.dataset.del);
+    playMoment(el.dataset.id);
+  });
+}
+function metricLine(k) { const r = k.rotation_deg || {}; return `r${r.roll ?? 0} p${r.pitch ?? 0} y${r.yaw ?? 0}° · thr ${k.throttle_pct?.min}–${k.throttle_pct?.max}% · ${k.vbat?.min} V`; }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function renderSugg() {
+  const ms = S.moments.filter(m => m.video === clip);
+  const open = sugg.filter(e => !ms.some(m => e.start < m.end + 1 && e.end > m.start - 1 && (m.tags || []).includes(e.tag)));
+  $('#sugg').innerHTML = open.map((e, i) => `<div class="m" data-i="${i}"><span style="grid-row:1/3;color:${COLORS[e.tag] || '#888'}">◇</span>
+    <span class="ttl">${esc(e.title)} <span class="tag">${e.tag}</span></span><span class="act"><button class="small" data-acc="${i}">accept</button></span>
+    <span class="t">${fmt(e.start)}–${fmt(e.end)}</span><span class="why">${esc(e.why)}</span></div>`).join('') || '<div class="empty">' + (series.length ? 'nothing untagged' : 'no blackbox match for this clip') + '</div>';
+  document.querySelectorAll('#sugg .m').forEach(el => el.onclick = e => {
+    const s = open[+el.dataset.i];
+    if (e.target.dataset.acc !== undefined) return openEditor({video: clip, start: s.start, end: s.end, title: s.title, tags: [s.tag], note: '', why: s.why, metrics: s.numbers});
+    v.currentTime = Math.max(0, s.start - 0.5); v.play();
+  });
+  window._open = open;
+}
+
+// ---- playback
+function playMoment(id) {
+  const m = S.moments.find(x => x.id === id); if (!m) return;
+  if (m.video !== clip) { loadClip(m.video).then(() => playMoment(id)); return; }
+  cur = id; v.currentTime = m.start; v.play(); renderMoments();
+  document.querySelector(`.m[data-id="${id}"]`)?.scrollIntoView({block: 'nearest'});
+}
+function step(d) { const ms = momentsShown(); if (!ms.length) return; const i = ms.findIndex(m => m.id === cur); playMoment(ms[(i + d + ms.length) % ms.length].id); }
+v.addEventListener('timeupdate', () => {
+  if (loopM) { const m = S.moments.find(x => x.id === loopM); if (m && (v.currentTime >= m.end || v.currentTime < m.start - 0.3)) v.currentTime = m.start; }
+  drawStrip(); readout();
+});
+v.addEventListener('loadedmetadata', drawStrip);
+v.addEventListener('error', () => { $('#readout').innerHTML = `<b style="color:var(--bad)">cannot play this clip</b> (${clip}: ${canHevc ? 'load error' : 'H.265 and this browser has no HEVC decoder; run acroscope transcode'})`; });
+
+function armAt(t) { // series entry whose arm covers video time t
+  for (const s of series) { const a = t - s.offset; if (a >= -0.5 && a <= s.length + 0.5) return [s, a]; }
+  return [null, null];
+}
+function readout() {
+  const t = v.currentTime; const [s, a] = armAt(t);
+  let h = `<span>video <b>${fmt(t)}</b></span>`;
+  if (s) {
+    const r = s.rows[Math.max(0, Math.min(s.rows.length - 1, Math.round(a / s.step)))];
+    h += `<span>arm ${s.arm} <b>${a.toFixed(1)} s</b></span>`;
+    if (r) h += `<span>throttle <b>${r[0]} %</b></span><span>tilt <b>${r[1]}°</b></span><span>vbat <b>${r[2].toFixed(2)} V</b></span><span>gyro <b>${r[3]} °/s</b></span>`;
+  } else if (series.length) h += '<span>between arms</span>'; else h += '<span>no log</span>';
+  if (loopM) h += '<span style="color:var(--acc)">looping</span>';
+  $('#readout').innerHTML = h;
+}
+
+function drawStrip() {
+  const W = strip.width = strip.clientWidth * devicePixelRatio, H = strip.height = 54 * devicePixelRatio;
+  ctx.clearRect(0, 0, W, H);
+  const D = v.duration || (S && clip && S.videos.find(x => x.file === clip)?.duration) || 0; if (!D) return;
+  const X = t => Math.max(0, Math.min(W, t / D * W));
+  // arm coverage
+  for (const s of series) { ctx.fillStyle = '#1f3a4d'; ctx.fillRect(X(s.offset), H * 0.62, X(s.offset + s.length) - X(s.offset), H * 0.38);
+    ctx.fillStyle = '#4cc2ff'; ctx.font = `${10 * devicePixelRatio}px system-ui`; ctx.fillText('arm ' + s.arm, X(s.offset) + 3, H * 0.62 + 11 * devicePixelRatio);
+    // throttle trace
+    ctx.strokeStyle = '#3d6f8a'; ctx.beginPath();
+    s.rows.forEach((r, i) => { if (!r) return; const x = X(s.offset + i * s.step), y = H - r[0] / 100 * H * 0.36; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+  }
+  // suggestions (hollow) and moments (solid)
+  for (const e of (window._open || [])) { ctx.strokeStyle = COLORS[e.tag] || '#888'; ctx.lineWidth = devicePixelRatio; ctx.strokeRect(X(e.start), H * 0.38, Math.max(2, X(e.end) - X(e.start)), H * 0.2); }
+  for (const m of S.moments.filter(m => m.video === clip)) { ctx.fillStyle = COLORS[(m.tags || [])[0]] || '#9aa3b2'; ctx.globalAlpha = m.id === cur ? 1 : 0.75;
+    ctx.fillRect(X(m.start), H * 0.08, Math.max(3, X(m.end) - X(m.start)), H * 0.26); ctx.globalAlpha = 1; }
+  // in/out while editing
+  if ($('#editor').classList.contains('open')) { const a = parse($('#edIn').value), b = parse($('#edOut').value);
+    ctx.fillStyle = 'rgba(245,165,36,.25)'; ctx.fillRect(X(a), 0, Math.max(2, X(b) - X(a)), H); }
+  ctx.fillStyle = '#fff'; ctx.fillRect(X(v.currentTime) - devicePixelRatio, 0, 2 * devicePixelRatio, H);
+}
+strip.onclick = e => { const D = v.duration; if (!D) return; v.currentTime = (e.offsetX / strip.clientWidth) * D; };
+window.addEventListener('resize', drawStrip);
+
+// ---- editor
+let ed = null;
+function openEditor(m) {
+  ed = m; $('#editor').classList.add('open');
+  $('#edId').textContent = m.id || 'new'; $('#edIn').value = fmt(m.start); $('#edOut').value = fmt(m.end);
+  $('#edTitle').value = m.title || ''; $('#edNote').value = m.note || ''; $('#edWhy').textContent = m.why || '';
+  const tags = new Set(m.tags || []);
+  const all = [...TAGS, ...[...tags].filter(t => !TAGS.includes(t))];
+  $('#edTags').innerHTML = all.map(t => `<span class="chip ${tags.has(t) ? 'on' : ''}" data-t="${t}">${t}</span>`).join('') + ' <input id="edTagFree" placeholder="+tag" style="width:80px">';
+  document.querySelectorAll('.chip').forEach(c => c.onclick = () => c.classList.toggle('on'));
+  $('#edTitle').focus(); drawStrip();
+}
+function closeEditor() { ed = null; $('#editor').classList.remove('open'); drawStrip(); }
+function setIn() { $('#edIn').value = fmt(v.currentTime); drawStrip(); }
+function setOut() { $('#edOut').value = fmt(v.currentTime); drawStrip(); }
+function editMoment(id) { const m = S.moments.find(x => x.id === id); if (m) openEditor({...m}); }
+async function saveMoment() {
+  const tags = [...document.querySelectorAll('.chip.on')].map(c => c.dataset.t);
+  const free = $('#edTagFree').value.trim(); if (free) tags.push(...free.split(/[,\s]+/).filter(Boolean));
+  const body = {id: ed.id, video: ed.video || clip, start: parse($('#edIn').value), end: parse($('#edOut').value), title: $('#edTitle').value.trim() || tags[0] || 'moment', tags, note: $('#edNote').value, metrics: ed.metrics};
+  if (!(body.end > body.start)) { alert('out must be after in'); return; }
+  const m = await api(`/api/session/${encodeURIComponent(S.session)}/moment`, {method: 'POST', body: JSON.stringify(body)});
+  if (m.error) { alert(m.error); return; }
+  S.moments = [...S.moments.filter(x => x.id !== m.id), m].sort((a, b) => a.video.localeCompare(b.video) || a.start - b.start);
+  cur = m.id; closeEditor(); renderClips(); renderMoments(); renderSugg(); drawStrip();
+}
+async function delMoment(id) {
+  const m = S.moments.find(x => x.id === id); if (!m || !confirm(`delete "${m.title}"?`)) return;
+  await api(`/api/session/${encodeURIComponent(S.session)}/moment/${id}`, {method: 'DELETE'});
+  S.moments = S.moments.filter(x => x.id !== id); if (cur === id) cur = null; if (loopM === id) loopM = null;
+  renderClips(); renderMoments(); renderSugg(); drawStrip();
+}
+$('#allClips').onchange = renderMoments;
+
+// ---- keys
+let inT = null, outT = null;
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, textarea, select')) { if (e.key === 'Escape') { e.target.blur(); } if (e.key === 'Enter' && e.target.id === 'edTitle') saveMoment(); return; }
+  const k = e.key; let h = true;
+  if (k === ' ') v.paused ? v.play() : v.pause();
+  else if (k === 'ArrowLeft') v.currentTime -= e.shiftKey ? 10 : 2;
+  else if (k === 'ArrowRight') v.currentTime += e.shiftKey ? 10 : 2;
+  else if (k === ',') { v.pause(); v.currentTime -= 1 / 60; }
+  else if (k === '.') { v.pause(); v.currentTime += 1 / 60; }
+  else if (k === 'i') { inT = v.currentTime; if (ed) setIn(); flash('in ' + fmt(inT)); }
+  else if (k === 'o') { outT = v.currentTime; if (ed) setOut(); flash('out ' + fmt(outT)); }
+  else if (k === 't') { if (!clip) return; const a = inT ?? Math.max(0, v.currentTime - 3), b = outT ?? v.currentTime + 3; openEditor({video: clip, start: Math.min(a, b), end: Math.max(a, b), tags: []}); inT = outT = null; }
+  else if (k === 'n') step(1); else if (k === 'p') step(-1);
+  else if (k === 'l') { loopM = loopM ? null : cur; readout(); }
+  else if (k === 'Escape') closeEditor();
+  else h = false;
+  if (h) e.preventDefault();
+});
+function flash(s) { $('#status').textContent = s; setTimeout(() => $('#status').textContent = S?.note || '', 1500); }
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Komodo stack `acroscope` (homelab). Builds this repo; the container mounts the Google Drive "FPV drone" folder
+# at /data with rclone (token from the stack environment) and serves the player on :8070.
+services:
+  acroscope:
+    build: .
+    image: acroscope:local
+    container_name: acroscope
+    restart: unless-stopped
+    ports:
+      - "8070:8070"
+    environment:
+      GDRIVE_TOKEN: ${GDRIVE_TOKEN:?set in the Komodo stack environment}
+      GDRIVE_ROOT_FOLDER_ID: ${GDRIVE_ROOT_FOLDER_ID:?}
+      GDRIVE_CACHE_SIZE: ${GDRIVE_CACHE_SIZE:-6G}
+    volumes:
+      - /opt/acroscope/cache:/cache   # decoded arms, frames, H.264 proxies, rclone VFS cache (absolute: survives redeploys)
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined

@@ -1,0 +1,26 @@
+"""Where the data and the cache live.
+
+The data dir is the Google Drive "FPV drone" folder (videos/, blackbox/). The cache holds decoded arms,
+extracted frames and H.264 proxies, and is never synced.
+"""
+import os
+from pathlib import Path
+
+DATA_DIR = Path(os.environ.get("ACROSCOPE_DATA", "~/gdrive/fpv")).expanduser()
+CACHE_DIR = Path(os.environ.get("ACROSCOPE_CACHE", "~/.cache/acroscope")).expanduser()
+
+VIDEOS_DIR = DATA_DIR / "videos"
+BLACKBOX_DIR = DATA_DIR / "blackbox"
+
+# Encoding the player relies on (Chrome on Linux has no HEVC): H.264, keyframe every 0.5 s at 60 fps.
+H264_ARGS = ["-c:v", "libx264", "-preset", "medium", "-crf", "23", "-pix_fmt", "yuv420p",
+             "-g", "30", "-keyint_min", "30", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"]
+
+# Moment tags the UI offers first. Free text is allowed too.
+TAGS = ["flip", "roll", "powerloop", "split-s", "dive", "orbit", "crash", "gyro-kick", "motor-loss", "poi"]
+
+
+def cache(*parts: str) -> Path:
+    p = CACHE_DIR.joinpath(*parts)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
