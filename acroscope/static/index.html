@@ -294,8 +294,8 @@ document.addEventListener('keydown', e => {
   else if (k === 'l') { loopM = loopM ? null : cur; readout(); }
   else if (k === 'Escape') closeEditor();
   else h = false;
-  if (h) e.preventDefault();
-});
+  if (h) { e.preventDefault(); e.stopPropagation(); }
+}, true);   // capture phase: the focused <video controls> would otherwise handle space/arrows too and undo ours
 function flash(s) { $('#status').textContent = s; setTimeout(() => $('#status').textContent = S?.note || '', 1500); }
 init();
 </script>
