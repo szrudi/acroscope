@@ -56,6 +56,7 @@ acroscope metrics <session> <video> <from> <to> [--profile [STEP]] [--loop] [--o
 acroscope metrics --arm <bbl>:<n> <from> <to>    same, in arm seconds without a session
 acroscope events <session> [video]               detector suggestions (flip, roll, powerloop, split-s, dive, crash, gyro-kick, motor-loss)
 acroscope frame <session> <video> <t>... [--osd] JPEGs of frames; --osd enlarges the OSD strip (arm timer, total, vbat)
+acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling several timestamped frames (one look for the agent)
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
 acroscope untag <session> <id>
 acroscope moments <session>
@@ -98,6 +99,8 @@ Chrome on Linux has no HEVC decoder: clips before the H.264 switch need `acrosco
 the cache; `--replace` rewrites the files in the data dir).
 
 ## Units and conventions (from the log)
+
+Every `metrics` result carries a `conventions` block with these facts, so they never need re-deriving.
 
 `gyroADC`/`gyroUnfilt` in deg/s; `rcCommand[0..2]` ±500 = ±100 % stick, `rcCommand[3]` 1000–2000; `vbatLatest` in
 0.01 V; `accSmooth` /2048 = g; `imuQuaternion` /32767. Roll + = right, pitch + = nose down, yaw + = nose right; a

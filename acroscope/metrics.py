@@ -10,6 +10,18 @@ from .blackbox import Arm
 
 AXES = ("roll", "pitch", "yaw")
 
+# Fixed facts the agent would otherwise re-derive every session. Stated once, shipped with every metrics result.
+CONVENTIONS = {
+    "roll": "+ = roll right (right stick right). In the camera view the horizon rotates anticlockwise, the right side of the picture drops",
+    "pitch": "+ = nose down / forward (right stick forward). In the camera view the horizon rises; a back flip and a powerloop integrate to NEGATIVE pitch",
+    "yaw": "+ = nose right (left stick right). In the camera view the scene slides left",
+    "stick_pct": "rcCommand[0..2] / 5: -100..100 % of stick travel; throttle_pct = (rcCommand[3] - 1000) / 10",
+    "tilt_deg": "angle between the quad's up and world up: 0 level, 90 knife edge, 180 inverted",
+    "lean": "[forward, right] in degrees from the IMU; negative forward = nose up",
+    "rates_dps": "gyroADC is deg/s as logged (the gyro is already scaled); peaks are absolute values",
+    "video_time": "video = arm time + offset (session.json matches); the OSD arm timer shows floor(seconds)",
+}
+
 
 def _mean(xs):
     xs = list(xs)

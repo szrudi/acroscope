@@ -122,12 +122,13 @@ def cmd_metrics(a):
         off = 0.0 if a.arm_time else m["offset"]
         head = {"video": vid, "bbl": m["bbl"], "arm": m["arm"], "offset": m["offset"]}
     a0, a1 = t0 - off, t1 - off
-    res = dict(head, window={"arm_from": round(a0, 2), "arm_to": round(a1, 2)})
+    res = dict(head, window={"arm_from": round(a0, 2), "arm_to": round(a1, 2)}, conventions=metrics.CONVENTIONS)
     if a.profile:
         rows = metrics.profile(arm, a0, a1, a.profile)
         if a.json:
             res["profile"] = rows
         else:
+            print("conventions: roll + = right, pitch + = nose down (back flip = negative), yaw + = nose right; sticks in %, gyro deg/s, tilt 0 level / 180 inverted")
             print("  arm_t  vid_t  stick r/p/y   thr | gyro r/p/y      | rot r/p/y        | vbat  mot  accZ tilt")
             for r in rows:
                 print(f"{r['t']:7.2f} {fmt_time(r['t'] + off):>6} {r['stick'][0]:4} {r['stick'][1]:4} {r['stick'][2]:4}  {r['throttle']:3} | "
@@ -183,6 +184,26 @@ def cmd_frame(a):
             print(f"{t}: past the end of the clip ({fmt_time(dur)}), skipped", file=sys.stderr)
             continue
         print(video.frame(p, tt, osd=a.osd, scale=a.scale))
+
+
+def cmd_sheet(a):
+    s = _session(a.session)
+    p = video.resolve_video(s, a.video)
+    dur = video.probe(p)["duration"]
+    if a.times:
+        times = [parse_time(t) for t in a.times]
+    else:
+        t0, t1 = parse_time(a.start or "0"), parse_time(a.end) if a.end else dur
+        step = a.every or max(0.5, (t1 - t0) / 5)
+        times = []
+        t = t0
+        while t <= t1 + 1e-6 and len(times) < 24:
+            times.append(round(t, 2))
+            t += step
+    times = [t for t in times if t < dur - 0.1]
+    if not times:
+        sys.exit("no frames inside the clip")
+    print(video.sheet(p, times, cols=a.cols, width=a.width, osd=a.osd))
 
 
 def cmd_tag(a):
@@ -305,6 +326,11 @@ def main(argv=None):
     p = sp.add_parser("frame", help="extract frames as JPEG (prints the paths); --osd crops and enlarges the OSD strip")
     p.add_argument("session"); p.add_argument("video"); p.add_argument("times", nargs="+"); p.add_argument("--osd", action="store_true")
     p.add_argument("--scale", type=int, default=1); p.set_defaults(f=cmd_frame)
+    p = sp.add_parser("sheet", help="one JPEG tiling several timestamped frames (given times, or --from/--to/--every)")
+    p.add_argument("session"); p.add_argument("video"); p.add_argument("times", nargs="*")
+    p.add_argument("--from", dest="start"); p.add_argument("--to", dest="end"); p.add_argument("--every", type=float, metavar="SEC")
+    p.add_argument("--cols", type=int, default=3); p.add_argument("--width", type=int, default=360, help="frame width in the sheet"); p.add_argument("--osd", action="store_true")
+    p.set_defaults(f=cmd_sheet)
     p = sp.add_parser("tag", help="add (or with --id replace) a moment")
     p.add_argument("session"); p.add_argument("video"); p.add_argument("start"); p.add_argument("end"); p.add_argument("title")
     p.add_argument("--tags", help=f"comma-separated, e.g. {','.join(TAGS[:4])}"); p.add_argument("--note"); p.add_argument("--id")

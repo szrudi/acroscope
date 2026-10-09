@@ -1,7 +1,7 @@
 # acroscope player + Google Drive mount in one container (see compose.yaml and entrypoint.sh).
 FROM python:3.13-slim
 ARG RCLONE_VERSION=1.75.2
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fuse3 curl unzip ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fuse3 fonts-dejavu-core curl unzip ca-certificates \
     && curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip \
     && unzip -j /tmp/rclone.zip '*/rclone' -d /usr/local/bin && chmod 755 /usr/local/bin/rclone && rm /tmp/rclone.zip \
     && sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf \

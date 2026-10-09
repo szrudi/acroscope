@@ -69,6 +69,40 @@ def frame(path: Path, t: float, osd: bool = False, scale: int = 1) -> Path:
     return out
 
 
+FONT = next((f for f in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf") if Path(f).exists()), None)
+
+
+def sheet(path: Path, times: list[float], cols: int = 3, width: int = 360, osd: bool = False) -> Path:
+    """One JPEG with the frames at `times` tiled `cols` wide, each stamped with its video time. One image is one
+    look for the agent, and the OSD timers come along. osd=True tiles the enlarged OSD strip instead of the frame."""
+    times = [round(t, 2) for t in times]
+    tag = "-".join(f"{t:g}" for t in times)
+    if len(tag) > 80:
+        tag = f"{times[0]:g}-{times[-1]:g}x{len(times)}"
+    out = cache("frames", path.parent.name, f"{path.stem}_sheet_{tag}{'-osd' if osd else ''}-c{cols}.jpg")
+    if out.exists():
+        return out
+    cmd = ["ffmpeg", "-v", "error", "-y"]
+    for t in times:
+        cmd += ["-ss", f"{t:.3f}", "-i", str(path)]
+    parts = []
+    for i, t in enumerate(times):
+        m, sec = divmod(t, 60)
+        label = f"{int(m)}:{sec:04.1f}".replace(":", "\\:")   # ':' separates filter options, so escape it in the text
+        vf = f"[{i}:v]trim=end_frame=1,setpts=PTS-STARTPTS,"   # exactly one frame per input, or concat drains input 0 first
+        vf += "crop=iw:ih*0.22:0:ih*0.73," if osd else ""
+        vf += f"scale={width}:-2"
+        if FONT:
+            vf += f",drawtext=fontfile={FONT}:text='{label}':x=6:y=6:fontsize={max(14, width // 18)}:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=4"
+        parts.append(vf + f"[v{i}]")
+    n = len(times)
+    rows = -(-n // cols)
+    fc = ";".join(parts) + ";" + "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0,tile={cols}x{rows}:padding=4:margin=4:color=black[out]"
+    cmd += ["-filter_complex", fc, "-map", "[out]", "-frames:v", "1", "-q:v", "4", str(out)]
+    subprocess.run(cmd, check=True)
+    return out
+
+
 def proxy_path(path: Path) -> Path:
     return cache("h264", path.parent.name, path.with_suffix(".mp4").name)
 
