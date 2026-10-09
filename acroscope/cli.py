@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from . import blackbox, events as ev, metrics, sessions, video, xspf
+from . import blackbox, events as ev, metrics, osd, sessions, video, xspf
 from .config import CACHE_DIR, DATA_DIR, TAGS
 
 
@@ -101,6 +101,10 @@ def cmd_decode(a):
 def cmd_match(a):
     s = sessions.set_match(_session(a.session), a.video, a.bbl, a.arm, a.offset, a.note or "", boot=a.boot)
     out([m for m in s["matches"] if m["video"] == video.resolve_video(s["session"], a.video).name])
+
+
+def cmd_unmatch(a):
+    out({"removed": sessions.unmatch(_session(a.session), a.video, a.arm)})
 
 
 def cmd_metrics(a):
@@ -231,6 +235,38 @@ def cmd_transcode(a):
         print(dst if not a.replace else src.with_suffix(".mp4"))
 
 
+def cmd_osd(a):
+    s = _session(a.session)
+    rows = osd.read_timers(video.resolve_video(s, a.video), a.fps)
+    if a.json:
+        return out(rows)
+    ok = [r for r in rows if r["top"] is not None]
+    print(f"{len(rows)} frames, {len(ok)} with a readable arm timer")
+    for v in osd.arms_from_timers(rows, a.fps):
+        print(f"  arm run: video {fmt_time(v['start'])} - {fmt_time(v['end'])}  {v['length']:5.1f} s  (timer {v['timer_max']} s, total before {v['total_before']}, {v['readings']} readings)")
+
+
+def cmd_automatch(a):
+    s = _session(a.session)
+    clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]
+    for c in clips:
+        try:
+            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite)
+        except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
+            print(f"{c}: {type(e).__name__}: {e}", file=sys.stderr)
+            continue
+        print(f"{r['clip']}: {r['readable']}/{r['readings']} frames readable, {len(r['video_arms'])} arm runs, {len(r['matches'])} matched" + (" (written)" if a.write else ""))
+        for m in r["matches"]:
+            print(f"   arm {m['arm']:2} @ +{m['offset']:7.2f}  video run {m['video_length']:5.1f} s vs log {m['log_length']:5.1f} s" + ("" if not a.write else ("  written" if m.get("written") else "  kept existing")))
+        for v in r["unmatched_video_arms"]:
+            print(f"   unmatched run at {fmt_time(v['start'])}: {v['length']} s")
+
+
+def cmd_osd_learn(a):
+    labels = json.load(open(a.labels))
+    out(osd.learn(labels))
+
+
 def cmd_serve(a):
     from .server import serve
     serve(a.host, a.port, warm=not a.no_warm)
@@ -254,6 +290,8 @@ def main(argv=None):
     p.add_argument("offset", type=float); p.add_argument("--note")
     p.add_argument("--boot", action="store_true", help="also match every other arm of the same power cycle (offsets derived from the FC uptime)")
     p.set_defaults(f=cmd_match)
+    p = sp.add_parser("unmatch", help="remove a clip's matches (all, or one arm)")
+    p.add_argument("session"); p.add_argument("video"); p.add_argument("arm", type=int, nargs="?"); p.set_defaults(f=cmd_unmatch)
     p = sp.add_parser("metrics", help="numbers for a window: summary + rotation segments; --profile for a table")
     p.add_argument("session", nargs="?"); p.add_argument("video", nargs="?"); p.add_argument("start"); p.add_argument("end")
     p.add_argument("--arm", help="bbl:N instead of session/video (times are then arm seconds)")
@@ -276,6 +314,13 @@ def main(argv=None):
     p = sp.add_parser("import-xspf", help="one-off: import videos/<session>/moments.xspf into the session file"); p.add_argument("session"); p.set_defaults(f=cmd_import_xspf)
     p = sp.add_parser("transcode", help="H.264 for the player: proxies in the cache, or --replace the clips in the data dir")
     p.add_argument("session"); p.add_argument("videos", nargs="*"); p.add_argument("--replace", action="store_true"); p.add_argument("--force", action="store_true"); p.set_defaults(f=cmd_transcode)
+    p = sp.add_parser("osd", help="read the OSD timers through a clip and list the arm runs")
+    p.add_argument("session"); p.add_argument("video"); p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_osd)
+    p = sp.add_parser("automatch", help="match clips to arms from the OSD timers (proposes; --write records)")
+    p.add_argument("session"); p.add_argument("videos", nargs="*"); p.add_argument("--write", action="store_true"); p.add_argument("--overwrite", action="store_true", help="replace existing matches of the clip too")
+    p.add_argument("--fps", type=float, default=2.0); p.set_defaults(f=cmd_automatch)
+    p = sp.add_parser("osd-learn", help="rebuild the OSD digit templates from a labels file")
+    p.add_argument("labels", nargs="?", default="scripts/osd-labels.json"); p.set_defaults(f=cmd_osd_learn)
     p = sp.add_parser("serve", help="run the player (http)"); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8070)
     p.add_argument("--no-warm", action="store_true", help="don't decode/probe everything in the background at start"); p.set_defaults(f=cmd_serve)
 

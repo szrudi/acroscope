@@ -15,6 +15,8 @@ out, so a clip's timeline is not continuous across arms). Arm details come from 
 """
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from . import blackbox, video
@@ -70,7 +72,11 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
     if probe_videos:
         for v in known.values():
             if (v.get("duration") is None or v.get("codec") is None) and (d / v["file"]).exists():
-                info = video.probe(d / v["file"])
+                try:
+                    info = video.probe(d / v["file"])
+                except subprocess.CalledProcessError:   # still syncing / half-written: try again next refresh
+                    print(f"{v['file']}: ffprobe failed (still syncing?), skipped", file=sys.stderr)
+                    continue
                 v["duration"], v["codec"] = info["duration"], info["codec"]
     s["videos"] = sorted(known.values(), key=lambda v: v["file"])
     if not s["blackbox"]:
@@ -127,6 +133,16 @@ def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: s
         s["blackbox"].append(bbl_name)
     save(s)
     return s
+
+
+def unmatch(session: str, vid: str, arm: int | None = None) -> int:
+    """Remove the matches of a clip (all, or one arm). Returns how many were removed."""
+    s = load(session)
+    vid = video.resolve_video(session, vid).name
+    before = len(s["matches"])
+    s["matches"] = [m for m in s["matches"] if not (m["video"] == vid and (arm is None or m["arm"] == arm))]
+    save(s)
+    return before - len(s["matches"])
 
 
 def next_id(s: dict) -> str:
