@@ -35,6 +35,15 @@ python3 -m venv .venv && .venv/bin/pip install -e .     # needs ffmpeg/ffprobe o
 .venv/bin/acroscope --help
 ```
 
+`pip install orangebox` ends with an "Invalid script entry point: bb2csv" error from orangebox 0.5.0's wheel;
+the package is installed anyway (the Dockerfile tolerates it and checks the import).
+
+## Deployment
+
+The homelab runs it as the Komodo stack `acroscope` (one container from `Dockerfile` + `compose.yaml`: the rclone
+Drive mount plus `acroscope serve`), reachable at `acroscope.hakhorst.eu`. Hosting notes live in the homelab repo,
+`services/acroscope.md`.
+
 ## CLI (the agent side)
 
 ```

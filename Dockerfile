@@ -9,7 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fuse3 cu
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY acroscope ./acroscope
-RUN pip install --no-cache-dir . && mkdir -p /data /cache
+# orangebox 0.5.0's wheel declares a broken console script (`bb2csv = scripts`, no callable), so pip exits 1
+# AFTER installing the package. Install it on its own, tolerate that exit code, and prove the import instead.
+RUN pip install --no-cache-dir orangebox==0.5.0 || true; python -c "import orangebox" \
+    && pip install --no-cache-dir --no-deps . && mkdir -p /data /cache
 ENV ACROSCOPE_DATA=/data ACROSCOPE_CACHE=/cache
 COPY entrypoint.sh /entrypoint.sh
 EXPOSE 8070
