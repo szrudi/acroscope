@@ -24,6 +24,8 @@ VIDEO_EXT = (".mp4", ".mov", ".mkv")
 
 
 def session_dirs() -> list[Path]:
+    if not VIDEOS_DIR.is_dir():   # data dir not mounted (yet): no sessions rather than a crash
+        return []
     return sorted(d for d in VIDEOS_DIR.iterdir() if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}", d.name))
 
 
