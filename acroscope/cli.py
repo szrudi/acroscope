@@ -80,7 +80,9 @@ def cmd_arms(a):
     print(f"{idx['file']}  ({len(idx['arms'])} arms)")
     for r in idx["arms"]:
         flags = ("" if r["motors_spun"] else " motors-off") + ("" if r["complete"] else " cut-off") + (" TRUNCATED" if r["truncated"] else "")
-        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  {r['rate']:5.0f} Hz  {r['vbat_start']:.2f}→{r['vbat_end']:.2f} V (min {r['vbat_min']:.2f})  disarm {r['disarm_reason']}{flags}")
+        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  uptime {r.get('uptime_start', 0):7.1f}-{r.get('uptime_end', 0):7.1f}  {r['vbat_start']:.2f}→{r['vbat_end']:.2f} V (min {r['vbat_min']:.2f})  disarm {r['disarm_reason']}{flags}")
+    for b in idx.get("boots", []):
+        print(f"  boot: arms {b['first']}-{b['last']} ({len(b['arms'])} arms, uptime {b['uptime_start']:.1f}-{b['uptime_end']:.1f} s, {b['length']:.0f} s span): one offset covers them all (`match --boot`)")
 
 
 def cmd_decode(a):
@@ -96,7 +98,7 @@ def cmd_decode(a):
 
 
 def cmd_match(a):
-    s = sessions.set_match(_session(a.session), a.video, a.bbl, a.arm, a.offset, a.note or "")
+    s = sessions.set_match(_session(a.session), a.video, a.bbl, a.arm, a.offset, a.note or "", boot=a.boot)
     out([m for m in s["matches"] if m["video"] == video.resolve_video(s["session"], a.video).name])
 
 
@@ -169,8 +171,13 @@ def cmd_events(a):
 def cmd_frame(a):
     s = _session(a.session)
     p = video.resolve_video(s, a.video)
+    dur = video.probe(p)["duration"]
     for t in a.times:
-        print(video.frame(p, parse_time(t), osd=a.osd, scale=a.scale))
+        tt = parse_time(t)
+        if tt > dur - 0.1:
+            print(f"{t}: past the end of the clip ({fmt_time(dur)}), skipped", file=sys.stderr)
+            continue
+        print(video.frame(p, tt, osd=a.osd, scale=a.scale))
 
 
 def cmd_tag(a):
@@ -243,7 +250,9 @@ def main(argv=None):
     p.add_argument("bbl"); p.add_argument("arm", type=int); p.add_argument("--csv", action="store_true"); p.set_defaults(f=cmd_decode)
     p = sp.add_parser("match", help="record video <-> arm with offset (video time = arm time + offset)")
     p.add_argument("session"); p.add_argument("video"); p.add_argument("bbl"); p.add_argument("arm", type=int)
-    p.add_argument("offset", type=float); p.add_argument("--note"); p.set_defaults(f=cmd_match)
+    p.add_argument("offset", type=float); p.add_argument("--note")
+    p.add_argument("--boot", action="store_true", help="also match every other arm of the same power cycle (offsets derived from the FC uptime)")
+    p.set_defaults(f=cmd_match)
     p = sp.add_parser("metrics", help="numbers for a window: summary + rotation segments; --profile for a table")
     p.add_argument("session", nargs="?"); p.add_argument("video", nargs="?"); p.add_argument("start"); p.add_argument("end")
     p.add_argument("--arm", help="bbl:N instead of session/video (times are then arm seconds)")

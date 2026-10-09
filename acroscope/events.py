@@ -24,8 +24,11 @@ def crashes(arm: Arm, g_min: float = 4.0, cooldown: float = 2.0) -> list[dict]:
         if a > g_min:
             j = max(abs(g[k][x]) for k in range(3) for x in range(i, min(arm.n, i + w)))
             if j > 500:
+                # an impact in the last seconds of an arm is how most arms end: a (hard) landing, not a crash mid-flight
+                landing = arm.length - arm.t[i] < 2.5
                 out.append({"tag": "crash", "arm_from": round(arm.t[i] - 0.5, 2), "arm_to": round(arm.t[i] + 1.0, 2),
-                            "title": "impact", "why": f"{a:.1f} g with {j:.0f} dps gyro jolt at arm {arm.t[i]:.2f} s",
+                            "title": "hard landing (arm end)" if landing else "impact",
+                            "why": f"{a:.1f} g with {j:.0f} dps gyro jolt at arm {arm.t[i]:.2f} s" + (f" of {arm.length:.1f}" if landing else ""),
                             "numbers": {"acc_g": round(a, 1), "gyro_jolt_dps": round(j), "arm_t": round(arm.t[i], 2)}})
                 last = arm.t[i]
     return out

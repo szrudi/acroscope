@@ -26,6 +26,7 @@ HEADER_KEYS = ["Firmware revision", "Craft name", "looptime", "pid_process_denom
                "rates", "rc_rates", "rc_expo", "rollPID", "pitchPID", "yawPID", "gyro_notch1_hz", "motorOutput",
                "acc_1G", "vbat_scale", "gyro_scale"]
 MAGIC = b"ACRO1\n"
+INDEX_VERSION = 2
 
 
 def resolve_bbl(name: str) -> Path:
@@ -136,6 +137,9 @@ def _decode(path: Path, index: int):
     ti = ix["time"]
     t0 = rows[0][ti]
     t = array.array("d", ((r[ti] - t0) / 1e6 for r in rows))
+    # `time` is the FC's uptime in us: it runs on across arms within one power cycle ("boot"), so the gaps
+    # between arms are known, and one video offset covers every arm of a boot
+    uptime_start, uptime_end = round(t0 / 1e6, 3), round(rows[-1][ti] / 1e6, 3)
     cols = {}
     for name, i in ix.items():
         if name == "time":
@@ -150,6 +154,7 @@ def _decode(path: Path, index: int):
     meta = {
         "bbl": path.stem, "file": path.name, "index": index, "frames": len(rows), "length": round(length, 3),
         "rate": round(len(rows) / length, 1) if length else 0.0, "fields": fields, "truncated": truncated,
+        "uptime_start": uptime_start, "uptime_end": uptime_end,
         "vbat_start": round(cols["vbatLatest"][0] / 100, 2) if "vbatLatest" in cols else None,
         "vbat_end": round(cols["vbatLatest"][-1] / 100, 2) if "vbatLatest" in cols else None,
         "vbat_min": round(min(cols["vbatLatest"]) / 100, 2) if "vbatLatest" in cols else None,
@@ -203,11 +208,13 @@ def index_bbl(name: str, force: bool = False, progress=None, cached_only: bool =
     path = resolve_bbl(name)
     idx_path = cache("arms", path.stem, "arms.json")
     if idx_path.exists() and not force:
-        return json.loads(idx_path.read_text())
+        idx = json.loads(idx_path.read_text())
+        if idx.get("v") == INDEX_VERSION:
+            return idx
     if cached_only:
         return None
     if path.stat().st_size == 0:
-        idx = {"file": path.name, "stem": path.stem, "date": bbl_date(path), "arms": [], "empty": True}
+        idx = {"v": INDEX_VERSION, "file": path.name, "stem": path.stem, "date": bbl_date(path), "arms": [], "empty": True}
         idx_path.write_text(json.dumps(idx, indent=1))
         return idx
     from orangebox.reader import Reader
@@ -221,9 +228,26 @@ def index_bbl(name: str, force: bool = False, progress=None, cached_only: bool =
             _save(meta, t, cols, _bin_path(path.stem, i))
         arms.append({k: v for k, v in meta.items() if k not in ("fields", "events", "bbl", "file")}
                     | {"headers": {k: meta["headers"].get(k) for k in ("pitchPID", "rollPID", "yawPID", "gyro_notch1_hz")}})
-    idx = {"file": path.name, "stem": path.stem, "date": bbl_date(path), "arms": arms}
+    idx = {"v": INDEX_VERSION, "file": path.name, "stem": path.stem, "date": bbl_date(path), "arms": arms, "boots": boots(arms)}
     idx_path.write_text(json.dumps(idx, indent=1))
     return idx
+
+
+def boots(arms: list[dict]) -> list[dict]:
+    """Group arms into power cycles: uptime runs on within a boot and restarts (goes backwards) on the next.
+    Each boot: {first, last, arms: [index…], length} with length = uptime span from the first arm's start."""
+    out = []
+    for a in arms:
+        if not a.get("frames"):
+            continue
+        if out and a["uptime_start"] > out[-1]["_end"]:
+            out[-1]["arms"].append(a["index"]); out[-1]["last"] = a["index"]; out[-1]["_end"] = a["uptime_end"]
+        else:
+            out.append({"first": a["index"], "last": a["index"], "arms": [a["index"]], "_start": a["uptime_start"], "_end": a["uptime_end"]})
+    for b in out:
+        b["uptime_start"], b["uptime_end"] = b.pop("_start"), b.pop("_end")
+        b["length"] = round(b["uptime_end"] - b["uptime_start"], 1)
+    return out
 
 
 def load_arm(name: str, index: int) -> Arm:

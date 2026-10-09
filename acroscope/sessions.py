@@ -104,12 +104,24 @@ def arm_length(m: dict) -> float | None:
     return None
 
 
-def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: str = "") -> dict:
+def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: str = "", boot: bool = False) -> dict:
+    """Record video <-> arm with `offset` (video = arm time + offset). With boot=True, also record every other arm
+    of the same power cycle, their offsets derived from the FC uptime (video = uptime + boot offset)."""
     s = load(session)
     vid = video.resolve_video(session, vid).name
     bbl_name = blackbox.resolve_bbl(bbl).name
-    s["matches"] = [m for m in s["matches"] if not (m["video"] == vid and m["bbl"] == bbl_name and m["arm"] == arm)]
-    s["matches"].append({"video": vid, "bbl": bbl_name, "arm": arm, "offset": round(offset, 2), "note": note})
+    new = [(arm, round(offset, 2), note)]
+    if boot:
+        idx = blackbox.index_bbl(bbl_name)
+        meta = {a["index"]: a for a in idx["arms"]}
+        b = next((b for b in idx.get("boots", []) if arm in b["arms"]), None)
+        if b:
+            boot_offset = offset - meta[arm]["uptime_start"]
+            new = [(i, round(boot_offset + meta[i]["uptime_start"], 2), note if i == arm else f"derived from arm {arm} via uptime (boot {b['first']}-{b['last']})")
+                   for i in b["arms"]]
+    for i, off, n in new:
+        s["matches"] = [m for m in s["matches"] if not (m["video"] == vid and m["bbl"] == bbl_name and m["arm"] == i)]
+        s["matches"].append({"video": vid, "bbl": bbl_name, "arm": i, "offset": off, "note": n})
     s["matches"].sort(key=lambda m: (m["video"], m["offset"]))
     if bbl_name not in s["blackbox"]:
         s["blackbox"].append(bbl_name)
