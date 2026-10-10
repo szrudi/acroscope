@@ -147,6 +147,11 @@ class ApiTest(unittest.TestCase):
                 self.r.tag("2026-10-07-s", "2026-10-07_001.mp4", start, end, "bad", [])
         d = json.loads(urllib.request.urlopen(self.url + "/api/session/2026-10-07-s/data").read())
         self.assertEqual([m for m in d["moments"] if m["title"] == "bad"], [])
+        req = urllib.request.Request(self.url + "/api/session/2026-10-07-s/moment", method="POST",
+                                     data=b'{"video": "2026-10-07_001.mp4", "start": 5, "end": 1, "title": "bad"}')
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req)
+        self.assertEqual(cm.exception.code, 400)                                    # a client error, not a 500
 
     def test_head_sends_no_body(self):
         # a raw socket: http.client's buffered reader would swallow a stray body and hide the bug

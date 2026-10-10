@@ -113,10 +113,12 @@ class EditGuardsTest(_Scratch):
 
     def test_merge_target_is_a_session_name(self):
         S = "2026-10-09-n"
-        self.session_with_clip(S)
+        (sessions.VIDEOS_DIR / S).mkdir()
+        sessions.store().attach(S, "x.bbl")                          # logs only: no clip whose move would check the name
         with self.assertRaises(ValueError):
             sessions.merge_sessions(S, "../../x")
         self.assertTrue(sessions.store().exists(S))
+        self.assertFalse(sessions.store().exists("../../x"))
 
     def test_detach_a_log_that_is_gone(self):
         S = "2026-10-09-d"
