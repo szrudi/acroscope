@@ -7,6 +7,7 @@ matches (video <-> arm + offset) and moments. The clips and the logs themselves 
 Times are video seconds. video time = arm time + offset (offset holds within one arm; the clips have static cut
 out, so a clip's timeline is not continuous across arms). Arm details come from the blackbox cache, not from here.
 """
+import math
 import re
 import subprocess
 import sys
@@ -254,6 +255,8 @@ def unmatch(session: str, vid: str, arm: int | None = None) -> int:
 def tag(session: str, vid: str, start: float, end: float, title: str, tags: list[str], note: str = "",
         metrics: dict | None = None, mid: str | None = None) -> dict:
     """Add a moment, or replace the one with id `mid`."""
+    if not (math.isfinite(start) and math.isfinite(end)) or end < start:
+        raise ValueError(f"a moment runs from start to end, in seconds: {start}..{end}")
     return store().tag(session, resolve_clip(session, vid), start, end, title, tags, note, metrics, mid)
 
 

@@ -127,6 +127,23 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(get("events", "2026-10-06_001.mp4"), [])
         self.assertEqual(get("series", "2026-10-06_002.mp4"), [])
 
+    def test_moment_times_are_checked(self):
+        self.r.refresh("2026-10-07-s", probe_videos=False)
+        for start, end in ((1e400, 2), (float("nan"), 2), (5, 1)):
+            with self.assertRaises(RemoteError, msg=(start, end)):
+                self.r.tag("2026-10-07-s", "2026-10-07_001.mp4", start, end, "bad", [])
+        self.assertEqual(json.loads(urllib.request.urlopen(self.url + "/api/session/2026-10-07-s/data").read())["moments"], [])
+
+    def test_head_sends_no_body(self):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("HEAD", "/api/store"); r = c.getresponse(); r.read()
+        self.assertEqual(r.status, 200)
+        c.request("GET", "/api/store"); r = c.getresponse()                   # same keep-alive connection
+        self.assertEqual(r.status, 200)
+        self.assertIn("store", json.loads(r.read()))
+        c.close()
+
     def test_cli_proxy(self):
         r = self.r
         out = r.cli(["tags"])
