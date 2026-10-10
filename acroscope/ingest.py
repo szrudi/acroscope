@@ -131,9 +131,12 @@ def manifest(d: Path) -> dict:
     return man
 
 
-def check_sizes(d: Path, man: dict) -> None:
+def check_sizes(d: Path, man: dict, taken: set[str] = frozenset()) -> None:
+    """The manifest against the batch dir; `taken` are clips an earlier attempt already took out of it."""
     for name, size in (man.get("files") or {}).items():
-        f = d / plain_name(name)
+        if plain_name(name) in taken and not os.path.lexists(d / name):
+            continue
+        f = d / name
         if not os.path.lexists(f):
             raise ValueError(f"{name}: in the manifest, not in the batch")
         st = os.lstat(f)
@@ -260,56 +263,85 @@ def _unique(dst: Path) -> Path:
         i += 1
 
 
+def _place(taken: Path, part: Path, dst: Path, orig: Path) -> None:
+    """A recorded clip's files into place: the encode under videos/, the source under originals/. Each step is a
+    rename, and a retry after a crash in between does what is left."""
+    if part.exists():
+        shutil.move(part, dst)
+    if taken.exists():
+        os.rename(taken, orig)
+
+
+def _tidy(work: Path) -> None:
+    """The batch's work dir goes once nothing is left in it."""
+    for sub in (work / "out", work / "taken", work):
+        if sub.is_dir() and not any(sub.iterdir()):
+            sub.rmdir()
+
+
 def process_batch(batch: str, log=print) -> dict:
     """Consume inbox/<batch>/. Idempotent: a clip already recorded for this batch is not imported twice."""
     db = sessions.store()
     d = INBOX_DIR / plain_name(batch)
     if not d.is_dir() or d.is_symlink():
         raise FileNotFoundError(f"inbox/{batch}: no such batch")
+    work = ORIGINALS_DIR / ".ingest" / plain_name(batch)                  # root's side of the batch, until each clip is in place
     db.set_batch(batch, status="running", started_at=now().isoformat(), error=None)
     try:
         man, sc = manifest(d), sidecar(d)
-        check_sizes(d, man)
+        staged = {f.name: f for f in batch_entries(work / "taken")} if (work / "taken").is_dir() else {}
+        done_clips = db.batch_clips(batch)                               # {source name: file} from an earlier attempt
+        check_sizes(d, man, set(done_clips) | set(staged))
         date, session = batch_date_session(d, sc)
         db.ensure_session(session, date)
         db.set_batch(batch, session=session, date=date)
         entries = batch_entries(d)
-        clips = [f for f in entries if CLIP_RE.match(f.name)]
+        inbox = {f.name for f in entries if CLIP_RE.match(f.name)}
         logs = [f for f in entries if f.name.lower().endswith(".bbl")]
-        done_clips = db.batch_clips(batch)                               # {source name: file} from an earlier attempt
-        names = next_numbers(date, len([c for c in clips if c.name not in done_clips]))
-        imported = []
         (VIDEOS_DIR / session).mkdir(parents=True, exist_ok=True)
         (ORIGINALS_DIR / session).mkdir(parents=True, exist_ok=True)
-        for i, src in enumerate(clips):
-            if src.name in done_clips:
-                continue
+        # an earlier attempt died after recording a clip and before its files were in place: put them there now
+        recorded = {v["file"]: v for v in db.load(session)["videos"]}
+        for source, file in done_clips.items():
+            if source in staged and file in recorded:
+                _place(staged.pop(source), work / "out" / file, VIDEOS_DIR / session / file, DATA_DIR / recorded[file]["original"])
+        shutil.rmtree(work / "out", ignore_errors=True)                  # half an encode from a run that died
+        (work / "out").mkdir(parents=True)
+        todo = sorted((inbox | set(staged)) - set(done_clips))
+        names = next_numbers(date, len(todo))
+        imported = []
+        for i, source in enumerate(todo):
             cid, name = new_id(), names.pop(0)
-            prog = {"clip": name, "source": src.name, "step": "compress", "done": i, "total": len(clips), "pct": 0}
+            prog = {"clip": name, "source": source, "step": "compress", "done": i, "total": len(todo), "pct": 0}
             db.set_batch(batch, progress=prog)
-            log(f"{batch}: {src.name} -> {session}/{cid}.mp4 ({name})")
-            orig = _take(src, ORIGINALS_DIR / session / f"{cid}{src.suffix.lower()}")
+            log(f"{batch}: {source} -> {session}/{cid}.mp4 ({name})")
+            src = d / source
+            # out of the push user's reach first (a new push of a staged clip replaces the staged copy)
+            taken = _take(src, work / "taken" / source) if source in inbox else staged[source]
+            orig = ORIGINALS_DIR / session / f"{cid}{src.suffix.lower()}"
+            part = work / "out" / f"{cid}.mp4"                           # not under videos/ until whole: the scan would take it
             dst = VIDEOS_DIR / session / f"{cid}.mp4"
 
             def pct(x, prog=prog):
                 prog["pct"] = round(x * 100)
                 db.set_batch(batch, progress=prog)
             try:
-                res = compress(orig, dst, pct)
+                res = compress(taken, part, pct)
                 if os.geteuid() == 0:
-                    os.chown(dst, 0, 0)
-                db.upsert_video(session, dst.name, res["duration"], res["codec"], name=name)
-                db.set_video_fields(session, dst.name, cuts=res["kept"], original=str(orig.relative_to(DATA_DIR)),
-                                    original_until=(now() + timedelta(days=ORIGINAL_DAYS)).isoformat() if res["verified"] else None)
-                db.add_batch_clip(batch, src.name, dst.name, session)
+                    os.chown(part, 0, 0)
+                db.record_ingested(batch, source, session, dst.name, name, res["duration"], res["codec"], cuts=res["kept"],
+                                   original=str(orig.relative_to(DATA_DIR)),
+                                   original_until=(now() + timedelta(days=ORIGINAL_DAYS)).isoformat() if res["verified"] else None)
             except Exception:
-                dst.unlink(missing_ok=True)         # nothing half-registered for the scan to pick up as a clip
+                part.unlink(missing_ok=True)
                 if not os.path.lexists(src):
-                    os.rename(orig, src)            # back into the batch, so the retry takes it again
+                    os.rename(taken, src)           # back into the batch: the retry takes it again (or a good copy pushed over it)
                 raise
+            _place(taken, part, dst, orig)
             if not res["verified"]:
                 log(f"{batch}: {name}: compressed clip is {res['duration']} s, kept stretches add up to {sum(e - s for s, e in res['kept']):.1f} s: original kept")
             imported.append(dst.name)
+        _tidy(work)
         BLACKBOX_DIR.mkdir(parents=True, exist_ok=True)
         attached = []
         for f in logs:
@@ -337,6 +369,7 @@ def process_batch(batch: str, log=print) -> dict:
         db.set_batch(batch, status="done", finished_at=now().isoformat(), progress=None, result=result)
         return {"batch": batch, "session": session, "clips": imported, "logs": attached}
     except Exception as e:  # noqa: BLE001
+        _tidy(work)
         db.set_batch(batch, status="failed", finished_at=now().isoformat(), error=f"{type(e).__name__}: {e}")
         raise
 

@@ -125,6 +125,109 @@ class IngestTest(_Scratch):
         self.assertEqual(sorted(db.batch_clips("b3")), ["VID0001.mov", "VID0002.mov"])
         self.assertFalse(b.exists())
 
+    def two_clip_batch(self, name: str) -> Path:
+        b = self.data / "inbox" / name
+        b.mkdir(parents=True)
+        make_clip(b / "VID0001.mov")
+        shutil.copy(b / "VID0001.mov", b / "VID0002.mov")
+        (b / ".done").write_text(json.dumps({"files": {f.name: f.stat().st_size for f in b.iterdir() if not f.name.startswith(".")}}))
+        return b
+
+    def run_patched(self, batch: str, patch: str):
+        """process_batch in a child with `patch` applied first (a crash is os._exit: no except or finally runs)."""
+        code = f"from acroscope import ingest, db\nimport os, sqlite3\n{patch}\ningest.process_batch({batch!r})"
+        return subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True)
+
+    def test_a_crash_anywhere_is_finished_by_the_retry(self):
+        """The process dies (a redeploy, the OOM killer) at each step of the second clip; the retry completes the
+        batch with nothing lost, nothing twice and nothing stray."""
+        crashes = {
+            "mid-encode": """real = ingest.compress
+n = [0]
+def compress(src, dst, pct=None):
+    n[0] += 1
+    if n[0] == 2:
+        dst.parent.mkdir(parents=True, exist_ok=True); dst.write_bytes(b"half an mp4"); os._exit(9)
+    return real(src, dst, pct)
+ingest.compress = compress""",
+            "after the batch note": """real = db.Db.add_batch_clip
+n = [0]
+def add(self, *a):
+    real(self, *a); n[0] += 1
+    if n[0] == 2:
+        os._exit(9)
+db.Db.add_batch_clip = add""",
+            "while putting files in place": """real = ingest.shutil.move
+n = [0]
+def move(src, dst, *a):
+    if str(dst).endswith(".mp4"):
+        n[0] += 1
+        if n[0] == 2:
+            os._exit(9)
+    return real(src, dst, *a)
+ingest.shutil.move = move""",
+        }
+        for i, (where, patch) in enumerate(crashes.items()):
+            with self.subTest(where):
+                batch = f"crash{i}"
+                self.two_clip_batch(batch)
+                (self.data / "inbox" / batch / "import.json").write_text(json.dumps({"date": "2026-10-11", "session": f"crash {i}"}))
+                self.env["ACROSCOPE_DB"] = str(self.root / f"t{i}.db")
+                shutil.rmtree(self.data / "originals", ignore_errors=True)
+                r = self.run_patched(batch, patch)
+                self.assertEqual(r.returncode, 9, r.stderr)
+                r = self.cli("ingest", batch)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assert_consistent(self.root / f"t{i}.db", batch, 2)
+
+    def assert_consistent(self, path: Path, batch: str, clips: int):
+        """Every clip recorded once, numbered from 001, with its file and its original in place; nothing stray under
+        videos/ or originals/ (a partial encode the scan would take for a clip, an original nothing points at)."""
+        db = Db(path)
+        session = db.batches()[0]["session"]
+        vids = db.load(session)["videos"]
+        self.assertEqual(sorted(v["name"][-3:] for v in vids), [f"{i:03d}" for i in range(1, clips + 1)], vids)
+        self.assertEqual(sorted(p.name for p in (self.data / "videos" / session).iterdir()), sorted(v["file"] for v in vids))
+        originals = sorted(str(p.relative_to(self.data)) for p in (self.data / "originals").rglob("*") if p.is_file())
+        self.assertEqual(originals, sorted(v["original"] for v in vids))
+        self.assertEqual(len(db.batch_clips(batch)), clips)
+        self.assertFalse((self.data / "inbox" / batch).exists())
+
+    def test_a_late_database_error_leaves_no_row(self):
+        """The database refuses the batch note after the clip row was written ("database is locked"): the clip is
+        not half-registered (the scan would show it as missing, the retry would number it 002) and waits in the batch."""
+        b = self.two_clip_batch("late")
+        patch = """def add(self, *a):
+    raise sqlite3.OperationalError("database is locked")
+db.Db.add_batch_clip = add"""
+        r = self.run_patched("late", patch)
+        self.assertIn("database is locked", r.stderr)
+        db = Db(self.root / "t.db")
+        session = db.batches()[0]["session"]
+        self.assertEqual(db.load(session)["videos"], [])
+        self.assertEqual(list((self.data / "videos" / session).iterdir()), [])
+        self.assertTrue((b / "VID0001.mov").exists())
+        r = self.cli("ingest", "late")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_consistent(self.root / "t.db", "late", 2)
+
+    def test_retry_with_a_manifest(self):
+        """The first clip went in, the second was bad; the laptop pushes a good second clip and a new manifest. The
+        clip already taken out of the batch must not fail the size check of the retry."""
+        b = self.data / "inbox" / "man"
+        b.mkdir(parents=True)
+        make_clip(b / "VID0001.mov")
+        (b / "VID0002.mov").write_text("not a video")
+        sizes = {f.name: f.stat().st_size for f in b.iterdir()}
+        (b / ".done").write_text(json.dumps({"files": sizes}))
+        self.assertNotEqual(self.cli("ingest", "man").returncode, 0)
+        self.assertFalse((b / "VID0001.mov").exists())                   # in
+        make_clip(b / "VID0002.mov")                                     # the laptop pushes a good copy, and a new manifest
+        (b / ".done").write_text(json.dumps({"files": dict(sizes, **{"VID0002.mov": (b / "VID0002.mov").stat().st_size})}))
+        r = self.cli("ingest", "man")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_consistent(self.root / "t.db", "man", 2)
+
 
 class HostileInboxTest(_Scratch):
     def test_symlink_and_manifest_paths_fail_the_batch(self):
