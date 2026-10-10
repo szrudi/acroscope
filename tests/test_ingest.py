@@ -74,19 +74,43 @@ class IngestTest(unittest.TestCase):
         b2 = self.data / "inbox" / "b2"
         b2.mkdir()
         shutil.copy(self.data / v["original"], b2 / "VID0003.mov")
+        (b2 / "import.json").write_text(json.dumps({"date": "2026-10-11"}))
         (b2 / ".done").write_text("")
         r = self.cli("ingest", "b2")
         self.assertEqual(r.returncode, 0, r.stderr)
         res = json.loads(r.stdout)
-        self.assertTrue(res["session"].endswith("-unsorted"))
-        s2 = db.load(res["session"])
-        self.assertTrue(s2["videos"][0]["name"].endswith("_003") if res["session"].startswith("2026-10-11") else True)
+        self.assertEqual(res["session"], "2026-10-11-unsorted")
+        self.assertEqual([x["name"] for x in db.load(res["session"])["videos"]], ["2026-10-11_003"])
+        self.assertEqual(db.batch_clips("b1"), {"VID0001.mov": s["videos"][0]["file"], "VID0002.mov": s["videos"][1]["file"]})
         # retention: past the date, the original goes
         db.set_video_fields(s["session"], v["file"], original_until="2000-01-01T00:00:00+00:00")
         r = self.cli("housekeeping")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse((self.data / v["original"]).exists())
         self.assertTrue(list((self.data / "state").glob("acroscope-*.db")))
+
+    def test_failed_clip_waits_in_the_inbox(self):
+        """A clip that cannot be compressed stays in the batch for the retry; nothing is moved or half-recorded."""
+        b = self.data / "inbox" / "b3"
+        b.mkdir(parents=True)
+        (b / "VID0001.mov").write_text("not a video")
+        make_clip(b / "VID0002.mov")
+        (b / ".done").write_text("")
+        r = self.cli("ingest", "b3")
+        self.assertNotEqual(r.returncode, 0)
+        db = Db(self.root / "t.db")
+        self.assertEqual(db.batches()[0]["status"], "failed")
+        self.assertTrue((b / "VID0001.mov").exists() and (b / "VID0002.mov").exists())
+        self.assertEqual(list((self.data / "originals").glob("*/*")), [])
+        self.assertEqual(db.batch_clips("b3"), {})
+        make_clip(b / "VID0001.mov")                                 # the laptop pushes a good copy
+        db.set_batch("b3", status="pending", error=None)             # what POST /api/inbox/b3/retry does
+        self.assertEqual([b["id"] for b in json.loads(self.cli("inbox", "--json").stdout) if b["status"] == "pending"], ["b3"])
+        r = self.cli("ingest")                                       # no batch named: the pending ones
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(json.loads(r.stdout)["clips"]), 2)
+        self.assertEqual(sorted(db.batch_clips("b3")), ["VID0001.mov", "VID0002.mov"])
+        self.assertFalse(b.exists())
 
 
 if __name__ == "__main__":

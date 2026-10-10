@@ -164,11 +164,15 @@ def cmd_ingest(a):
     batches = a.batches or ingest.pending()
     if not batches:
         return print("nothing to ingest")
+    failed = 0
     for b in batches:
         try:
             out(ingest.process_batch(b, log=lambda m: print(m, file=sys.stderr)))
         except Exception as e:  # noqa: BLE001
             print(f"{b}: FAILED {type(e).__name__}: {e}", file=sys.stderr)
+            failed += 1
+    if failed:
+        sys.exit(1)
 
 
 def cmd_housekeeping(a):

@@ -217,13 +217,13 @@ def process_batch(batch: str, log=print) -> dict:
             db.set_batch(batch, progress=prog)
             log(f"{batch}: {src.name} -> {session}/{cid}.mp4 ({name})")
             orig = ORIGINALS_DIR / session / f"{cid}{src.suffix.lower()}"
-            shutil.move(str(src), orig)
             dst = VIDEOS_DIR / session / f"{cid}.mp4"
 
             def pct(x, prog=prog):
                 prog["pct"] = round(x * 100)
                 db.set_batch(batch, progress=prog)
-            res = compress(orig, dst, pct)
+            res = compress(src, dst, pct)       # from the inbox: a clip that fails here stays there for the retry
+            shutil.move(str(src), orig)
             db.upsert_video(session, dst.name, res["duration"], res["codec"], name=name)
             db.set_video_fields(session, dst.name, cuts=res["kept"], original=str(orig.relative_to(DATA_DIR)),
                                 original_until=(now() + timedelta(days=ORIGINAL_DAYS)).isoformat() if res["verified"] else None)
@@ -262,9 +262,8 @@ def process_batch(batch: str, log=print) -> dict:
 
 
 def pending() -> list[str]:
-    """Batch dirs with a .done marker that are not done or running."""
-    return [b["id"] for b in list_inbox() if b.get("status") in ("pending", "failed") and (INBOX_DIR / b["id"] / ".done").exists()
-            and b.get("status") != "failed"]
+    """Batch dirs with a .done marker that are pending (a failed one waits for a retry, which sets it pending)."""
+    return [b["id"] for b in list_inbox() if b.get("status") == "pending" and (INBOX_DIR / b["id"] / ".done").exists()]
 
 
 # ---- housekeeping ---------------------------------------------------------------------------------------------------
