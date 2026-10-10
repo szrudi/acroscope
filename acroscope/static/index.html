@@ -140,7 +140,7 @@ const tagDef = t => TAGS.tags.find(x => x.name === t);
 const catDef = c => TAGS.categories.find(x => x.name === c);
 const tagColor = t => tagDef(t)?.color || catDef(tagDef(t)?.category)?.color || '#9aa3b2';
 const passes = m => !filter.size || (m.tags || []).some(t => filter.has(t));
-const pill = t => `<span class="tag" style="--c:${tagColor(t)}">${esc(t)}</span>`;
+const pill = t => `<span class="tag" style="--c:${esc(tagColor(t))}">${esc(t)}</span>`;
 const fmt = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); };
 const parse = s => { s = String(s).trim(); if (s.includes(':')) { const [m, x] = s.split(':'); return +m * 60 + +x; } return +s; };
 const api = (p, o) => fetch(p, o).then(r => r.json());
@@ -154,7 +154,7 @@ async function init() {
   TAGS = await api('/api/tags');
   const list = await api('/api/sessions');
   const sel = $('#session');
-  if (!list.length) { $('#status').textContent = 'no sessions yet: drop a batch into inbox/ or a folder into videos/'; return; }
+  if (!list.length) { $('#status').textContent = 'no sessions yet: drop a batch into inbox/ or a folder into videos/'; setTimeout(init, 10000); return; }
   sel.innerHTML = list.slice().reverse().map(s => `<option value="${esc(s.session)}">${esc(s.session)} · ${s.videos} clips · ${s.moments} moments</option>`).join('');
   sel.onchange = () => loadSession(sel.value);
   // the URL wins over what was open last time: ?session=…&clip=007&m=m13&t=80.5 is a link to a spot
@@ -217,7 +217,7 @@ function renderClips() {
     const n = S.moments.filter(m => m.video === x.file).length;
     const arms = ms.length ? ms.map(m => `<b>arm ${m.arm}</b> +${m.offset}s`).join(', ') : 'no log';
     const warn = x.missing_since ? ` <span class="warn">file missing since ${x.missing_since.slice(0, 10)}</span>` : (x.codec === 'hevc' && !canHevc) ? ' <span class="warn">H.265: this browser may not play it</span>' : '';
-    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${x.file}" title="${esc(x.name || x.file)}"><span class="n">${esc(clipNum(x.file))}<button class="small mv" data-mv="${x.file}" title="move this clip to another session">⇄</button></span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${esc(x.note)}</span>` : ''}</div>`;
+    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${esc(x.file)}" title="${esc(x.name || x.file)}"><span class="n">${esc(clipNum(x.file))}<button class="small mv" data-mv="${esc(x.file)}" title="move this clip to another session">⇄</button></span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${esc(x.note)}</span>` : ''}</div>`;
   }).join('') || '<div class="empty">no clips</div>';
   document.querySelectorAll('.clip').forEach(el => el.onclick = e => { if (e.target.dataset.mv) return moveClip(e.target.dataset.mv); loadClip(el.dataset.f); });
   renderLogs();
@@ -326,7 +326,7 @@ function renderTagbar() {
     if (!ts.length) continue;
     const allOn = ts.every(t => filter.has(t));
     h += `<span class="cat ${allOn ? 'on' : ''}" data-c="${esc(c)}" title="toggle the whole category">${esc(c)}</span>`;
-    h += ts.map(t => `<span class="chip ${filter.has(t) ? 'on' : ''}" data-t="${esc(t)}" style="--c:${tagColor(t)}">${esc(t)}<span class="n">${use[t]}</span></span>`).join('');
+    h += ts.map(t => `<span class="chip ${filter.has(t) ? 'on' : ''}" data-t="${esc(t)}" style="--c:${esc(tagColor(t))}">${esc(t)}<span class="n">${use[t]}</span></span>`).join('');
   }
   if (filter.size) h += ` <button class="small" id="clearFilter">clear</button>`;
   h += `<button class="small mgr" id="openTagMgr" title="categories, tags, colours">⚙ tags</button>`;
@@ -375,10 +375,10 @@ function renderMoments() {
   renderTagbar();
   const ms = momentsShown();
   $('#mcount').textContent = `(${ms.length})`;
-  $('#moments').innerHTML = ms.map(m => `<div class="m ${cur === m.id ? 'on' : ''}" data-id="${m.id}">
+  $('#moments').innerHTML = ms.map(m => `<div class="m ${cur === m.id ? 'on' : ''}" data-id="${esc(m.id)}">
     <img loading="lazy" src="/frame/${encodeURIComponent(S.session)}/${encodeURIComponent(m.video)}/${(m.start + Math.min(2, (m.end - m.start) / 2)).toFixed(2)}">
     <span class="ttl">${esc(m.title)} ${(m.tags || []).map(pill).join('')}</span>
-    <span class="act"><button class="small" data-link="${m.id}" title="copy link">⛓</button><button class="small" data-edit="${m.id}" title="edit">✎</button><button class="small" data-del="${m.id}" title="delete">✕</button></span>
+    <span class="act"><button class="small" data-link="${esc(m.id)}" title="copy link">⛓</button><button class="small" data-edit="${esc(m.id)}" title="edit">✎</button><button class="small" data-del="${esc(m.id)}" title="delete">✕</button></span>
     <span class="t">${$('#allClips').checked ? clipNum(m.video) + ' · ' : ''}${fmt(m.start)}–${fmt(m.end)}${m.metrics ? ' · ' + metricLine(m.metrics) : ''}</span>
     <span class="note">${esc(m.note || '')}</span></div>`).join('') || '<div class="empty">no moments yet: set in/out with <kbd>i</kbd> <kbd>o</kbd>, then <kbd>t</kbd></div>';
   document.querySelectorAll('.m').forEach(el => el.onclick = e => {
@@ -470,7 +470,7 @@ function openEditor(m) {
   $('#edId').textContent = m.id || 'new'; $('#edIn').value = fmt(m.start); $('#edOut').value = fmt(m.end);
   $('#edTitle').value = m.title || ''; $('#edNote').value = m.note || ''; $('#edWhy').textContent = m.why || '';
   const tags = new Set(m.tags || []);
-  const chip = t => `<span class="chip ${tags.has(t) ? 'on' : ''}" data-t="${esc(t)}" style="--c:${tagColor(t)}">${esc(t)}</span>`;
+  const chip = t => `<span class="chip ${tags.has(t) ? 'on' : ''}" data-t="${esc(t)}" style="--c:${esc(tagColor(t))}">${esc(t)}</span>`;
   let h = '';
   for (const c of TAGS.categories) { const ts = TAGS.tags.filter(t => t.category === c.name); if (ts.length) h += `<span class="cat">${esc(c.name)}</span>` + ts.map(t => chip(t.name)).join(''); }
   const loose = [...tags].filter(t => !tagDef(t)); if (loose.length) h += `<span class="cat">other</span>` + loose.map(chip).join('');
