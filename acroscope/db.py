@@ -302,6 +302,8 @@ class Db:
 
     def move_clip(self, session: str, file: str, to: str) -> None:
         """A clip and its matches and moments go to another session (the file keeps its name: it is the id)."""
+        if to == session:
+            return
         self.ensure_session(to, to[:10])
         self.c.execute("BEGIN IMMEDIATE")   # the write lock first: a read-then-write transaction cannot wait out a concurrent commit
         try:
