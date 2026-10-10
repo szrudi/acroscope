@@ -40,6 +40,16 @@ class ResolveClipTest(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             sessions.resolve_clip(S, "007")
         self.assertEqual(sessions.resolve_clip(S, "2026-10-08_007"), "2026-10-08_007.mp4")
+        with self.assertRaises(ValueError):
+            sessions.resolve_clip("../../etc", "007")                                    # a name, never a path
+
+    def test_original_mov_beside_its_mp4_is_one_clip(self):
+        S = "2026-10-07-s"
+        (sessions.VIDEOS_DIR / S).mkdir()
+        for f in ("2026-10-07_007.mov", "2026-10-07_007.mp4"):
+            (sessions.VIDEOS_DIR / S / f).write_bytes(b"")
+            sessions.store().upsert_video(S, f)
+        self.assertEqual(sessions.resolve_clip(S, "007"), "2026-10-07_007.mp4")
 
 
 class EditGuardsTest(ResolveClipTest):
@@ -96,6 +106,19 @@ class EditGuardsTest(ResolveClipTest):
         import shutil
         shutil.rmtree(d)
         self.assertEqual(missing(), [])                                  # nor does a missing one
+
+    def test_merge_target_is_a_session_name(self):
+        S = "2026-10-09-n"
+        self.session_with_clip(S)
+        with self.assertRaises(ValueError):
+            sessions.merge_sessions(S, "../../x")
+        self.assertTrue(sessions.store().exists(S))
+
+    def test_detach_a_log_that_is_gone(self):
+        S = "2026-10-09-d"
+        self.session_with_clip(S)
+        sessions.store().attach(S, "deleted.bbl")                    # attached once, the file removed since
+        self.assertEqual(sessions.detach(S, "deleted.bbl"), [])
 
     def test_merge_carries_logs_and_notes(self):
         A, B = "2026-10-09-a", "2026-10-09-b"

@@ -73,6 +73,7 @@ def resolve_session(name: str) -> str:
 def resolve_clip(session: str, file: str) -> str:
     """A clip's file name (its id on disk) from its file name, its readable name ('2026-10-07_007'), its number
     ('007'/'7') or a path; a clip that is only in the database (file gone) still resolves."""
+    _check_name(session)
     vids = load(session)["videos"]
     by_file = {v["file"]: v for v in vids}
     if file in by_file:
@@ -82,10 +83,11 @@ def resolve_clip(session: str, file: str) -> str:
     hits = [v["file"] for v in vids if v.get("name") == file or Path(v["file"]).stem == file]
     if file.isdigit():
         hits += [v["file"] for v in vids if (v.get("name") or "").endswith(f"_{int(file):03d}")]
-    if len(set(hits)) == 1:
+    hits = sorted(set(hits), key=lambda f: Path(f).suffix.lower() != ".mp4")   # the compressed .mp4 before an original .mov beside it
+    if hits and len({Path(f).stem for f in hits}) == 1:
         return hits[0]
-    if len(set(hits)) > 1:
-        raise FileNotFoundError(f"{file}: {len(set(hits))} clips match (need exactly 1)")
+    if len(hits) > 1:
+        raise FileNotFoundError(f"{file}: {len(hits)} clips match (need exactly 1)")
     return video.resolve_video(session, file).name     # a file not registered yet, or a FileNotFoundError
 
 
@@ -273,7 +275,8 @@ def attach(session: str, bbl: str) -> list[str]:
 
 
 def detach(session: str, bbl: str) -> list[str]:
-    return store().detach(session, bbl if remote() else blackbox.resolve_bbl(bbl).name)
+    known = bbl in load(session)["blackbox"]          # a log that was deleted from blackbox/ can still be detached by name
+    return store().detach(session, bbl if remote() or known else blackbox.resolve_bbl(bbl).name)
 
 
 def purge(session: str, vid: str | None = None, days: float = 0) -> list[dict]:
@@ -357,6 +360,8 @@ def merge_sessions(session: str, into: str) -> dict:
     _mounted()
     if into == session:
         raise ValueError(f"{session}: cannot merge a session into itself")
+    if not SESSION_RE.match(into):
+        raise ValueError(f"{into}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
     s = load(session)
     for v in s["videos"]:
         move_clip(session, v["file"], into)
@@ -376,5 +381,7 @@ def import_json(session: str | None = None) -> list[dict]:
     """Import the pre-database videos/<session>/session.json files (one session, or every one found)."""
     if remote():
         return store().import_json(session)
+    if session:
+        _check_name(session)
     paths = [session_path(session)] if session else [session_path(d.name) for d in session_dirs()]
     return [store().import_json(p) for p in paths if p.exists()]
