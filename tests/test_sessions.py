@@ -7,7 +7,8 @@ from acroscope import blackbox, sessions, video
 from acroscope.db import Db
 
 
-class ResolveClipTest(unittest.TestCase):
+class _Scratch(unittest.TestCase):
+    """A database and a videos/ folder of their own, patched into the modules; no test of its own."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
@@ -22,6 +23,15 @@ class ResolveClipTest(unittest.TestCase):
         sessions._store, sessions.VIDEOS_DIR, video.VIDEOS_DIR, sessions.DATA_DIR, blackbox.BLACKBOX_DIR = self.saved
         self.tmp.cleanup()
 
+    def session_with_clip(self, name, file="2026-10-09_001.mp4"):
+        (sessions.VIDEOS_DIR / name).mkdir()
+        (sessions.VIDEOS_DIR / name / file).write_bytes(b"")
+        sessions.refresh(name, probe_videos=False)
+        sessions.tag(name, file, 1, 2, "keep me", [])
+        return file
+
+
+class ResolveClipTest(_Scratch):
     def test_ingested_clip_by_id_name_or_number(self):
         S = "2026-10-07-s"
         sessions.store().upsert_video(S, "c0ffee0001.mp4", name="2026-10-07_003")      # the file name is the id
@@ -52,14 +62,7 @@ class ResolveClipTest(unittest.TestCase):
         self.assertEqual(sessions.resolve_clip(S, "007"), "2026-10-07_007.mp4")
 
 
-class EditGuardsTest(ResolveClipTest):
-    def session_with_clip(self, name, file="2026-10-09_001.mp4"):
-        (sessions.VIDEOS_DIR / name).mkdir()
-        (sessions.VIDEOS_DIR / name / file).write_bytes(b"")
-        sessions.refresh(name, probe_videos=False)
-        sessions.tag(name, file, 1, 2, "keep me", [])
-        return file
-
+class EditGuardsTest(_Scratch):
     def test_merge_into_itself_is_refused(self):
         S = "2026-10-09-g"
         f = self.session_with_clip(S)
@@ -71,6 +74,7 @@ class EditGuardsTest(ResolveClipTest):
     def test_rename_checks_every_target_before_moving(self):
         S = "2026-10-09-h"
         self.session_with_clip(S)
+        (sessions.DATA_DIR / "originals" / S).mkdir(parents=True)              # so the old code moved videos/ first, then failed here
         (sessions.DATA_DIR / "originals" / "2026-10-10-taken").mkdir(parents=True)
         with self.assertRaises(ValueError):
             sessions.rename_session(S, "2026-10-10-taken")
