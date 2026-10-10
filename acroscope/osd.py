@@ -24,16 +24,26 @@ from .config import VIDEOS_DIR
 # cell geometry on a 720x480 frame: digit cells d1 d2 : d3 d4 per timer row, 24 px pitch from x 559 in both layouts
 # (glyph surveys of 2026-10-09 and 2026-10-10). `rows` are the y of each timer row top to bottom, `names` what the
 # labels file calls them.
+# A layout: x0 and pitch of the character cells, the y of each timer row, what the labels file calls the rows, the
+# format of each row ("dd:dd" = MM:SS, "dd:dd.d" = MM:SS and tenths; any other character is a cell to skip), the
+# glyph box inside a cell (x, w, y, h) for the font, whether the one timer is the cumulative total, and which
+# template set the font uses (a layout with the same font as another shares its templates).
+GLYPH_SMALL = (4, 10, 3, 18)      # the stock font: 8 px wide at x+5..x+13, 16 tall at y+4..y+20
+GLYPH_BOLD = (1, 18, 1, 22)       # the bold font flown since 2026-10-10: 14 px wide at x+3..x+16, 19 tall at y+2..y+20
 LAYOUTS = {
-    "otto": {"x0": 559, "pitch": 24, "rows": [362, 398], "names": ["top", "bottom"], "cumulative": False},
-    "air65f": {"x0": 559, "pitch": 24, "rows": [434], "names": ["total"], "cumulative": True},
+    "otto": {"x0": 559, "pitch": 24, "rows": [362, 398], "names": ["top", "bottom"], "formats": ["dd:dd", "dd:dd"],
+             "glyph": GLYPH_SMALL, "cumulative": False},
+    "air65f": {"x0": 559, "pitch": 24, "rows": [434], "names": ["total"], "formats": ["dd:dd"], "glyph": GLYPH_SMALL,
+               "cumulative": True},
     # same OSD one column further right (10-04 clips 005/006, after a settings change); same font, same templates
-    "air65f-b": {"x0": 583, "pitch": 24, "rows": [434], "names": ["total"], "cumulative": True, "templates": "air65f"},
+    "air65f-b": {"x0": 583, "pitch": 24, "rows": [434], "names": ["total"], "formats": ["dd:dd"], "glyph": GLYPH_SMALL,
+                 "cumulative": True, "templates": "air65f"},
+    # 2026-10-10: bold font, the arm timer with tenths (MM:SS.T) above the total
+    "otto-bold": {"x0": 558, "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd.d", "dd:dd"],
+                  "glyph": GLYPH_BOLD, "cumulative": False},
 }
 SHIFTS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]   # the analog picture jitters a pixel or so
-H = 25
-OSD_VERSION = 5     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
-DIGIT_COLS = (0, 1, 3, 4)
+OSD_VERSION = 6     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
 TEMPLATES = Path(__file__).parent / "static" / "osd-templates.json"
 BLANK_STD = 25.0                                   # glyph-box contrast below this = no digit
 
@@ -41,8 +51,15 @@ BLANK_STD = 25.0                                   # glyph-box contrast below th
 def _crop(layout: str) -> tuple[int, int, int, int]:
     """x, y, w, h of the strip holding every timer row of a layout (even height: ffmpeg pads odd crops)."""
     L = LAYOUTS[layout]
-    h = L["rows"][-1] + H - L["rows"][0]
-    return L["x0"], L["rows"][0], 5 * L["pitch"], h + h % 2
+    gx, gw, gy, gh = L["glyph"]
+    cells = max(len(f) for f in L["formats"])
+    h = L["rows"][-1] + gy + gh + 2 - L["rows"][0]
+    w = min(cells * L["pitch"] + 2, 720 - L["x0"])
+    return L["x0"], L["rows"][0], w + w % 2, h + h % 2
+
+
+def digit_cols(layout: str, row: int) -> list[int]:
+    return [i for i, ch in enumerate(LAYOUTS[layout]["formats"][row]) if ch == "d"]
 
 
 def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None = None, layout: str = "otto"):
@@ -67,16 +84,15 @@ def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None 
     p.wait()
 
 
-# the glyph sits in the left third of its 24 px cell: 8 px wide at x+5..x+13, 16 px tall at y+4..y+20
-GLYPH_X, GLYPH_W, GLYPH_Y, GLYPH_H = 4, 10, 3, 18
-
-
 def _cell(buf: bytes, col: int, row: int, layout: str = "otto", dx: int = 0, dy: int = 0) -> list[float]:
-    """Normalised pixel vector of one digit glyph (GLYPH_W x GLYPH_H), shifted by (dx, dy); [] when blank."""
+    """Normalised pixel vector of one digit glyph (the layout's glyph box), shifted by (dx, dy); [] when blank."""
     L = LAYOUTS[layout]
+    gx, gw, gy, gh = L["glyph"]
     w = _crop(layout)[2]
-    cx, cy = col * L["pitch"] + GLYPH_X + dx, (L["rows"][row] - L["rows"][0]) + GLYPH_Y + dy
-    v = [float(buf[(cy + j) * w + cx + i]) for j in range(GLYPH_H) for i in range(GLYPH_W)]
+    cx, cy = col * L["pitch"] + gx + dx, (L["rows"][row] - L["rows"][0]) + gy + dy
+    if cx < 0 or cx + gw > w:
+        return []
+    v = [float(buf[(cy + j) * w + cx + i]) for j in range(gh) for i in range(gw)]
     m = sum(v) / len(v)
     sd = math.sqrt(sum((a - m) ** 2 for a in v) / len(v))
     if sd < BLANK_STD:
@@ -115,38 +131,47 @@ def _classify(buf: bytes, col: int, row: int, layout: str, templates: dict) -> t
     return top[1], top[0] - second[0]
 
 
-def read_frame(buf: bytes, templates: dict, layout: str = "otto") -> tuple[int | None, int | None, float]:
+def _value(digits: list) -> float | None:
+    """Seconds from the digits of a "dd:dd" or "dd:dd.d" row; None when a digit is unreadable or impossible."""
+    if any(d is None for d in digits):
+        return None
+    m, sec = digits[0] + digits[1], digits[2] + digits[3]
+    if int(sec[0]) > 5:                   # MM:SS, so the tens of seconds is 0-5
+        return None
+    v = int(m) * 60 + int(sec)
+    return v + int(digits[4]) / 10 if len(digits) > 4 else v
+
+
+def read_frame(buf: bytes, templates: dict, layout: str = "otto") -> tuple[float | None, float | None, float]:
     """(top seconds, bottom seconds, min confidence) from one crop; None when a timer is not readable. With the
     single cumulative timer, `top` is always None and `bottom` carries the total."""
     out = []
     conf = 1.0
-    for row in range(len(LAYOUTS[layout]["rows"])):
+    for row in range(len(LAYOUTS[layout]["formats"])):
         digits = []
-        for col in DIGIT_COLS:
+        for col in digit_cols(layout, row):
             d, c = _classify(buf, col, row, layout, templates)
             digits.append(d)
             if d is not None:
                 conf = min(conf, c)
-        if any(d is None for d in digits) or int(digits[2]) > 5:   # MM:SS, so the tens of seconds is 0-5
-            out.append(None)
-        else:
-            out.append((int(digits[0]) * 10 + int(digits[1])) * 60 + int(digits[2]) * 10 + int(digits[3]))
+        out.append(_value(digits))
     if LAYOUTS[layout]["cumulative"]:
         return None, out[0], conf
     return out[0], out[1], conf
 
 
-def detect_layout(path: Path, seconds: float = 90.0) -> str:
-    """The layout whose readings make sense: sampled at 1 fps over the clip's first `seconds`, score a layout by
-    the consecutive readings of its total timer that stand still or count on (0..2 s apart). Wrong cells still
-    read like digits, but they don't count."""
-    best = ("otto", -1)
+def detect_layout(path: Path, fps: float = 0.5) -> str:
+    """The layout whose readings make sense: sampled at `fps` over the whole clip, score a layout by the pairs of
+    consecutive readings of its total timer that count on at 1 s/s. Wrong cells read like digits too, and static
+    text reads the same wrong digits every time, so standing still does not count; only counting does."""
+    best = ("otto", 0)
+    step = 1 / fps
     for name in LAYOUTS:
         tpl = _load_templates(name)   # layouts sharing templates are told apart by where the digits are
         if not tpl:
             continue
-        vals = [read_frame(buf, tpl, name)[1] for _, buf in _frames(path, 1.0, 0.0, seconds, name)]
-        n = sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and 0 <= b - a <= 2)
+        vals = [read_frame(buf, tpl, name)[1] for _, buf in _frames(path, fps, layout=name)]
+        n = sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and step - 0.6 <= b - a <= step + 0.6)
         if n > best[1]:
             best = (name, n)
     return best[0]
@@ -197,23 +222,30 @@ def _drop_ghosts(arms: list[dict]) -> list[dict]:
     return kept
 
 
-def arms_from_timers(rows: list[dict], fps: float = 2.0, min_readings: int = 3) -> list[dict]:
+def arms_from_timers(rows: list[dict], fps: float = 2.0, min_readings: int = 4) -> list[dict]:
     """Arms from the two-timer readings: every reading of the top timer implies a start time (t - timer), so the
     readings of one arm cluster at the same start while misread digits scatter. [{start, end, length, total_before}]
-    in video seconds. The OSD shows floor(seconds); the OSD-implied start sits ~0.2 s before the real one."""
+    in video seconds. The OSD shows floor(seconds); the OSD-implied start sits ~0.2 s before the real one.
+    Four readings at 2 fps means arms of about 2 s and up; garbage read off static or the STATS screen seldom
+    agrees with itself that long."""
     # a reading of 0 (the arm's first second) says little about the start and biases the key: left out, as calibrated
     pts = sorted((r["t"] - r["top"], r["t"], r["top"], r["bottom"]) for r in rows if r["top"] and r["conf"] >= 0.01)
     arms = []
     for c in _clusters(pts):
         vs = [p[2] for p in c]
-        if len(c) < min_readings or max(vs) - min(vs) < 1:      # the timer must have counted
-            continue
         c.sort(key=lambda p: p[1])
+        # a frozen timer (the last arm's time shown while disarmed) drifts and is cut into pieces by the cluster
+        # spread; each piece shows one value for more than a second, which a real arm's readings never do
+        if len(c) < min_readings or (max(vs) == min(vs) and c[-1][1] - c[0][1] > 1.2):
+            continue
         keys = sorted(p[0] for p in c)
-        start = keys[len(keys) // 2] + 0.2     # calibrated on 10-09 008 against impact-refined offsets (spread ±0.4 s)
+        # the timer shows floor(seconds): the implied start sits ~0.2 s early (calibrated on 10-09 008 against
+        # impact-refined offsets); with tenths on the timer the bias is a tenth of that
+        tenths = any(p[2] != int(p[2]) for p in c)
+        start = keys[len(keys) // 2] + (0.02 if tenths else 0.2)
         vmax = max(vs)
         tb = [p[3] - p[2] for p in c if p[3] is not None]
-        arms.append({"start": round(start, 2), "end": round(c[-1][1], 2), "length": round(vmax + 0.5, 2), "timer_max": vmax,
+        arms.append({"start": round(start, 2), "end": round(c[-1][1], 2), "length": round(vmax + (0.05 if tenths else 0.5), 2), "timer_max": vmax,
                      "total_before": sorted(tb)[len(tb) // 2] if tb else None, "readings": len(c)})
     return _drop_ghosts(arms)
 
@@ -240,11 +272,11 @@ def arms_from_cumulative(rows: list[dict], min_readings: int = 3) -> list[dict]:
     return _drop_ghosts(arms)
 
 
-def video_arms(rt: dict, fps: float = 2.0, min_readings: int = 3) -> list[dict]:
-    """The arm runs of a read_timers() result, by its layout."""
+def video_arms(rt: dict, fps: float = 2.0) -> list[dict]:
+    """The arm runs of a read_timers() result, by its layout (each method has its own minimum of readings)."""
     if LAYOUTS[rt["layout"]]["cumulative"]:
-        return arms_from_cumulative(rt["rows"], min_readings)
-    return arms_from_timers(rt["rows"], fps, min_readings)
+        return arms_from_cumulative(rt["rows"])
+    return arms_from_timers(rt["rows"], fps)
 
 
 def _elapsed(v: dict, l: dict) -> float | None:
@@ -293,14 +325,14 @@ def align(video_arms: list[dict], log_arms: list[dict], tol: float = 2.0, w_tota
     return pairs[::-1]
 
 
-def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, min_readings: int = 3, overwrite: bool = False) -> dict:
+def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, overwrite: bool = False) -> dict:
     """Propose (and with write=True record) matches for one clip from its OSD timers and the session's logs.
     Existing matches of the clip are kept unless overwrite=True (a hand-refined offset beats an OSD one)."""
     s = sessions.load(session)
     path = video.resolve_video(session, clip)
     rt = read_timers(path, fps)
     rows = rt["rows"]
-    varms = [a for a in video_arms(rt, fps) if a["readings"] >= min_readings]
+    varms = video_arms(rt, fps)
     # arms already matched to another clip of the session are taken: an arm is in one clip
     taken = {(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] != path.name}
     # a clip comes from one flash dump, so align against each log separately and keep the best alignment
@@ -348,18 +380,23 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, mi
 
 def learn(labels: list[dict]) -> dict:
     """labels: [{session, clip, t, layout, <row name>: 'MM:SS', ...}] (row names per LAYOUTS; layout defaults to
-    otto). Takes the median cell features per digit, per layout, and writes every layout's templates."""
+    otto; a '?' in a value skips that cell; `fps` (default 1) is the sampling the frame was read at, so the
+    learner sees the very same frame). Takes the median cell features per digit, per layout, and writes every
+    layout's templates."""
     acc: dict[str, dict[str, list[list[float]]]] = {}
     for lb in labels:
         layout = lb.get("layout", "otto")
+        fps = lb.get("fps", 1)
         path = video.resolve_video(sessions.resolve_session(lb["session"]), lb["clip"])
-        t, buf = next(_frames(path, fps=1, start=lb["t"], end=lb["t"] + 1, layout=layout))
+        t, buf = next(_frames(path, fps=fps, start=lb["t"], end=lb["t"] + 1 / fps, layout=layout))
         for row, key in enumerate(LAYOUTS[layout]["names"]):
             txt = lb.get(key)
             if not txt:
                 continue
-            digits = txt.replace(":", "")
-            for col, d in zip(DIGIT_COLS, digits):
+            digits = txt.replace(":", "").replace(".", "")
+            for col, d in zip(digit_cols(layout, row), digits):
+                if d == "?":
+                    continue
                 f = _cell(buf, col, row, layout)
                 if f:
                     acc.setdefault(_template_key(layout), {}).setdefault(d, []).append(f)

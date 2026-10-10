@@ -509,5 +509,141 @@
   "t": 167.5,
   "layout": "air65f",
   "total": "00:19"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 10,
+  "layout": "otto-bold",
+  "top": "00:02.2",
+  "bottom": "00:02"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 20,
+  "layout": "otto-bold",
+  "top": "00:00.9",
+  "bottom": "00:11"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40,
+  "layout": "otto-bold",
+  "top": "00:12.4",
+  "bottom": "00:27"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 50,
+  "layout": "otto-bold",
+  "top": "00:22.4",
+  "bottom": "00:37"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 70,
+  "layout": "otto-bold",
+  "top": "00:15.0",
+  "bottom": "00:59"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 80,
+  "layout": "otto-bold",
+  "top": "00:25.0",
+  "bottom": "01:09"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.0,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.0"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.1,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.0"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.2,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.1"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.3,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.2"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.4,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.3"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.5,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.4"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.6,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.5"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.7,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.6"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.8,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.7"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 40.9,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:??.8"
+ },
+ {
+  "session": "2026-10-10",
+  "clip": "001",
+  "t": 46.0,
+  "fps": 10,
+  "layout": "otto-bold",
+  "top": "??:?8.?"
  }
 ]
