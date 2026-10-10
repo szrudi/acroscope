@@ -147,9 +147,10 @@ def background_scans():
 
 
 def _under(root: Path, *parts: str) -> Path:
-    """root/parts, refused when it would leave root (a '..' or an encoded slash inside a path segment)."""
+    """root/parts, refused when it would leave root (a '..' or an encoded slash inside a path segment). Lexical,
+    so a session folder that is a symlink to somewhere else still serves."""
     p = root.joinpath(*parts)
-    if not p.resolve().is_relative_to(root.resolve()):
+    if not Path(os.path.normpath(p)).is_relative_to(Path(os.path.normpath(root))):
         raise FileNotFoundError(f"{'/'.join(parts)}: not under {root.name}")
     return p
 

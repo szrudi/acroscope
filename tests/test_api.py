@@ -198,6 +198,11 @@ class ApiTest(unittest.TestCase):
                 urllib.request.urlopen(self.url + path)
             self.assertEqual(cm.exception.code, 404, path)
         self.assertTrue((Path(self.tmp.name) / "t.db").exists())
+        elsewhere = Path(self.tmp.name) / "elsewhere"                        # a session folder that is a symlink still serves
+        elsewhere.mkdir()
+        (elsewhere / "2026-10-04_001.mp4").write_bytes(b"")
+        (Path(self.tmp.name) / "data" / "videos" / "2026-10-04-link").symlink_to(elsewhere)
+        self.assertEqual(urllib.request.urlopen(self.url + "/video/2026-10-04-link/2026-10-04_001.mp4").status, 200)
 
     def test_tags_api(self):
         r = self.r
