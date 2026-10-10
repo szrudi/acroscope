@@ -90,6 +90,16 @@ class Remote:
     def merge_sessions(self, session, into) -> dict:
         return self._call("POST", self._s(session) + "/merge", {"into": into})
 
+    def cli(self, args: list[str]) -> dict:
+        return self._call("POST", "/api/cli", {"args": args})
+
+    def fetch(self, path: str, dest):
+        """A file the server's CLI made (under its cache dir) into `dest`."""
+        q = urllib.parse.urlencode({"path": path})
+        with urllib.request.urlopen(self.url + "/api/file?" + q, timeout=600) as r, open(dest, "wb") as f:
+            f.write(r.read())
+        return dest
+
     def batches(self) -> list[dict]:
         return self._call("GET", "/api/inbox")
 

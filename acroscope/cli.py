@@ -432,6 +432,29 @@ def cmd_serve(a):
     serve(a.host, a.port, warm=not a.no_warm)
 
 
+# with ACROSCOPE_URL set these run on the server (they need the clips, the logs or the cache); frames and sheets
+# come back as files into the local cache under the same relative path
+PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch"}
+
+
+def _proxy(argv: list[str]) -> None:
+    r = sessions.store().cli(argv)
+    if r["stderr"]:
+        print(r["stderr"], end="", file=sys.stderr)
+    if argv[0] in ("frame", "sheet") and r["code"] == 0:
+        for line in r["stdout"].splitlines():
+            if not line.strip():
+                continue
+            rel = line.strip().split("/.cache/acroscope/", 1)[-1] if "/.cache/acroscope/" in line else line.strip().split("/cache/", 1)[-1]
+            dest = CACHE_DIR / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            sessions.store().fetch(line.strip(), dest)
+            print(dest)
+    else:
+        print(r["stdout"], end="")
+    sys.exit(r["code"])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="acroscope", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     class Version(argparse.Action):   # the store is opened only when asked: `--help` must not create a database
@@ -518,6 +541,9 @@ def main(argv=None):
     p.add_argument("--no-warm", action="store_true", help="don't decode/probe everything in the background at start"); p.set_defaults(f=cmd_serve)
 
     a = ap.parse_args(argv)
+    args = list(sys.argv[1:] if argv is None else argv)
+    if a.cmd in PROXIED and sessions.remote():
+        return _proxy(args)
     a.f(a)
 
 

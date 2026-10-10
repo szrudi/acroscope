@@ -18,13 +18,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import blackbox, events as ev, ingest, metrics, sessions, video
-from .config import VIDEOS_DIR
+from .config import CACHE_DIR, VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
 _lock = threading.Lock()
 _busy: set[str] = set()          # blackbox files being decoded / sessions being probed right now
 _busy_lock = threading.Lock()
 SCAN_EVERY = 300                 # seconds between background walks of the data dir
+# CLI commands a client may run here (they need the clips, the logs or the cache, which only the server has);
+# each runs in a child process, so the reader's pure-Python work never holds this process's GIL
+PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox"}
 INBOX_EVERY = 20                 # seconds between looks at inbox/ for a complete batch
 
 
@@ -51,6 +54,15 @@ def _cli(*args: str):
     30 s per file inside this server; a child process keeps requests responsive and uses another core."""
     env = dict(os.environ, ACROSCOPE_URL="")      # the child writes the database directly, never through this server
     subprocess.run([sys.executable, "-m", "acroscope.cli", *args], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+
+
+def run_cli(args: list[str]) -> dict:
+    """A client's CLI command, run here: {stdout, stderr, code}. Only PROXIED commands."""
+    if not args or args[0] not in PROXIED:
+        raise ValueError(f"not a command a client may run here: {args[:1]}")
+    env = dict(os.environ, ACROSCOPE_URL="")
+    r = subprocess.run([sys.executable, "-m", "acroscope.cli", *args], capture_output=True, text=True, env=env, timeout=1800)
+    return {"stdout": r.stdout, "stderr": r.stderr, "code": r.returncode}
 
 
 def _decode_async(bbl: str):
@@ -231,6 +243,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
             if parts == ["api", "inbox"]:
                 return self._json(ingest.list_inbox())
+            if parts == ["api", "file"]:                      # a file the CLI made here (a frame, a sheet): cache only
+                p = Path(q.get("path", "")).resolve()
+                if not p.is_relative_to(CACHE_DIR.resolve()):
+                    return self._json({"error": "not a cache file"}, 403)
+                return self._file(p, cache="max-age=86400")
             if parts[:2] == ["api", "store"]:
                 return self._json({"store": repr(sessions.store()), "data": str(VIDEOS_DIR.parent)})
             if parts == ["api", "tags"]:
@@ -295,6 +312,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parts == ["api", "scan"]:
                 return self._json(sessions.scan())
+            if parts == ["api", "cli"]:
+                return self._json(run_cli([str(x) for x in self._body().get("args", [])]))
             if parts == ["api", "import"]:
                 return self._json(sessions.import_json(self._body().get("session")))
             if parts[:2] == ["api", "inbox"] and len(parts) == 4 and parts[3] == "retry":

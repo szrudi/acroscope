@@ -88,6 +88,18 @@ class ApiTest(unittest.TestCase):
         with self.assertRaises(RemoteError):
             r.rename_session("2026-10-09-renamed", "not a session name")
 
+    def test_cli_proxy(self):
+        r = self.r
+        out = r.cli(["tags"])
+        self.assertEqual(out["code"], 0, out["stderr"])
+        self.assertIn("tricks", out["stdout"])
+        with self.assertRaises(RemoteError):
+            r.cli(["serve"])                                   # not for clients
+        # the file endpoint hands out cache files only
+        import urllib.error
+        with self.assertRaises(urllib.error.HTTPError):
+            urllib.request.urlopen(self.url + "/api/file?path=/etc/hostname")
+
     def test_tags_api(self):
         r = self.r
         t = r.tags()

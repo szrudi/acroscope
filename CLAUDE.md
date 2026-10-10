@@ -17,7 +17,9 @@ architecture and the CLI). This file is for the session that changes the code.
   `state/`. The CLI on joan must talk to that server: `export ACROSCOPE_URL=http://10.10.10.17:8070` (without it
   the CLI opens a private local database and says so on stderr). After the move joan has no mount: frames and
   sheets come from the server. The `videos/<session>/session.json` files are the pre-database format, imported
-  once; nothing reads them any more.
+  once; nothing reads them any more. With `ACROSCOPE_URL` set, the CLI's data-reading commands (`cli.PROXIED`)
+  run on the server through `POST /api/cli` (child process, allow-listed in `server.PROXIED`) and frames/sheets
+  come back through `GET /api/file` into the local cache; nothing on joan needs the clips.
 - Ingest (`acroscope/ingest.py`) replaces the laptop's `cobra-import.sh`/`cobra-compress.py`: the laptop only
   drops a batch into `inbox/` with a `.done` marker. Test it with `tests/test_ingest.py` (a synthetic MJPEG clip
   with a grey stretch, the CLI in a child process against a scratch data dir); the compressor's cut rules are the
