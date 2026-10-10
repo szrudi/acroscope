@@ -21,7 +21,8 @@ def make_clip(path: Path) -> None:
                     "-c:a", "pcm_s16le", str(path)], check=True)
 
 
-class IngestTest(unittest.TestCase):
+class _Scratch(unittest.TestCase):
+    """A scratch data dir and database; the CLI runs in a child against them."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -36,6 +37,8 @@ class IngestTest(unittest.TestCase):
     def cli(self, *args):
         return subprocess.run([sys.executable, "-m", "acroscope.cli", *args], env=self.env, capture_output=True, text=True)
 
+
+class IngestTest(_Scratch):
     def test_keep_segments(self):
         sig, noise = [60] * 20, [15] * 20
         self.assertEqual(ingest.keep_segments(noise + sig + noise, 30), [(9.0, 21.0)])      # static at both ends trimmed, padded
@@ -63,7 +66,10 @@ class IngestTest(unittest.TestCase):
         v = s["videos"][0]
         self.assertTrue(v["file"].startswith("c") and v["file"].endswith(".mp4"))
         self.assertEqual(v["codec"], "h264")
-        self.assertEqual(v["cuts"], [[0, 4.0], [9.0, 13.0]])                                   # the 7 s of grey cut, 1 s padding kept
+        # the 7 s of grey cut, 1 s of padding kept; the clip's end lands a little past 13 s (ffmpeg's -shortest with audio)
+        self.assertEqual(v["cuts"][0], [0, 4.0])
+        self.assertEqual(v["cuts"][1][0], 9.0)
+        self.assertTrue(13.0 <= v["cuts"][1][1] <= 13.5, v["cuts"])
         self.assertAlmostEqual(v["duration"], 8.0, delta=1.5)
         self.assertTrue(v["original"].startswith("originals/2026-10-11-Test-Flight/") and v["original_until"])
         self.assertTrue((self.data / v["original"]).exists())
@@ -89,7 +95,7 @@ class IngestTest(unittest.TestCase):
         self.assertTrue(list((self.data / "state").glob("acroscope-*.db")))
 
 
-class HostileInboxTest(IngestTest):
+class HostileInboxTest(_Scratch):
     def test_symlink_and_manifest_paths_fail_the_batch(self):
         b = self.data / "inbox" / "evil"
         b.mkdir(parents=True)
