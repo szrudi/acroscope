@@ -116,9 +116,27 @@ async function init() {
   const sel = $('#session');
   sel.innerHTML = list.slice().reverse().map(s => `<option value="${s.session}">${s.session} · ${s.videos} clips · ${s.moments} moments</option>`).join('');
   sel.onchange = () => loadSession(sel.value);
-  const last = localStorage.getItem('acro.session');
-  sel.value = list.some(s => s.session === last) ? last : (list.filter(s => s.moments).pop() || list[list.length - 1]).session;
-  loadSession(sel.value, localStorage.getItem('acro.clip'));
+  // the URL wins over what was open last time: ?session=…&clip=007&m=m13&t=80.5 is a link to a spot
+  const q = new URLSearchParams(location.search);
+  const want = q.get('session') || localStorage.getItem('acro.session');
+  sel.value = list.some(s => s.session === want) ? want : (list.filter(s => s.moments).pop() || list[list.length - 1]).session;
+  await loadSession(sel.value, q.get('clip') || localStorage.getItem('acro.clip'));
+  if (q.get('m') && S.moments.some(m => m.id === q.get('m'))) playMoment(q.get('m'));
+  else if (q.get('t') && clip) { v.currentTime = +q.get('t'); setUrl(); }
+}
+
+// keep the address bar a link to what is on screen (no history entries: back/forward stay the browser's)
+function setUrl() {
+  if (!S) return;
+  const q = new URLSearchParams({session: S.session});
+  if (clip) q.set('clip', /_\d{3}\.\w+$/.test(clip) ? clip.slice(-7, -4) : clip);
+  if (cur) q.set('m', cur);
+  else if (clip && v.paused && v.currentTime > 0) q.set('t', v.currentTime.toFixed(1));
+  history.replaceState(null, '', '?' + q.toString());
+}
+function momentLink(id) { const m = S.moments.find(x => x.id === id); return `${location.origin}/?${new URLSearchParams({session: S.session, clip: m.video.slice(-7, -4), m: id})}`; }
+async function copyLink(id) {
+  try { await navigator.clipboard.writeText(momentLink(id)); flash('link copied'); } catch { prompt('link', momentLink(id)); }
 }
 
 async function loadSession(name, wantClip) {
@@ -132,8 +150,9 @@ async function loadSession(name, wantClip) {
   clearTimeout(window._poll);
   if (pending) window._poll = setTimeout(() => { if (S.session === name) refreshSession(); }, 8000);
   renderClips();
-  const c = S.videos.find(x => x.file === wantClip) || S.videos.find(x => S.moments.some(m => m.video === x.file)) || S.videos[0];
-  if (c) loadClip(c.file); else { clip = null; v.removeAttribute('src'); renderMoments(); drawStrip(); }
+  const c = S.videos.find(x => x.file === wantClip || (wantClip && x.file.slice(-7, -4) === wantClip.padStart(3, '0')))
+    || S.videos.find(x => S.moments.some(m => m.video === x.file)) || S.videos[0];
+  if (c) await loadClip(c.file); else { clip = null; v.removeAttribute('src'); renderMoments(); drawStrip(); setUrl(); }
 }
 
 async function refreshSession() {
@@ -162,7 +181,7 @@ function renderClips() {
 
 async function loadClip(file) {
   clip = file; cur = null; loopM = null; closeEditor();
-  localStorage.setItem('acro.clip', file);
+  localStorage.setItem('acro.clip', file); setUrl();
   const gone = S.videos.find(x => x.file === file)?.missing_since;
   if (gone) { v.removeAttribute('src'); v.load(); } else v.src = `/video/${encodeURIComponent(S.session)}/${encodeURIComponent(file)}`;
   renderClips(); renderMoments(); drawStrip();
@@ -180,10 +199,11 @@ function renderMoments() {
   $('#moments').innerHTML = ms.map(m => `<div class="m ${cur === m.id ? 'on' : ''}" data-id="${m.id}">
     <img loading="lazy" src="/frame/${encodeURIComponent(S.session)}/${encodeURIComponent(m.video)}/${(m.start + Math.min(2, (m.end - m.start) / 2)).toFixed(2)}">
     <span class="ttl">${esc(m.title)} ${(m.tags || []).map(t => `<span class="tag">${t}</span>`).join('')}</span>
-    <span class="act"><button class="small" data-edit="${m.id}" title="edit">✎</button><button class="small" data-del="${m.id}" title="delete">✕</button></span>
+    <span class="act"><button class="small" data-link="${m.id}" title="copy link">⛓</button><button class="small" data-edit="${m.id}" title="edit">✎</button><button class="small" data-del="${m.id}" title="delete">✕</button></span>
     <span class="t">${$('#allClips').checked ? m.video.slice(-7, -4) + ' · ' : ''}${fmt(m.start)}–${fmt(m.end)}${m.metrics ? ' · ' + metricLine(m.metrics) : ''}</span>
     <span class="note">${esc(m.note || '')}</span></div>`).join('') || '<div class="empty">no moments yet: set in/out with <kbd>i</kbd> <kbd>o</kbd>, then <kbd>t</kbd></div>';
   document.querySelectorAll('.m').forEach(el => el.onclick = e => {
+    if (e.target.dataset.link) return copyLink(e.target.dataset.link);
     if (e.target.dataset.edit) return editMoment(e.target.dataset.edit);
     if (e.target.dataset.del) return delMoment(e.target.dataset.del);
     playMoment(el.dataset.id);
@@ -211,7 +231,7 @@ function renderSugg() {
 function playMoment(id) {
   const m = S.moments.find(x => x.id === id); if (!m) return;
   if (m.video !== clip) { loadClip(m.video).then(() => playMoment(id)); return; }
-  cur = id; v.currentTime = m.start; v.play(); renderMoments();
+  cur = id; v.currentTime = m.start; v.play(); renderMoments(); setUrl();
   document.querySelector(`.m[data-id="${id}"]`)?.scrollIntoView({block: 'nearest'});
 }
 function step(d) { const ms = momentsShown(); if (!ms.length) return; const i = ms.findIndex(m => m.id === cur); playMoment(ms[(i + d + ms.length) % ms.length].id); }
@@ -220,6 +240,7 @@ v.addEventListener('timeupdate', () => {
   drawStrip(); readout();
 });
 v.addEventListener('loadedmetadata', drawStrip);
+for (const ev of ['pause', 'seeked', 'play']) v.addEventListener(ev, setUrl);   // paused: the URL carries the time
 v.addEventListener('error', () => { $('#readout').innerHTML = `<b style="color:var(--bad)">cannot play this clip</b> (${clip}: ${canHevc ? 'load error' : 'H.265 and this browser has no HEVC decoder; run acroscope transcode'})`; });
 
 function armAt(t) { // series entry whose arm covers video time t
@@ -320,7 +341,7 @@ document.addEventListener('keydown', e => {
   else h = false;
   if (h) { e.preventDefault(); e.stopPropagation(); }
 }, true);   // capture phase: the focused <video controls> would otherwise handle space/arrows too and undo ours
-function flash(s) { $('#status').textContent = s; setTimeout(() => $('#status').textContent = S?.note || '', 1500); }
+function flash(s) { $('#status').textContent = s; setTimeout(() => $('#status').textContent = '', 1500); }
 init();
 </script>
 </body>
