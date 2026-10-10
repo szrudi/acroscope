@@ -64,11 +64,14 @@ python3 -m venv .venv && .venv/bin/pip install -e .     # needs ffmpeg/ffprobe o
 `pip install orangebox` ends with an "Invalid script entry point: bb2csv" error from orangebox 0.5.0's wheel;
 the package is installed anyway (the Dockerfile tolerates it and checks the import).
 
+The data dir on joan (`~/gdrive/fpv`) was Rudi's Drive folder and stops being updated with the move; the CLI there
+works through the server (`ACROSCOPE_URL`).
+
 ## Deployment
 
-The homelab runs it as the Komodo stack `acroscope` (one container from `Dockerfile` + `compose.yaml`: today still
-the rclone Drive mount plus `acroscope serve`; `compose.bindmount.yaml` is the target once the data dir is a bind
-mount, szrudi/homelab#102), reachable at `acroscope.hakhorst.eu`. The live database is on the host in
+The homelab runs it as the Komodo stack `acroscope` (one container from `Dockerfile` + `compose.yaml`: `acroscope
+serve` over CT 109's bind mount of the `Data/fpv` dataset, szrudi/homelab#102), reachable at
+`acroscope.hakhorst.eu`. The live database is on the host in
 `/opt/acroscope/state`; a nightly copy lands in the data dir's `state/`, so clips and index restore from one
 snapshot. Hosting notes live in the homelab repo, `services/acroscope.md`.
 

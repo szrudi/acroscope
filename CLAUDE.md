@@ -9,8 +9,9 @@ architecture and the CLI). This file is for the session that changes the code.
   Unit tests only for the database (`.venv/bin/python -m unittest discover tests`); the real-data runs below are the
   rest of the test suite. `gh` on this machine is logged in as `joan-grazo`, so issues and PRs filed from here carry
   that account.
-- Data: the data dir (`ACROSCOPE_DATA`) is moving from Rudi's Drive folder (`~/gdrive/fpv` on joan, rclone) to a
-  bind mount of the homelab's `Data/fpv` dataset on CT 109 (szrudi/homelab#102; this repo's #5 is the app side).
+- Data: the data dir (`ACROSCOPE_DATA`) is CT 109's `/data`, a bind mount of the homelab's `Data/fpv` dataset
+  (szrudi/homelab#102; this repo's #5 was the app side). joan's `~/gdrive/fpv` is the old Drive mount, frozen at
+  the 2026-10-10 copy: fine for the real-data tests, not for anything new.
   It holds clips, logs, the inbox and the originals; matches, moments and notes are in the server's SQLite database
   (`acroscope/db.py`), live at `/opt/acroscope/state/acroscope.db` on LXC 109 with a nightly copy in the data dir's
   `state/`. The CLI on joan must talk to that server: `export ACROSCOPE_URL=http://10.10.10.17:8070` (without it

@@ -1,27 +1,15 @@
-# Komodo stack `acroscope` (homelab), the Drive variant still deployed today. Builds this repo; the container mounts
-# the Google Drive "FPV drone" folder. The target after szrudi/homelab#102 is compose.bindmount.yaml: swap the two
-# files and drop rclone from Dockerfile/entrypoint.sh in the same commit.
-# The container mounts the Google Drive "FPV drone" folder
-# at /data with rclone and serves the player on :8070. The rclone config (OAuth token for the `gdrive` remote,
-# root_folder_id pinned to the folder) is a host file outside the stack dir, never in git or in the stack env.
+# Komodo stack `acroscope` (homelab). Builds this repo; the container serves the player and the API on :8070 over
+# CT 109's bind mount of the Data/fpv dataset (clips, logs, inbox, originals, state): szrudi/homelab#102.
 services:
   acroscope:
     build: .
     image: acroscope:local
     container_name: acroscope
     restart: unless-stopped
+    # runs as root: Data/fpv is owned by CT 109's root (host uid 100000); inbox/ belongs to the push user fpvpush
     ports:
       - "8070:8070"
-    environment:
-      RCLONE_CONFIG: /config/rclone.conf
-      GDRIVE_CACHE_SIZE: ${GDRIVE_CACHE_SIZE:-6G}
     volumes:
-      - /opt/acroscope/rclone:/config          # rclone.conf (0600); writable so refreshed tokens persist
-      - /opt/acroscope/cache:/cache            # decoded arms, frames, H.264 proxies, rclone VFS cache
-      - /opt/acroscope/state:/state            # the database (matches, moments, notes): the one thing to back up
-    devices:
-      - /dev/fuse
-    cap_add:
-      - SYS_ADMIN
-    security_opt:
-      - apparmor:unconfined
+      - /data:/data                            # CT 109's mp0 of Data/fpv: videos/, blackbox/, inbox/, originals/, state/
+      - /opt/acroscope/cache:/cache            # decoded arms, frames, OSD readings, H.264 proxies: disposable
+      - /opt/acroscope/state:/state            # the database (matches, moments, notes): backed up nightly into /data/state too
