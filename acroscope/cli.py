@@ -335,7 +335,10 @@ def cmd_serve(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="acroscope", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--version", action="version", version=f"acroscope (data {DATA_DIR}, cache {CACHE_DIR}, store {sessions.store()})")
+    class Version(argparse.Action):   # the store is opened only when asked: `--help` must not create a database
+        def __call__(self, parser, ns, values, option_string=None):
+            print(f"acroscope (data {DATA_DIR}, cache {CACHE_DIR}, store {sessions.store()})"); parser.exit()
+    ap.add_argument("--version", action=Version, nargs=0)
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     p = sp.add_parser("sessions", help="list sessions, or show one (videos, arms, matches, moments)")
