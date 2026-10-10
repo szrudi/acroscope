@@ -16,10 +16,11 @@ class TagsTest(unittest.TestCase):
 
     def test_seeded(self):
         t = self.db.tags()
-        self.assertEqual([c["name"] for c in t["categories"]], ["tricks", "milestones", "poi"])
+        self.assertEqual([c["name"] for c in t["categories"]], ["tricks", "milestones", "poi", "technical"])
         by = {x["name"]: x for x in t["tags"]}
         self.assertEqual(by["flip"]["category"], "tricks")
         self.assertEqual(by["milestone"]["category"], "milestones")
+        self.assertEqual(by["crash"]["category"], "technical")
         self.assertEqual(by["poi"]["category"], "poi")
         self.assertTrue(all(c["color"].startswith("#") for c in t["categories"]))
         self.assertEqual([x["name"] for x in t["tags"]][:3], ["flip", "roll", "powerloop"])   # kept in order
@@ -32,9 +33,9 @@ class TagsTest(unittest.TestCase):
         by = {x["name"]: x for x in t["tags"]}
         self.assertEqual((by["hover"]["category"], by["hover"]["color"]), ("cruise", None))
         self.assertEqual((by["flip"]["category"], by["flip"]["color"]), ("cruise", "#123456"))
-        self.assertEqual(t["categories"][-1], {"name": "cruise", "color": "#00ff00", "pos": 3})
+        self.assertEqual(t["categories"][-1], {"name": "cruise", "color": "#00ff00", "pos": 4})
         self.db.set_category("cruise", "#0f0f0f")                   # colour change keeps the position
-        self.assertEqual(self.db.tags()["categories"][-1]["pos"], 3)
+        self.assertEqual(self.db.tags()["categories"][-1]["pos"], 4)
         with self.assertRaises(ValueError):
             self.db.set_tag("x", "no-such-category")
 

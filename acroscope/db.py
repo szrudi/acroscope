@@ -39,11 +39,13 @@ CREATE TABLE IF NOT EXISTS tags (
 
 # The tag vocabulary a new database starts with: categories with a colour, tags with the colour the player used
 # per tag before categories existed (so the strip looks the same). Free-text tags on moments need no definition.
-SEED_CATEGORIES = [("tricks", "#f5a524"), ("milestones", "#5fd68b"), ("poi", "#9aa3b2")]
+# tricks: the manoeuvres. milestones: firsts. poi: nice views and other things worth seeing again.
+# technical: what went wrong with the quad (crashes, gyro kicks, motor loss).
+SEED_CATEGORIES = [("tricks", "#f5a524"), ("milestones", "#5fd68b"), ("poi", "#9aa3b2"), ("technical", "#ff6b6b")]
 SEED_TAGS = [("flip", "tricks", "#f5a524"), ("roll", "tricks", "#ffd166"), ("powerloop", "tricks", "#4cc2ff"),
              ("split-s", "tricks", "#8ab4ff"), ("dive", "tricks", "#9b7bff"), ("orbit", "tricks", "#5fd68b"),
-             ("milestone", "milestones", None),
-             ("crash", "poi", "#ff6b6b"), ("gyro-kick", "poi", "#ff9f6b"), ("motor-loss", "poi", "#ff6bd6"), ("poi", "poi", None)]
+             ("milestone", "milestones", None), ("poi", "poi", None),
+             ("crash", "technical", "#ff6b6b"), ("gyro-kick", "technical", "#ff9f6b"), ("motor-loss", "technical", "#ff6bd6")]
 
 
 def now() -> str:
