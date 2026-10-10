@@ -110,6 +110,23 @@ class ApiTest(unittest.TestCase):
         self.assertNotIn("file not found", r.stdout)
         self.assertEqual(self.r.unmatch("2026-10-07-s", "2026-10-07_001.mp4", 1), 1)
 
+    def test_undecoded_log_is_not_decoded_in_the_request(self):
+        """A match on a log that is not in the cache yet: events and series answer empty and the decode runs in a
+        child, as CLAUDE.md demands (the decoder holds the GIL for ~30 s per file)."""
+        root = Path(self.tmp.name)
+        S = "2026-10-06-cold"
+        (root / "data" / "videos" / S).mkdir()
+        for f in ("2026-10-06_001.mp4", "2026-10-06_002.mp4"):
+            (root / "data" / "videos" / S / f).write_bytes(b"")
+        for b in ("z1.bbl", "z2.bbl"):
+            (root / "data" / "blackbox" / b).write_bytes(b"")
+        self.r.refresh(S, probe_videos=False)
+        self.r.set_match(S, "2026-10-06_001.mp4", "z1.bbl", 1, 0)
+        self.r.set_match(S, "2026-10-06_002.mp4", "z2.bbl", 1, 0)
+        get = lambda what, clip: json.loads(urllib.request.urlopen(f"{self.url}/api/session/{S}/{what}?video={clip}").read())
+        self.assertEqual(get("events", "2026-10-06_001.mp4"), [])
+        self.assertEqual(get("series", "2026-10-06_002.mp4"), [])
+
     def test_cli_proxy(self):
         r = self.r
         out = r.cli(["tags"])

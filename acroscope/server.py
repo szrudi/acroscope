@@ -72,6 +72,15 @@ def _decode_async(bbl: str):
     _background(f"decode:{bbl}", lambda: _cli("arms", bbl))
 
 
+def _indexed(bbl: str) -> bool:
+    """True when the log's arms are in the cache. Else start the decode in a child and answer False: a request
+    thread must never decode (30 s with the GIL held freezes every other request)."""
+    if blackbox.index_bbl(bbl, cached_only=True) is not None:
+        return True
+    _decode_async(bbl)
+    return False
+
+
 def _probe_async(session: str):
     # ffprobe is a subprocess, so a thread is fine here (unlike decoding)
     _background(f"probe:{session}", lambda: sessions.refresh(session))
@@ -293,7 +302,7 @@ class Handler(BaseHTTPRequestHandler):
                     s = sessions.load(name)
                     rows = []
                     for m in s["matches"]:
-                        if q.get("video") and m["video"] != q["video"]:
+                        if (q.get("video") and m["video"] != q["video"]) or not _indexed(m["bbl"]):
                             continue
                         for e in _events(m["bbl"], m["arm"]):
                             rows.append({**e, "video": m["video"], "start": round(e["arm_from"] + m["offset"], 2), "end": round(e["arm_to"] + m["offset"], 2)})
@@ -302,7 +311,7 @@ class Handler(BaseHTTPRequestHandler):
                     s = sessions.load(name)
                     out = []
                     for m in s["matches"]:
-                        if m["video"] == q.get("video"):
+                        if m["video"] == q.get("video") and _indexed(m["bbl"]):
                             out.append({"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **_series(m["bbl"], m["arm"], float(q.get("step", 0.1)))})
                     return self._json(out)
                 if parts[3] == "metrics":
@@ -311,6 +320,8 @@ class Handler(BaseHTTPRequestHandler):
                     m = sessions.match_for(s, q["video"], t0)
                     if not m:
                         return self._json({"error": "no match"}, 404)
+                    if not _indexed(m["bbl"]):
+                        return self._json({"error": f"{m['bbl']}: not decoded yet, try again shortly"}, 503)
                     a = blackbox.load_arm(m["bbl"], m["arm"])
                     return self._json({"summary": metrics.summary(a, t0 - m["offset"], t1 - m["offset"]),
                                        "segments": metrics.rotation_segments(a, t0 - m["offset"], t1 - m["offset"])})
