@@ -131,6 +131,19 @@ def cmd_import_json(a):
     out(sessions.import_json(_session(a.session) if a.session else None))
 
 
+def cmd_session(a):
+    s = _session(a.session)
+    if a.action == "rename":
+        r = sessions.rename_session(s, a.arg)
+    elif a.action == "date":
+        r = sessions.set_date(s, a.arg)
+    elif a.action == "move":
+        r = sessions.move_clip(s, a.arg, a.to)
+    elif a.action == "merge":
+        r = sessions.merge_sessions(s, a.arg)
+    out({"session": r["session"], "videos": len(r["videos"]), "matches": len(r["matches"]), "moments": len(r["moments"])})
+
+
 def cmd_inbox(a):
     rows = ingest.list_inbox()
     if a.json:
@@ -442,6 +455,9 @@ def main(argv=None):
     p.set_defaults(f=cmd_purge)
     p = sp.add_parser("import-json", help="one-off: import the pre-database videos/<session>/session.json files")
     p.add_argument("session", nargs="?"); p.set_defaults(f=cmd_import_json)
+    p = sp.add_parser("session", help="edit a session: rename <new>, date <YYYY-MM-DD>, move <clip> <to-session>, merge <into-session>")
+    p.add_argument("action", choices=["rename", "date", "move", "merge"]); p.add_argument("session"); p.add_argument("arg")
+    p.add_argument("to", nargs="?", help="for move: the session the clip goes to"); p.set_defaults(f=cmd_session)
     p = sp.add_parser("inbox", help="the batches in inbox/ and their status"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_inbox)
     p = sp.add_parser("ingest", help="consume inbox batches now (all pending ones, or the named ones); the server does this on its own")
     p.add_argument("batches", nargs="*"); p.set_defaults(f=cmd_ingest)

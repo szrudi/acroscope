@@ -85,3 +85,35 @@ class DbTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EditTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Db(Path(self.tmp.name) / "t.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_rename_move_delete(self):
+        A, B = "2026-10-11-a", "2026-10-11-b"
+        self.db.upsert_video(A, "c1.mp4", name="2026-10-11_001")
+        self.db.upsert_video(A, "c2.mp4", name="2026-10-11_002")
+        self.db.attach(A, "x.bbl")
+        self.db.set_match(A, "c1.mp4", "x.bbl", 1, 2.0)
+        self.db.tag(A, "c1.mp4", 0, 1, "m", ["flip"])
+        self.db.set_note(A, "note a")
+        self.db.rename_session(A, "2026-10-12-renamed")
+        s = self.db.load("2026-10-12-renamed")
+        self.assertEqual((s["date"], s["note"], len(s["videos"]), s["blackbox"], len(s["matches"]), len(s["moments"])),
+                         ("2026-10-12", "note a", 2, ["x.bbl"], 1, 1))
+        self.assertFalse(self.db.exists(A))
+        with self.assertRaises(ValueError):
+            self.db.rename_session("2026-10-12-renamed", "2026-10-12-renamed")
+        self.db.move_clip("2026-10-12-renamed", "c1.mp4", B)
+        b = self.db.load(B)
+        self.assertEqual(([v["file"] for v in b["videos"]], len(b["matches"]), len(b["moments"])), (["c1.mp4"], 1, 1))
+        self.assertEqual([v["file"] for v in self.db.load("2026-10-12-renamed")["videos"]], ["c2.mp4"])
+        self.db.delete_session(B)
+        self.assertFalse(self.db.exists(B))
+        self.assertEqual(self.db.load(B)["videos"], [])          # cascaded

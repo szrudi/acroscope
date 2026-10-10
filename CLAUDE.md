@@ -9,12 +9,19 @@ architecture and the CLI). This file is for the session that changes the code.
   Unit tests only for the database (`.venv/bin/python -m unittest discover tests`); the real-data runs below are the
   rest of the test suite. `gh` on this machine is logged in as `joan-grazo`, so issues and PRs filed from here carry
   that account.
-- Data: `~/gdrive/fpv` = Rudi's Drive "FPV drone" folder, mounted by rclone (Rudi's laptop syncs it with Insync, the
-  hosted container mounts it with rclone). It holds clips and logs only. Matches, moments and notes are in the
-  server's SQLite database (`acroscope/db.py`); the hosted one is `/opt/acroscope/state/acroscope.db` on LXC 109,
-  the one thing to back up. The CLI on joan must talk to that server: `export ACROSCOPE_URL=http://10.10.10.17:8070`
-  (without it the CLI opens a private local database and says so on stderr). The `videos/<session>/session.json`
-  files are the pre-database format, imported once; nothing reads them any more.
+- Data: the data dir (`ACROSCOPE_DATA`) is moving from Rudi's Drive folder (`~/gdrive/fpv` on joan, rclone) to a
+  bind mount of the homelab's `Data/fpv` dataset on CT 109 (szrudi/homelab#102; this repo's #5 is the app side).
+  It holds clips, logs, the inbox and the originals; matches, moments and notes are in the server's SQLite database
+  (`acroscope/db.py`), live at `/opt/acroscope/state/acroscope.db` on LXC 109 with a nightly copy in the data dir's
+  `state/`. The CLI on joan must talk to that server: `export ACROSCOPE_URL=http://10.10.10.17:8070` (without it
+  the CLI opens a private local database and says so on stderr). After the move joan has no mount: frames and
+  sheets come from the server. The `videos/<session>/session.json` files are the pre-database format, imported
+  once; nothing reads them any more.
+- Ingest (`acroscope/ingest.py`) replaces the laptop's `cobra-import.sh`/`cobra-compress.py`: the laptop only
+  drops a batch into `inbox/` with a `.done` marker. Test it with `tests/test_ingest.py` (a synthetic MJPEG clip
+  with a grey stretch, the CLI in a child process against a scratch data dir); the compressor's cut rules are the
+  old script's, pinned in `test_keep_segments`. A clip's file name is its id; its readable `<date>_NNN` name is a
+  column; `resolve_clip` takes either, or the number.
 - The data dir has its own docs. Its `CLAUDE.md` is the flight-analysis session's brief (gear, decoder quirks,
   history, and the acroscope workflow that session follows: keep that bullet in step with CLI changes).
   `app-handover.md` holds the plan, the decisions (H.264 for Chrome, digit templates instead of OCR, VLC playlists

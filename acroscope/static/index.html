@@ -30,6 +30,11 @@
   .arm.has { cursor:pointer } .arm.has:hover { background:#232832 }
   .arm .n { color:var(--fg) } .arm .l { color:var(--dim) } .arm .c b { color:var(--acc2); font-weight:500 } .arm .c .no { color:var(--bad) }
   .arm .c .flag { color:var(--dim) }
+  .batch { padding:8px 12px; border-bottom:1px solid var(--line); font-size:12px }
+  .batch .id { font-weight:600 } .batch .st { color:var(--dim) } .batch .st.failed { color:var(--bad) } .batch .st.done { color:var(--ok) }
+  .batch .err { color:var(--bad); white-space:pre-wrap } .batch .pg { height:4px; background:#0f1115; border-radius:2px; margin-top:4px } .batch .pg i { display:block; height:4px; background:var(--acc2); border-radius:2px }
+  .clip .mv { float:right; opacity:0; font-size:11px } .clip:hover .mv { opacity:.8 }
+  header button.small { padding:2px 6px }
   .right { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; overflow:hidden }
   .clip { padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; display:grid; grid-template-columns:1fr auto; gap:2px 8px }
   .clip:hover { background:#232832 } .clip.on { background:#2a3140; border-left:3px solid var(--acc) }
@@ -84,14 +89,16 @@
 <header>
   <h1>acroscope</h1>
   <select id="session"></select>
+  <button class="small" id="renameSession" title="rename this session (YYYY-MM-DD-name); the date is the first ten characters">✎</button>
   <span id="status" style="color:var(--dim)"></span>
   <span class="keys"><kbd>space</kbd> play <kbd>←</kbd><kbd>→</kbd> 2 s <kbd>,</kbd><kbd>.</kbd> frame <kbd>i</kbd><kbd>o</kbd> in/out <kbd>t</kbd> tag <kbd>n</kbd><kbd>p</kbd> next/prev <kbd>l</kbd> loop</span>
 </header>
 <main>
   <aside>
-    <div class="tabs"><span class="tab on" data-tab="clips">clips</span><span class="tab" data-tab="logs">logs</span></div>
+    <div class="tabs"><span class="tab on" data-tab="clips">clips</span><span class="tab" data-tab="logs">logs</span><span class="tab" data-tab="inbox">inbox <span id="inboxCount"></span></span></div>
     <div class="pane-body" id="clips"></div>
     <div class="pane-body" id="logs" style="display:none"></div>
+    <div class="pane-body" id="inbox" style="display:none"></div>
   </aside>
   <section class="center">
     <video id="v" controls preload="metadata"></video>
@@ -209,11 +216,48 @@ function renderClips() {
     const n = S.moments.filter(m => m.video === x.file).length;
     const arms = ms.length ? ms.map(m => `<b>arm ${m.arm}</b> +${m.offset}s`).join(', ') : 'no log';
     const warn = x.missing_since ? ` <span class="warn">file missing since ${x.missing_since.slice(0, 10)}</span>` : (x.codec === 'hevc' && !canHevc) ? ' <span class="warn">H.265: this browser may not play it</span>' : '';
-    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${x.file}" title="${esc(x.name || x.file)}"><span class="n">${esc(clipNum(x.file))}</span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${x.note}</span>` : ''}</div>`;
+    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${x.file}" title="${esc(x.name || x.file)}"><span class="n">${esc(clipNum(x.file))}<button class="small mv" data-mv="${x.file}" title="move this clip to another session">⇄</button></span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${x.note}</span>` : ''}</div>`;
   }).join('') || '<div class="empty">no clips</div>';
-  document.querySelectorAll('.clip').forEach(el => el.onclick = () => loadClip(el.dataset.f));
+  document.querySelectorAll('.clip').forEach(el => el.onclick = e => { if (e.target.dataset.mv) return moveClip(e.target.dataset.mv); loadClip(el.dataset.f); });
   renderLogs();
 }
+
+// ---- editing sessions: rename (the date is the name's first ten characters), move a clip; both save at once
+async function renameSession() {
+  const name = prompt('session name (YYYY-MM-DD or YYYY-MM-DD-name)', S.session);
+  if (!name || name === S.session) return;
+  const r = await api(`/api/session/${encodeURIComponent(S.session)}/rename`, {method: 'POST', body: JSON.stringify({name})});
+  if (r.error) { alert(r.error); return; }
+  await init(); $('#session').value = name; await loadSession(name, clip);
+}
+async function moveClip(file) {
+  const others = [...$('#session').options].map(o => o.value).filter(n => n !== S.session);
+  const to = prompt(`move ${clipName(file)} to session (existing: ${others.slice(0, 6).join(', ')}${others.length > 6 ? ', …' : ''}; or a new YYYY-MM-DD-name)`, S.session);
+  if (!to || to === S.session) return;
+  const r = await api(`/api/session/${encodeURIComponent(S.session)}/move`, {method: 'POST', body: JSON.stringify({video: file, to})});
+  if (r.error) { alert(r.error); return; }
+  flash(`${clipName(file)} moved to ${to}`);
+  await init(); $('#session').value = S.session; await loadSession(S.session, clip === file ? null : clip);
+}
+$('#renameSession').onclick = renameSession;
+
+// ---- the inbox tab: batches the laptop dropped, what the server did with them, a retry for a failed one
+async function renderInbox() {
+  const rows = await api('/api/inbox');
+  const open = rows.filter(b => b.status !== 'done');
+  $('#inboxCount').textContent = open.length ? `(${open.length})` : '';
+  $('#inbox').innerHTML = rows.slice().reverse().map(b => {
+    const p = b.progress || {};
+    const pg = b.status === 'running' && p.pct != null ? `<div class="pg"><i style="width:${p.pct}%"></i></div>` : '';
+    const line = b.status === 'running' ? `${p.step || ''} ${p.clip || ''} ${p.pct != null ? p.pct + '%' : ''}` : b.status === 'arriving' ? 'still arriving (no .done yet)' : '';
+    return `<div class="batch"><span class="id">${esc(b.id)}</span> <span class="st ${b.status}">${esc(b.status)}</span>` +
+      (b.session ? ` → <b>${esc(b.session)}</b>` : '') + `<div class="st">${b.clips ?? '?'} clips · ${b.logs ?? '?'} logs ${esc(line)}</div>${pg}` +
+      (b.error ? `<div class="err">${esc(b.error)}</div><button class="small" data-retry="${esc(b.id)}">retry</button>` : '') + `</div>`;
+  }).join('') || '<div class="empty">inbox empty: the laptop drops batches into inbox/&lt;batch&gt;/ with a .done marker</div>';
+  $('#inbox').querySelectorAll('[data-retry]').forEach(el => el.onclick = async () => { await api(`/api/inbox/${encodeURIComponent(el.dataset.retry)}/retry`, {method: 'POST'}); renderInbox(); });
+}
+setInterval(() => { if ($('#inbox').style.display !== 'none') renderInbox(); }, 10000);
+renderInbox();
 
 // ---- the logs tab: every log of the session by power cycle, each arm with the clip that covers it, or without one
 function renderLogs() {
@@ -248,11 +292,11 @@ function renderLogs() {
 }
 document.querySelectorAll('aside .tab').forEach(tb => tb.onclick = () => {
   document.querySelectorAll('aside .tab').forEach(x => x.classList.toggle('on', x === tb));
-  $('#clips').style.display = tb.dataset.tab === 'clips' ? '' : 'none';
-  $('#logs').style.display = tb.dataset.tab === 'logs' ? '' : 'none';
+  for (const t of ['clips', 'logs', 'inbox']) $('#' + t).style.display = tb.dataset.tab === t ? '' : 'none';
+  if (tb.dataset.tab === 'inbox') renderInbox();
   localStorage.setItem('acro.tab', tb.dataset.tab);
 });
-if (localStorage.getItem('acro.tab') === 'logs') document.querySelector('aside .tab[data-tab=logs]').click();
+{ const t = localStorage.getItem('acro.tab'); if (t && t !== 'clips') document.querySelector(`aside .tab[data-tab=${t}]`)?.click(); }
 
 async function loadClip(file) {
   clip = file; cur = null; loopM = null; closeEditor();

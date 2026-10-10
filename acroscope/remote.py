@@ -81,6 +81,15 @@ class Remote:
     def tags(self) -> dict:
         return self._call("GET", "/api/tags")
 
+    def rename_session(self, session, new) -> dict:
+        return self._call("POST", self._s(session) + "/rename", {"name": new})
+
+    def move_clip(self, session, video, to) -> dict:
+        return self._call("POST", self._s(session) + "/move", {"video": video, "to": to})
+
+    def merge_sessions(self, session, into) -> dict:
+        return self._call("POST", self._s(session) + "/merge", {"into": into})
+
     def batches(self) -> list[dict]:
         return self._call("GET", "/api/inbox")
 

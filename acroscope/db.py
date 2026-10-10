@@ -265,6 +265,46 @@ class Db:
             self._touch(session)
         return out
 
+    # ---- editing sessions -------------------------------------------------------------------------------------
+
+    def rename_session(self, old: str, new: str) -> None:
+        """Rename a session (and everything that names it); the date becomes the new name's first ten characters."""
+        if self.exists(new):
+            raise ValueError(f"session {new} exists")
+        row = self.c.execute("SELECT * FROM sessions WHERE name = ?", (old,)).fetchone()
+        if not row:
+            raise ValueError(f"session {old}: no such session")
+        self.c.execute("BEGIN")
+        try:
+            self.c.execute("INSERT INTO sessions (name, date, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                           (new, new[:10], row["note"], row["created_at"], now()))
+            for t in ("videos", "blackbox", "matches", "moments", "batch_clips"):
+                self.c.execute(f"UPDATE {t} SET session = ? WHERE session = ?", (new, old))
+            self.c.execute("UPDATE batches SET session = ? WHERE session = ?", (new, old))
+            self.c.execute("DELETE FROM sessions WHERE name = ?", (old,))
+            self.c.execute("COMMIT")
+        except Exception:
+            self.c.execute("ROLLBACK")
+            raise
+
+    def move_clip(self, session: str, file: str, to: str) -> None:
+        """A clip and its matches and moments go to another session (the file keeps its name: it is the id)."""
+        self.ensure_session(to, to[:10])
+        self.c.execute("BEGIN")
+        try:
+            for t in ("matches", "moments"):
+                self.c.execute(f"UPDATE {t} SET session = ? WHERE session = ? AND video = ?", (to, session, file))
+            self.c.execute("UPDATE batch_clips SET session = ? WHERE session = ? AND file = ?", (to, session, file))
+            self.c.execute("UPDATE videos SET session = ? WHERE session = ? AND file = ?", (to, session, file))
+            self.c.execute("COMMIT")
+        except Exception:
+            self.c.execute("ROLLBACK")
+            raise
+        self._touch(session); self._touch(to)
+
+    def delete_session(self, session: str) -> None:
+        self.c.execute("DELETE FROM sessions WHERE name = ?", (session,))
+
     # ---- ingest batches ---------------------------------------------------------------------------------------
 
     def batches(self) -> list[dict]:

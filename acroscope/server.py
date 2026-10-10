@@ -326,6 +326,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(sessions.load(name)["blackbox"])
                 if what == "purge":
                     return self._json(sessions.purge(name, b.get("video"), float(b.get("days") or 0)))
+                if what == "rename":
+                    return self._json(sessions.rename_session(name, b["name"]))
+                if what == "date":
+                    return self._json(sessions.set_date(name, b["date"]))
+                if what == "move":
+                    return self._json(sessions.move_clip(name, b["video"], b["to"]))
+                if what == "merge":
+                    return self._json(sessions.merge_sessions(name, b["into"]))
             if what == "refresh":                      # walks the mount: outside the lock, it can take a while
                 return self._json(sessions.refresh(name, probe_videos=b.get("probe", True)))
             return self._json({"error": "not found"}, 404)

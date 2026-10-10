@@ -14,14 +14,27 @@ stays in the Betaflight App's blackbox viewer.
 
 ## Data layout
 
-The data dir (`ACROSCOPE_DATA`, default `~/gdrive/fpv`, the Google Drive "FPV drone" folder) holds the footage and
-the logs:
+The data dir (`ACROSCOPE_DATA`; on the server a bind mount of the homelab's `Data/fpv` dataset) holds the footage,
+the logs, and what arrives:
 
 ```
-videos/<YYYY-MM-DD-session>/<date>_NNN.mp4   DVR clips (cobra-compress.py output; H.264 since 2026-10-10)
-videos/<session>/<date>_NNN.cuts.json        which stretches of the original the compressor kept (not read yet)
+videos/<YYYY-MM-DD[-session]>/<id>.mp4       clips: H.264, no-signal stretches cut; the file name is the clip's id,
+                                             its readable name (<date>_NNN) is in the database (older clips still
+                                             carry that name as the file name)
 blackbox/*.bbl                               full flash dumps, many arms per file
+inbox/<batch>/                               what the laptop drops: VID*.mov off the card, *.bbl off a quad, an optional
+                                             import.json ({date, session, imported_at, host}) and a .done marker written
+                                             last (optionally a manifest {"files": {name: size}}); consumed by ingest
+originals/<session>/<id>.mov                 the originals, kept 7 days after the compressed clip verified
+state/acroscope-<date>.db                    nightly copies of the database (seven kept)
 ```
+
+**Ingest** (`acroscope/ingest.py`, the server runs it on complete batches, one at a time): the date and session from
+the sidecar (else the import time; `<date>-unsorted` when unnamed), the clips numbered `<date>_NNN` continuing the
+day's sequence over all its sessions in card order, each compressed (no-signal runs of 5 s or more cut with 1 s of
+padding, libx264 crf 23, keyframe every 0.5 s) and verified against the kept stretches, the logs moved to
+`blackbox/` and attached to the session, the arms decoded, automatch run on the new clips. A failed batch stays in
+`inbox/` with its error shown; a retry does not import a clip twice.
 
 Everything acroscope knows about a session (its clips with duration and codec, its blackbox files, the matches
 video <-> arm + offset, the moments, the notes) is in one SQLite database (`ACROSCOPE_DB`, default
@@ -53,10 +66,10 @@ the package is installed anyway (the Dockerfile tolerates it and checks the impo
 
 ## Deployment
 
-The homelab runs it as the Komodo stack `acroscope` (one container from `Dockerfile` + `compose.yaml`: the rclone
-Drive mount plus `acroscope serve`), reachable at `acroscope.hakhorst.eu`. The database is on the host in
-`/opt/acroscope/state`, the one directory worth backing up. Hosting notes live in the homelab repo,
-`services/acroscope.md`.
+The homelab runs it as the Komodo stack `acroscope` (one container from `Dockerfile` + `compose.yaml`: `acroscope
+serve` over a bind mount of the data dir), reachable at `acroscope.hakhorst.eu`. The live database is on the host in
+`/opt/acroscope/state`; a nightly copy lands in the data dir's `state/`, so clips and index restore from one
+snapshot. Hosting notes live in the homelab repo, `services/acroscope.md`.
 
 ## CLI (the agent side)
 
@@ -68,6 +81,11 @@ acroscope purge <session> [clip] [--days N --yes]   remove clips marked missing,
 acroscope note <session> "<text>" [--clip NNN]   session or clip note
 acroscope attach|detach <session> <bbl>          a blackbox file dated another day
 acroscope import-json [session]                  one-off: the pre-database session.json files
+acroscope session rename|date|move|merge ...     rename a session (the date is its first ten characters), change its date,
+                                                 move a clip to another session, merge one session into another
+acroscope inbox                                  the batches in inbox/ and their status
+acroscope ingest [batch...]                      consume batches now (the server does it on its own)
+acroscope housekeeping                           originals past retention go; the database is backed up into state/
 acroscope arms <bbl>                             list the arms (decodes the whole file into the cache once, ~30 s)
 acroscope decode <bbl> <arm> [--csv]             cache one arm; --csv dumps it like blackbox_decode for the old scripts
 acroscope match <session> <video> <bbl> <arm> <offset>   record a video <-> arm match
@@ -105,6 +123,9 @@ POST /api/session/<s>/note              {note, video?}
 POST /api/session/<s>/blackbox          {add: [...], remove: [...]}
 POST /api/session/<s>/refresh           {probe?}      walks the folder, returns the session
 POST /api/session/<s>/purge             {video?, days?}
+POST /api/session/<s>/rename            {name}        POST /api/session/<s>/date   {date}
+POST /api/session/<s>/move              {video, to}   POST /api/session/<s>/merge  {into}
+GET  /api/inbox                         batches and their status    POST /api/inbox/<batch>/retry
 POST /api/scan   POST /api/import       GET /api/store
 ```
 

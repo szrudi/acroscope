@@ -69,6 +69,25 @@ class ApiTest(unittest.TestCase):
         with self.assertRaises(RemoteError):
             r.set_match("2026-10-07-s", "nope.mp4", "x.bbl", "not-an-int", 0)
 
+    def test_session_editing(self):
+        r = self.r
+        root = Path(self.tmp.name)
+        (root / "data" / "videos" / "2026-10-08-e").mkdir()
+        (root / "data" / "videos" / "2026-10-08-e" / "2026-10-08_001.mp4").write_bytes(b"")
+        r.refresh("2026-10-08-e", probe_videos=False)
+        r.tag("2026-10-08-e", "2026-10-08_001.mp4", 1, 2, "t", ["poi"])
+        s = r.rename_session("2026-10-08-e", "2026-10-09-renamed")
+        self.assertEqual((s["session"], s["date"], len(s["moments"])), ("2026-10-09-renamed", "2026-10-09", 1))
+        self.assertTrue((root / "data" / "videos" / "2026-10-09-renamed" / "2026-10-08_001.mp4").exists())
+        s = r.move_clip("2026-10-09-renamed", "001", "2026-10-09-other")
+        self.assertEqual(([v["file"] for v in s["videos"]], len(s["moments"])), (["2026-10-08_001.mp4"], 1))
+        self.assertTrue((root / "data" / "videos" / "2026-10-09-other" / "2026-10-08_001.mp4").exists())
+        s = r.merge_sessions("2026-10-09-other", "2026-10-09-renamed")
+        self.assertEqual(len(s["videos"]), 1)
+        self.assertFalse(r.exists("2026-10-09-other"))
+        with self.assertRaises(RemoteError):
+            r.rename_session("2026-10-09-renamed", "not a session name")
+
     def test_tags_api(self):
         r = self.r
         t = r.tags()

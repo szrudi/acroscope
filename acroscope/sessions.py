@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from . import blackbox, video
-from .config import DB_PATH, SERVER_URL, VIDEOS_DIR
+from .config import DATA_DIR, DB_PATH, SERVER_URL, VIDEOS_DIR
 from .db import now
 
 VIDEO_EXT = (".mp4", ".mov", ".mkv")
@@ -255,6 +255,84 @@ def detach(session: str, bbl: str) -> list[str]:
 
 def purge(session: str, vid: str | None = None, days: float = 0) -> list[dict]:
     return store().purge(session, resolve_clip(session, vid) if vid else None, days)
+
+
+# ---- editing sessions (folders and rows move together) -------------------------------------------------------------
+
+SESSION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-[A-Za-z0-9_-]+)?$")
+
+
+def _move_dir(old: Path, new: Path) -> None:
+    if old.is_dir():
+        if new.exists():
+            raise ValueError(f"{new} exists")
+        new.parent.mkdir(parents=True, exist_ok=True)
+        old.rename(new)
+
+
+def rename_session(session: str, new: str) -> dict:
+    """videos/<session> and originals/<session> become <new>; every row follows. The date is the new name's."""
+    if remote():
+        return store().rename_session(session, new)
+    if not SESSION_RE.match(new):
+        raise ValueError(f"{new}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
+    if (VIDEOS_DIR / new).exists() or store().exists(new):
+        raise ValueError(f"{new} exists")
+    _move_dir(VIDEOS_DIR / session, VIDEOS_DIR / new)
+    _move_dir(VIDEOS_DIR.parent / "originals" / session, VIDEOS_DIR.parent / "originals" / new)
+    store().rename_session(session, new)
+    return load(new)
+
+
+def set_date(session: str, date: str) -> dict:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise ValueError(f"{date}: not a date")
+    rest = session[10:] if SESSION_RE.match(session) else "-" + session
+    return rename_session(session, date + rest)
+
+
+def move_clip(session: str, vid: str, to: str) -> dict:
+    """A clip, its original, its matches and its moments go to session `to` (created if new)."""
+    if remote():
+        return store().move_clip(session, vid, to)
+    if not SESSION_RE.match(to):
+        raise ValueError(f"{to}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
+    file = resolve_clip(session, vid)
+    v = next((x for x in load(session)["videos"] if x["file"] == file), None)
+    src, dst = VIDEOS_DIR / session / file, VIDEOS_DIR / to / file
+    if src.exists():
+        if dst.exists():
+            raise ValueError(f"{dst} exists")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+    if v and v.get("original"):
+        o = DATA_DIR / v["original"]
+        if o.exists():
+            no = DATA_DIR / "originals" / to / o.name
+            no.parent.mkdir(parents=True, exist_ok=True)
+            o.rename(no)
+            store().set_video_fields(session, file, original=str(no.relative_to(DATA_DIR)))
+    store().move_clip(session, file, to)
+    return load(to)
+
+
+def merge_sessions(session: str, into: str) -> dict:
+    """Every clip and log of `session` goes to `into`; the emptied session is removed."""
+    if remote():
+        return store().merge_sessions(session, into)
+    s = load(session)
+    for v in s["videos"]:
+        move_clip(session, v["file"], into)
+    for b in s["blackbox"]:
+        store().attach(into, b)
+    if s.get("note"):
+        t = load(into).get("note", "")
+        store().set_note(into, (t + "\n" + s["note"]).strip())
+    store().delete_session(session)
+    for d in (VIDEOS_DIR / session, VIDEOS_DIR.parent / "originals" / session):
+        if d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+    return load(into)
 
 
 def import_json(session: str | None = None) -> list[dict]:
