@@ -83,7 +83,18 @@ def resolve_clip(session: str, file: str) -> str:
         hits += [v["file"] for v in vids if (v.get("name") or "").endswith(f"_{int(file):03d}")]
     if len(set(hits)) == 1:
         return hits[0]
+    if len(set(hits)) > 1:
+        raise FileNotFoundError(f"{file}: {len(set(hits))} clips match (need exactly 1)")
     return video.resolve_video(session, file).name     # a file not registered yet, or a FileNotFoundError
+
+
+def clip_path(session: str, file: str) -> Path:
+    """The clip's file on disk, from anything resolve_clip takes (an ingested clip's number or readable name is
+    only known to the database, not to the folder), or a path as given."""
+    p = Path(file).expanduser()
+    if p.is_file():
+        return p
+    return VIDEOS_DIR / session / resolve_clip(session, file)
 
 
 def clip_files(d: Path) -> list[str]:

@@ -242,7 +242,7 @@ def cmd_decode(a):
 
 def cmd_match(a):
     s = sessions.set_match(_session(a.session), a.video, a.bbl, a.arm, a.offset, a.note or "", boot=a.boot)
-    out([m for m in s["matches"] if m["video"] == video.resolve_video(s["session"], a.video).name])
+    out([m for m in s["matches"] if m["video"] == sessions.resolve_clip(s["session"], a.video)])
 
 
 def cmd_unmatch(a):
@@ -257,7 +257,7 @@ def cmd_metrics(a):
         head = {"bbl": arm.bbl, "arm": arm.index}
     else:
         s = sessions.load(_session(a.session))
-        vid = video.resolve_video(s["session"], a.video).name
+        vid = sessions.resolve_clip(s["session"], a.video)
         m, arm = _arm_for(s, vid, t0)
         if not arm:
             sys.exit(f"{vid}: no blackbox match (set one with `acroscope match`)")
@@ -293,7 +293,7 @@ def cmd_events(a):
         bbl, _, n = a.arm.rpartition(":")
         arms = [(None, blackbox.load_arm(bbl, int(n)))]
     elif a.video:
-        vid = video.resolve_video(s["session"], a.video).name
+        vid = sessions.resolve_clip(s["session"], a.video)
         arms = [(m, blackbox.load_arm(m["bbl"], m["arm"])) for m in s["matches"] if m["video"] == vid]
     else:
         arms = [(m, blackbox.load_arm(m["bbl"], m["arm"])) for m in s["matches"]]
@@ -318,7 +318,7 @@ def cmd_events(a):
 
 def cmd_frame(a):
     s = _session(a.session)
-    p = video.resolve_video(s, a.video)
+    p = sessions.clip_path(s, a.video)
     dur = video.probe(p)["duration"]
     for t in a.times:
         tt = parse_time(t)
@@ -330,7 +330,7 @@ def cmd_frame(a):
 
 def cmd_sheet(a):
     s = _session(a.session)
-    p = video.resolve_video(s, a.video)
+    p = sessions.clip_path(s, a.video)
     dur = video.probe(p)["duration"]
     if a.times:
         times = [parse_time(t) for t in a.times]
@@ -355,7 +355,7 @@ def cmd_tag(a):
     snap = None
     if a.metrics:
         sd = sessions.load(s)
-        m, arm = _arm_for(sd, video.resolve_video(s, a.video).name, start)
+        m, arm = _arm_for(sd, sessions.resolve_clip(s, a.video), start)
         if arm:
             snap = metrics.summary(arm, start - m["offset"], end - m["offset"])
     out(sessions.tag(s, a.video, start, end, a.title, tags, a.note or "", snap, a.id))
@@ -380,7 +380,7 @@ def cmd_import_xspf(a):
 def cmd_transcode(a):
     s = _session(a.session)
     sd = sessions.load(s)
-    files = [video.resolve_video(s, v) for v in a.videos] or [video.resolve_video(s, v["file"]) for v in sd["videos"]]
+    files = [sessions.clip_path(s, v) for v in a.videos] or [sessions.clip_path(s, v["file"]) for v in sd["videos"]]
     for src in files:
         if video.probe(src)["codec"] == "h264" and not a.force:
             print(f"{src.name}: already H.264", file=sys.stderr)
@@ -400,7 +400,7 @@ def cmd_transcode(a):
 
 def cmd_osd(a):
     s = _session(a.session)
-    rt = osd.read_timers(video.resolve_video(s, a.video), a.fps)
+    rt = osd.read_timers(sessions.clip_path(s, a.video), a.fps)
     if a.json:
         return out(rt)
     rows, cum = rt["rows"], osd.LAYOUTS[rt["layout"]]["cumulative"]

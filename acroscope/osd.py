@@ -395,7 +395,7 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
     """Propose (and with write=True record) matches for one clip from its OSD timers and the session's logs.
     Existing matches of the clip are kept unless overwrite=True (a hand-refined offset beats an OSD one)."""
     s = sessions.load(session)
-    path = video.resolve_video(session, clip)
+    path = sessions.clip_path(session, clip)
     rt = read_timers(path, fps)
     rows = rt["rows"]
     varms = video_arms(rt, fps)

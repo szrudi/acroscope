@@ -70,6 +70,8 @@ class IngestTest(unittest.TestCase):
         self.assertTrue((self.data / "videos" / "2026-10-11-Test-Flight" / v["file"]).exists())
         self.assertFalse(b.exists())                                                              # consumed
         self.assertEqual(db.batches()[0]["status"], "done")
+        r = self.cli("frame", res["session"], "001", "0.5")                                       # by number, like the README says
+        self.assertEqual(r.returncode, 0, r.stderr)
         # numbering continues across the day: a second batch, unnamed, lands in <date>-unsorted as 003
         b2 = self.data / "inbox" / "b2"
         b2.mkdir()
