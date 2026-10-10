@@ -46,9 +46,14 @@ LAYOUTS = {
     # with hundredths (MM:SS.hh); same font
     "otto-bold-swap": {"x0": [558, 486], "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd", "dd:dd.dd"],
                        "glyph": GLYPH_BOLD, "cumulative": False, "arm_row": 1, "templates": "otto-bold"},
+    # 2026-10-10 evening (first inbox session): the arm timer back to tenths (MM:SS.T) on the bottom row from x 510,
+    # the total on top as before, a flight counter "#N" top right (not read yet: it shows 0 until Betaflight's
+    # stats are on, szrudi/acroscope#3)
+    "otto-bold-v3": {"x0": [558, 510], "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd", "dd:dd.d"],
+                     "glyph": GLYPH_BOLD, "cumulative": False, "arm_row": 1, "templates": "otto-bold"},
 }
 SHIFTS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]   # the analog picture jitters a pixel or so
-OSD_VERSION = 7     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
+OSD_VERSION = 8     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
 TEMPLATES = Path(__file__).parent / "static" / "osd-templates.json"
 BLANK_STD = 25.0                                   # glyph-box contrast below this = no digit
 
@@ -178,16 +183,20 @@ def read_frame(buf: bytes, templates: dict, layout: str = "otto") -> tuple[float
 
 def detect_layout(path: Path, fps: float = 0.5) -> str:
     """The layout whose readings make sense: sampled at `fps` over the whole clip, score a layout by the pairs of
-    consecutive readings of its total timer that count on at 1 s/s. Wrong cells read like digits too, and static
-    text reads the same wrong digits every time, so standing still does not count; only counting does."""
+    consecutive readings of each of its timers that count on at 1 s/s. Wrong cells read like digits too, and
+    static text reads the same wrong digits every time, so standing still does not count; only counting does.
+    Both timers count, so two layouts that share a row are told apart by the other one."""
     best = ("otto", 0)
     step = 1 / fps
+
+    def counting(vals):
+        return sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and step - 0.6 <= b - a <= step + 0.6)
     for name in LAYOUTS:
         tpl = _load_templates(name)   # layouts sharing templates are told apart by where the digits are
         if not tpl:
             continue
-        vals = [read_frame(buf, tpl, name)[1] for _, buf in _frames(path, fps, layout=name)]
-        n = sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and step - 0.6 <= b - a <= step + 0.6)
+        reads = [read_frame(buf, tpl, name) for _, buf in _frames(path, fps, layout=name)]
+        n = counting([r[1] for r in reads]) + counting([r[0] for r in reads])
         if n > best[1]:
             best = (name, n)
     return best[0]
