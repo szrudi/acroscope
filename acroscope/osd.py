@@ -186,19 +186,27 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, mi
     path = video.resolve_video(session, clip)
     rows = read_timers(path, fps)
     varms = [a for a in arms_from_timers(rows, fps) if a["readings"] >= min_readings]
-    logs = []
+    # arms already matched to another clip of the session are taken: an arm is in one clip
+    taken = {(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] != path.name}
+    # a clip comes from one flash dump, so align against each log separately and keep the best alignment
+    best = None
     for b in s["blackbox"]:
         idx = blackbox.index_bbl(b)
         boot_of = {i: k for k, bt in enumerate(idx.get("boots", [])) for i in bt["arms"]}
-        cum = {}
+        cum, logs = {}, []
         for a in idx["arms"]:
             if a.get("frames") and a.get("motors_spun", True):
                 k = boot_of.get(a["index"])
-                logs.append({"bbl": idx["file"], "index": a["index"], "length": a["length"], "vbat_start": a["vbat_start"],
-                             "cum_before": round(cum.get(k, 0.0), 1) if k is not None else None})
+                if (idx["file"], a["index"]) not in taken:
+                    logs.append({"bbl": idx["file"], "index": a["index"], "length": a["length"], "vbat_start": a["vbat_start"],
+                                 "cum_before": round(cum.get(k, 0.0), 1) if k is not None else None})
                 if k is not None:
                     cum[k] = cum.get(k, 0.0) + a["length"]
-    pairs = align(varms, logs)
+        pairs = align(varms, logs)
+        score = (len(pairs), -sum(abs(varms[vi]["length"] - logs[li]["length"]) for vi, li in pairs))
+        if best is None or score > best[0]:
+            best = (score, pairs, logs)
+    _, pairs, logs = best if best else ((0, 0), [], [])
     matches = []
     for vi, li in pairs:
         v, l = varms[vi], logs[li]
