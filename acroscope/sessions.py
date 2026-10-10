@@ -211,8 +211,14 @@ def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: s
         b = next((b for b in idx.get("boots", []) if arm in b["arms"]), None)
         if b:
             boot_offset = offset - meta[arm]["uptime_start"]
-            new = [(i, round(boot_offset + meta[i]["uptime_start"], 2), note if i == arm else f"derived from arm {arm} via uptime (boot {b['first']}-{b['last']})")
-                   for i in b["arms"]]
+            dur = next((v.get("duration") for v in load(session)["videos"] if v["file"] == vid), None)
+            new = []
+            for i in b["arms"]:
+                off = round(boot_offset + meta[i]["uptime_start"], 2)
+                # an arm of the boot that lies outside this clip belongs to another clip (or to none): leave it
+                if i != arm and dur and (off > dur or off + meta[i]["length"] < 0):
+                    continue
+                new.append((i, off, note if i == arm else f"derived from arm {arm} via uptime (boot {b['first']}-{b['last']})"))
     for i, off, n in new:
         store().set_match(session, vid, bbl_name, i, off, n)
     return load(session)
