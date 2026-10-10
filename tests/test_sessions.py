@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from acroscope import sessions, video
+from acroscope import blackbox, sessions, video
 from acroscope.db import Db
 
 
@@ -11,14 +11,15 @@ class ResolveClipTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.saved = (sessions._store, sessions.VIDEOS_DIR, video.VIDEOS_DIR, sessions.DATA_DIR)
+        self.saved = (sessions._store, sessions.VIDEOS_DIR, video.VIDEOS_DIR, sessions.DATA_DIR, blackbox.BLACKBOX_DIR)
         sessions._store = Db(root / "t.db")
         sessions.DATA_DIR = root
         sessions.VIDEOS_DIR = video.VIDEOS_DIR = root / "videos"
         sessions.VIDEOS_DIR.mkdir()
+        blackbox.BLACKBOX_DIR = root / "blackbox"                     # no real logs get attached by date
 
     def tearDown(self):
-        sessions._store, sessions.VIDEOS_DIR, video.VIDEOS_DIR, sessions.DATA_DIR = self.saved
+        sessions._store, sessions.VIDEOS_DIR, video.VIDEOS_DIR, sessions.DATA_DIR, blackbox.BLACKBOX_DIR = self.saved
         self.tmp.cleanup()
 
     def test_ingested_clip_by_id_name_or_number(self):
@@ -77,6 +78,35 @@ class EditGuardsTest(ResolveClipTest):
             with self.assertRaises(ValueError):
                 call()
         self.assertEqual([v["file"] for v in sessions.load(S)["videos"]], [f])
+
+    def test_refresh_marks_missing_and_back_but_never_on_an_empty_folder(self):
+        S = "2026-10-09-m"
+        d = sessions.VIDEOS_DIR / S
+        d.mkdir()
+        for f in ("a.mp4", "b.mp4"):
+            (d / f).write_bytes(b"")
+        missing = lambda: sorted(v["file"] for v in sessions.refresh(S, probe_videos=False)["videos"] if v.get("missing_since"))
+        self.assertEqual(missing(), [])
+        (d / "b.mp4").unlink()
+        self.assertEqual(missing(), ["b.mp4"])
+        (d / "b.mp4").write_bytes(b"")
+        self.assertEqual(missing(), [])                                  # back: the mark is cleared
+        (d / "a.mp4").unlink(); (d / "b.mp4").unlink()
+        self.assertEqual(missing(), [])                                  # an empty folder marks nothing (a half-synced mount)
+        import shutil
+        shutil.rmtree(d)
+        self.assertEqual(missing(), [])                                  # nor does a missing one
+
+    def test_merge_carries_logs_and_notes(self):
+        A, B = "2026-10-09-a", "2026-10-09-b"
+        self.session_with_clip(A, "2026-10-09_001.mp4")
+        self.session_with_clip(B, "2026-10-09_002.mp4")
+        sessions.store().attach(A, "x.bbl")
+        sessions.store().set_note(A, "from a")
+        s = sessions.merge_sessions(A, B)
+        self.assertEqual((s["blackbox"], s["note"], len(s["videos"]), len(s["moments"])), (["x.bbl"], "from a", 2, 2))
+        self.assertFalse(sessions.store().exists(A))
+        self.assertFalse((sessions.VIDEOS_DIR / A).exists())
 
 
 if __name__ == "__main__":

@@ -305,8 +305,12 @@ class Db:
         self.ensure_session(to, to[:10])
         self.c.execute("BEGIN")
         try:
-            for t in ("matches", "moments"):
-                self.c.execute(f"UPDATE {t} SET session = ? WHERE session = ? AND video = ?", (to, session, file))
+            # moment ids count per session (m01, m02, ...): one that `to` already uses gets the next free id there
+            for r in self.c.execute("SELECT id FROM moments WHERE session = ? AND video = ? ORDER BY start", (session, file)).fetchall():
+                taken = self.c.execute("SELECT 1 FROM moments WHERE session = ? AND id = ?", (to, r["id"])).fetchone()
+                self.c.execute("UPDATE moments SET session = ?, id = ? WHERE session = ? AND id = ?",
+                               (to, self.next_id(to) if taken else r["id"], session, r["id"]))
+            self.c.execute("UPDATE matches SET session = ? WHERE session = ? AND video = ?", (to, session, file))
             self.c.execute("UPDATE batch_clips SET session = ? WHERE session = ? AND file = ?", (to, session, file))
             self.c.execute("UPDATE videos SET session = ? WHERE session = ? AND file = ?", (to, session, file))
             self.c.execute("COMMIT")

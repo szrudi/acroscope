@@ -26,15 +26,16 @@ class DbTest(unittest.TestCase):
         self.db.upsert_video(S, "2026-10-07_001.mp4", 10.5, "h264")
         self.db.upsert_video(S, "2026-10-07_001.mp4")            # a re-scan without a probe keeps the probe
         self.db.set_match(S, "2026-10-07_001.mp4", "a.bbl", 3, 1.234, "osd")
-        self.db.set_match(S, "2026-10-07_001.mp4", "a.bbl", 3, 2.0)    # same key: replaced, not duplicated
+        self.db.set_match(S, "2026-10-07_001.mp4", "a.bbl", 3, 2.254)  # same key: replaced, not duplicated; hundredths kept
         m1 = self.db.tag(S, "2026-10-07_001.mp4", 1, 4, "flip", ["flip"], metrics={"x": 1})
-        m2 = self.db.tag(S, "2026-10-07_001.mp4", 0.5, 2, "earlier", [])
+        m2 = self.db.tag(S, "2026-10-07_001.mp4", 0.5, 2, "earlier", [], note="first try")
         self.db.tag(S, "2026-10-07_001.mp4", 1, 5, "flip edited", ["flip", "roll"], mid=m1["id"])
         s = self.db.load(S)
         self.assertEqual(s["videos"], [{"file": "2026-10-07_001.mp4", "name": "2026-10-07_001", "duration": 10.5, "codec": "h264", "note": ""}])
         self.assertEqual(s["blackbox"], ["a.bbl"])                   # attached by the match
-        self.assertEqual(s["matches"], [{"video": "2026-10-07_001.mp4", "bbl": "a.bbl", "arm": 3, "offset": 2.0, "note": ""}])
+        self.assertEqual(s["matches"], [{"video": "2026-10-07_001.mp4", "bbl": "a.bbl", "arm": 3, "offset": 2.25, "note": ""}])
         self.assertEqual([m["id"] for m in s["moments"]], [m2["id"], m1["id"]])   # sorted by start
+        self.assertEqual(s["moments"][0]["note"], "first try")
         self.assertEqual(s["moments"][1]["title"], "flip edited")
         self.assertEqual(s["moments"][1]["tags"], ["flip", "roll"])
         self.assertEqual(s["moments"][1]["metrics"], {"x": 1})
@@ -60,10 +61,13 @@ class DbTest(unittest.TestCase):
         self.db.upsert_video(S, "a.mp4", 1, "h264", missing_since=old)
         self.db.upsert_video(S, "b.mp4", 1, "h264", missing_since=datetime.now(timezone.utc).isoformat())
         self.db.upsert_video(S, "c.mp4", 1, "h264")
+        self.db.upsert_video(S, "d.mp4", 1, "h264", missing_since=(datetime.now(timezone.utc) - timedelta(days=7, seconds=60)).isoformat())
+        self.db.upsert_video(S, "e.mp4", 1, "h264", missing_since=(datetime.now(timezone.utc) - timedelta(days=7) + timedelta(hours=1)).isoformat())
         self.db.tag(S, "a.mp4", 0, 1, "kept until purged", [])
-        self.assertEqual(self.db.sessions()[0]["missing"], 2)
-        self.assertEqual(self.db.purge(S, days=7), [{"video": "a.mp4", "missing_since": old, "matches": 0, "moments": 1}])
-        self.assertEqual([v["file"] for v in self.db.load(S)["videos"]], ["b.mp4", "c.mp4"])
+        self.assertEqual(self.db.sessions()[0]["missing"], 4)
+        gone = self.db.purge(S, days=7)                                 # a and d are past 7 days, e is an hour short of it
+        self.assertEqual([(r["video"], r["missing_since"], r["moments"]) for r in gone], [("a.mp4", old, 1), ("d.mp4", gone[1]["missing_since"], 0)])
+        self.assertEqual([v["file"] for v in self.db.load(S)["videos"]], ["b.mp4", "c.mp4", "e.mp4"])
         self.assertEqual(self.db.purge(S, days=7), [])                # b is too recent
         self.assertEqual(len(self.db.purge(S, video="b.mp4")), 1)    # named explicitly: removed regardless
         self.db.upsert_video(S, "c.mp4", missing_since=None)          # back: mark cleared
@@ -108,9 +112,11 @@ class EditTest(unittest.TestCase):
         self.assertFalse(self.db.exists(A))
         with self.assertRaises(ValueError):
             self.db.rename_session("2026-10-12-renamed", "2026-10-12-renamed")
+        self.db.tag(B, "other.mp4", 0, 1, "already here", [])               # B has an m01 of its own
         self.db.move_clip("2026-10-12-renamed", "c1.mp4", B)
         b = self.db.load(B)
-        self.assertEqual(([v["file"] for v in b["videos"]], len(b["matches"]), len(b["moments"])), (["c1.mp4"], 1, 1))
+        self.assertEqual(([v["file"] for v in b["videos"]], len(b["matches"]), len(b["moments"])), (["c1.mp4"], 1, 2))
+        self.assertEqual(sorted(m["id"] for m in b["moments"]), ["m01", "m02"])    # the moved moment was renumbered
         self.assertEqual([v["file"] for v in self.db.load("2026-10-12-renamed")["videos"]], ["c2.mp4"])
         self.db.delete_session(B)
         self.assertFalse(self.db.exists(B))
