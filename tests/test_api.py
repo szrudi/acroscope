@@ -95,10 +95,24 @@ class ApiTest(unittest.TestCase):
         self.assertIn("tricks", out["stdout"])
         with self.assertRaises(RemoteError):
             r.cli(["serve"])                                   # not for clients
-        # the file endpoint hands out cache files only
+        # the file endpoint hands out cache files only, and a proxied command gets names, never paths
         import urllib.error
-        with self.assertRaises(urllib.error.HTTPError):
-            urllib.request.urlopen(self.url + "/api/file?path=/etc/hostname")
+        outside = Path(self.tmp.name) / "outside.txt"
+        outside.write_text("not for the client")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(self.url + "/api/file?path=" + str(outside))
+        self.assertEqual(cm.exception.code, 403)
+        with self.assertRaises(RemoteError):
+            r.cli(["frame", "2026-10-07-s", str(outside), "0"])
+
+    def test_file_routes_stay_inside_their_dirs(self):
+        # an encoded slash in a path segment must not walk out of videos/ or static/ (the database sits two up)
+        import urllib.error
+        for path in ("/video/..%2F../t.db", "/frame/..%2F../t.db/0", "/static/..%2F..%2Fpyproject.toml"):
+            with self.assertRaises(urllib.error.HTTPError, msg=path) as cm:
+                urllib.request.urlopen(self.url + path)
+            self.assertEqual(cm.exception.code, 404, path)
+        self.assertTrue((Path(self.tmp.name) / "t.db").exists())
 
     def test_tags_api(self):
         r = self.r

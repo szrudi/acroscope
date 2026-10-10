@@ -57,9 +57,12 @@ def _cli(*args: str):
 
 
 def run_cli(args: list[str]) -> dict:
-    """A client's CLI command, run here: {stdout, stderr, code}. Only PROXIED commands."""
+    """A client's CLI command, run here: {stdout, stderr, code}. Only PROXIED commands, and only names (sessions,
+    clips, logs, times): a path would let a client point ffmpeg or the decoder at any file on this host."""
     if not args or args[0] not in PROXIED:
         raise ValueError(f"not a command a client may run here: {args[:1]}")
+    if any("/" in a for a in args[1:]):
+        raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
     env = dict(os.environ, ACROSCOPE_URL="")
     r = subprocess.run([sys.executable, "-m", "acroscope.cli", *args], capture_output=True, text=True, env=env, timeout=1800)
     return {"stdout": r.stdout, "stderr": r.stderr, "code": r.returncode}
@@ -129,6 +132,14 @@ def background_scans():
                 last_day = day
             time.sleep(INBOX_EVERY)
     threading.Thread(target=run, name="scan", daemon=True).start()
+
+
+def _under(root: Path, *parts: str) -> Path:
+    """root/parts, refused when it would leave root (a '..' or an encoded slash inside a path segment)."""
+    p = root.joinpath(*parts)
+    if not p.resolve().is_relative_to(root.resolve()):
+        raise FileNotFoundError(f"{'/'.join(parts)}: not under {root.name}")
+    return p
 
 
 @lru_cache(maxsize=64)
@@ -234,11 +245,11 @@ class Handler(BaseHTTPRequestHandler):
             if not parts:
                 return self._file(STATIC / "index.html", "text/html; charset=utf-8")
             if parts[0] == "static" and len(parts) == 2:
-                return self._file(STATIC / parts[1])
+                return self._file(_under(STATIC, parts[1]))
             if parts[0] == "video" and len(parts) == 3:
-                return self._file(video.playable(VIDEOS_DIR / parts[1] / parts[2]), "video/mp4", "max-age=3600")
+                return self._file(video.playable(_under(VIDEOS_DIR, parts[1], parts[2])), "video/mp4", "max-age=3600")
             if parts[0] == "frame" and len(parts) == 4:
-                return self._file(video.frame(VIDEOS_DIR / parts[1] / parts[2], float(parts[3])), "image/jpeg", "max-age=86400")
+                return self._file(video.frame(_under(VIDEOS_DIR, parts[1], parts[2]), float(parts[3])), "image/jpeg", "max-age=86400")
             if parts[:2] == ["api", "sessions"]:
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
             if parts == ["api", "inbox"]:
