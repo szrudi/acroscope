@@ -80,6 +80,11 @@ def resolve_clip(session: str, file: str) -> str:
     return video.resolve_video(session, file).name     # a file not registered yet, or a FileNotFoundError
 
 
+def clip_path(session: str, file: str) -> Path:
+    """The file of a clip given by file name, readable name, number or path."""
+    return VIDEOS_DIR / session / resolve_clip(session, file)
+
+
 def clip_files(d: Path) -> list[str]:
     return sorted(f.name for f in d.iterdir() if f.suffix.lower() in VIDEO_EXT)
 
