@@ -17,7 +17,19 @@
   kbd { background:#2a2f38; border:1px solid #3a404b; border-radius:4px; padding:0 5px; font:12px ui-monospace, monospace }
   main { display:grid; grid-template-columns:260px 1fr 360px; min-height:0 }
   aside, section { min-height:0; overflow:auto }
-  aside { border-right:1px solid var(--line); background:var(--panel) }
+  aside { border-right:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column }
+  aside .tabs { display:flex; border-bottom:1px solid var(--line); flex:none }
+  aside .tab { flex:1; text-align:center; padding:7px 0; font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); cursor:pointer; user-select:none }
+  aside .tab.on { color:var(--fg); border-bottom:2px solid var(--acc) }
+  aside .pane-body { overflow:auto; min-height:0; flex:1 }
+  .log { padding:8px 12px 4px; border-bottom:1px solid var(--line) }
+  .log .f { font-weight:600; font-size:12px } .log .cov { color:var(--dim); font-size:12px }
+  .log .cov b { color:var(--acc2); font-weight:500 } .log .cov .miss { color:var(--bad) }
+  .boot { padding:6px 12px 2px; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px }
+  .arm { padding:3px 12px 3px 18px; display:grid; grid-template-columns:52px 46px 1fr; gap:0 8px; font-size:12px; font-variant-numeric:tabular-nums; cursor:default }
+  .arm.has { cursor:pointer } .arm.has:hover { background:#232832 }
+  .arm .n { color:var(--fg) } .arm .l { color:var(--dim) } .arm .c b { color:var(--acc2); font-weight:500 } .arm .c .no { color:var(--bad) }
+  .arm .c .flag { color:var(--dim) }
   .right { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; overflow:hidden }
   .clip { padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; display:grid; grid-template-columns:1fr auto; gap:2px 8px }
   .clip:hover { background:#232832 } .clip.on { background:#2a3140; border-left:3px solid var(--acc) }
@@ -76,7 +88,11 @@
   <span class="keys"><kbd>space</kbd> play <kbd>←</kbd><kbd>→</kbd> 2 s <kbd>,</kbd><kbd>.</kbd> frame <kbd>i</kbd><kbd>o</kbd> in/out <kbd>t</kbd> tag <kbd>n</kbd><kbd>p</kbd> next/prev <kbd>l</kbd> loop</span>
 </header>
 <main>
-  <aside id="clips"></aside>
+  <aside>
+    <div class="tabs"><span class="tab on" data-tab="clips">clips</span><span class="tab" data-tab="logs">logs</span></div>
+    <div class="pane-body" id="clips"></div>
+    <div class="pane-body" id="logs" style="display:none"></div>
+  </aside>
   <section class="center">
     <video id="v" controls preload="metadata"></video>
     <canvas id="strip" height="54"></canvas>
@@ -193,7 +209,47 @@ function renderClips() {
     return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${x.file}"><span class="n">${x.file.replace(/\.mp4$/, '').slice(-3)}</span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${x.note}</span>` : ''}</div>`;
   }).join('') || '<div class="empty">no clips</div>';
   document.querySelectorAll('.clip').forEach(el => el.onclick = () => loadClip(el.dataset.f));
+  renderLogs();
 }
+
+// ---- the logs tab: every log of the session by power cycle, each arm with the clip that covers it, or without one
+function renderLogs() {
+  const arms = S.arms || [], boots = S.boots || {};
+  let h = '';
+  for (const b of S.blackbox || []) {
+    const rows = arms.filter(a => a.bbl === b);
+    const short = b.length > 40 ? b.slice(25, 40) : b;
+    if ((S.arms_pending || []).includes(b)) { h += `<div class="log"><div class="f">${esc(short)}</div><div class="cov">decoding in the background…</div></div>`; continue; }
+    if (!rows.length) { h += `<div class="log"><div class="f">${esc(short)}</div><div class="cov">no arms</div></div>`; continue; }
+    const flown = rows.filter(a => a.motors_spun !== false), covered = flown.filter(a => a.videos.length);
+    const secs = xs => xs.reduce((t, a) => t + (a.length || 0), 0);
+    h += `<div class="log"><div class="f" title="${esc(b)}">${esc(short)}</div><div class="cov">${rows.length} arms · <b>${covered.length}</b> with a clip` +
+      (flown.length - covered.length ? ` · <span class="miss">${flown.length - covered.length} without</span> (${fmt(secs(flown) - secs(covered))} of flight)` : '') + `</div></div>`;
+    const groups = (boots[b] && boots[b].length) ? boots[b] : [{first: rows[0].index, last: rows[rows.length - 1].index, arms: rows.map(a => a.index)}];
+    for (const g of groups) {
+      if (groups.length > 1) h += `<div class="boot">boot: arms ${g.first}–${g.last}</div>`;
+      for (const a of rows.filter(a => g.arms.includes(a.index))) {
+        const v = a.videos[0];
+        const flags = (a.motors_spun === false ? ' <span class="flag">motors off</span>' : '') + (a.complete === false ? ' <span class="flag">cut off</span>' : '');
+        const c = v ? `<b>${v.video.slice(-7, -4)}</b> +${v.offset}s` + (a.videos.length > 1 ? ` +${a.videos.length - 1}` : '') : (a.motors_spun === false ? '<span class="flag">no clip</span>' : '<span class="no">no clip</span>');
+        h += `<div class="arm ${v ? 'has' : ''}" ${v ? `data-v="${esc(v.video)}" data-t="${v.offset}"` : ''}><span class="n">arm ${a.index}</span><span class="l">${fmt(a.length)}</span><span class="c">${c}${flags}</span></div>`;
+      }
+    }
+  }
+  $('#logs').innerHTML = h || '<div class="empty">no blackbox file in this session</div>';
+  $('#logs').querySelectorAll('.arm.has').forEach(el => el.onclick = async () => {
+    const t = Math.max(0, +el.dataset.t + 0.5);
+    if (clip !== el.dataset.v) await loadClip(el.dataset.v);
+    v.currentTime = t; v.play();
+  });
+}
+document.querySelectorAll('aside .tab').forEach(tb => tb.onclick = () => {
+  document.querySelectorAll('aside .tab').forEach(x => x.classList.toggle('on', x === tb));
+  $('#clips').style.display = tb.dataset.tab === 'clips' ? '' : 'none';
+  $('#logs').style.display = tb.dataset.tab === 'logs' ? '' : 'none';
+  localStorage.setItem('acro.tab', tb.dataset.tab);
+});
+if (localStorage.getItem('acro.tab') === 'logs') document.querySelector('aside .tab[data-tab=logs]').click();
 
 async function loadClip(file) {
   clip = file; cur = null; loopM = null; closeEditor();

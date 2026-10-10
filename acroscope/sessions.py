@@ -125,6 +125,7 @@ def overview(session: str, with_arms: bool = True, cached_only: bool = False) ->
     if with_arms:
         arms = []
         out["arms_pending"] = []
+        out["boots"] = {}
         for b in s["blackbox"]:
             try:
                 idx = blackbox.index_bbl(b, cached_only=cached_only)
@@ -133,6 +134,7 @@ def overview(session: str, with_arms: bool = True, cached_only: bool = False) ->
             if idx is None:
                 out["arms_pending"].append(b)
                 continue
+            out["boots"][idx["file"]] = [{k: bt[k] for k in ("first", "last", "arms", "length")} for bt in idx.get("boots", [])]
             for a in idx["arms"]:
                 matched = [m for m in s["matches"] if m["bbl"] == idx["file"] and m["arm"] == a["index"]]
                 arms.append({"bbl": idx["file"], **{k: a.get(k) for k in ("index", "length", "rate", "vbat_start",
