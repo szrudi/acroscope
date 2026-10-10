@@ -137,6 +137,9 @@ const pill = t => `<span class="tag" style="--c:${tagColor(t)}">${esc(t)}</span>
 const fmt = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); };
 const parse = s => { s = String(s).trim(); if (s.includes(':')) { const [m, x] = s.split(':'); return +m * 60 + +x; } return +s; };
 const api = (p, o) => fetch(p, o).then(r => r.json());
+// a clip's readable name ("2026-10-07_007") and its short form ("007"); the file name on disk is its id
+const clipName = f => (S && S.videos.find(x => x.file === f)?.name) || f.replace(/\.[^.]+$/, '');
+const clipNum = f => { const n = clipName(f); const m = n.match(/_(\d{3})$/); return m ? m[1] : n; };
 const canHevc = v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') || v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"');
 
 async function init() {
@@ -160,13 +163,13 @@ async function init() {
 function setUrl() {
   if (!S) return;
   const q = new URLSearchParams({session: S.session});
-  if (clip) q.set('clip', /_\d{3}\.\w+$/.test(clip) ? clip.slice(-7, -4) : clip);
+  if (clip) q.set('clip', clipNum(clip));
   if (cur) q.set('m', cur);
   else if (clip && v.paused && v.currentTime > 0) q.set('t', v.currentTime.toFixed(1));
   if (filter.size) q.set('tags', [...filter].join(','));
   history.replaceState(null, '', '?' + q.toString());
 }
-function momentLink(id) { const m = S.moments.find(x => x.id === id); return `${location.origin}/?${new URLSearchParams({session: S.session, clip: m.video.slice(-7, -4), m: id})}`; }
+function momentLink(id) { const m = S.moments.find(x => x.id === id); return `${location.origin}/?${new URLSearchParams({session: S.session, clip: clipNum(m.video), m: id})}`; }
 async function copyLink(id) {
   try { await navigator.clipboard.writeText(momentLink(id)); flash('link copied'); } catch { prompt('link', momentLink(id)); }
 }
@@ -182,7 +185,7 @@ async function loadSession(name, wantClip) {
   clearTimeout(window._poll);
   if (pending) window._poll = setTimeout(() => { if (S.session === name) refreshSession(); }, 8000);
   renderClips();
-  const c = S.videos.find(x => x.file === wantClip || (wantClip && x.file.slice(-7, -4) === wantClip.padStart(3, '0')))
+  const c = S.videos.find(x => x.file === wantClip || (wantClip && (x.name === wantClip || clipNum(x.file) === wantClip.padStart(3, '0'))))
     || S.videos.find(x => S.moments.some(m => m.video === x.file)) || S.videos[0];
   if (c) await loadClip(c.file); else { clip = null; v.removeAttribute('src'); renderMoments(); drawStrip(); setUrl(); }
 }
@@ -206,7 +209,7 @@ function renderClips() {
     const n = S.moments.filter(m => m.video === x.file).length;
     const arms = ms.length ? ms.map(m => `<b>arm ${m.arm}</b> +${m.offset}s`).join(', ') : 'no log';
     const warn = x.missing_since ? ` <span class="warn">file missing since ${x.missing_since.slice(0, 10)}</span>` : (x.codec === 'hevc' && !canHevc) ? ' <span class="warn">H.265: this browser may not play it</span>' : '';
-    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${x.file}"><span class="n">${x.file.replace(/\.mp4$/, '').slice(-3)}</span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${x.note}</span>` : ''}</div>`;
+    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${x.file}" title="${esc(x.name || x.file)}"><span class="n">${esc(clipNum(x.file))}</span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${x.note}</span>` : ''}</div>`;
   }).join('') || '<div class="empty">no clips</div>';
   document.querySelectorAll('.clip').forEach(el => el.onclick = () => loadClip(el.dataset.f));
   renderLogs();
@@ -231,7 +234,7 @@ function renderLogs() {
       for (const a of rows.filter(a => g.arms.includes(a.index))) {
         const v = a.videos[0];
         const flags = (a.motors_spun === false ? ' <span class="flag">motors off</span>' : '') + (a.complete === false ? ' <span class="flag">cut off</span>' : '');
-        const c = v ? `<b>${v.video.slice(-7, -4)}</b> +${v.offset}s` + (a.videos.length > 1 ? ` +${a.videos.length - 1}` : '') : (a.motors_spun === false ? '<span class="flag">no clip</span>' : '<span class="no">no clip</span>');
+        const c = v ? `<b>${esc(clipNum(v.video))}</b> +${v.offset}s` + (a.videos.length > 1 ? ` +${a.videos.length - 1}` : '') : (a.motors_spun === false ? '<span class="flag">no clip</span>' : '<span class="no">no clip</span>');
         h += `<div class="arm ${v ? 'has' : ''}" ${v ? `data-v="${esc(v.video)}" data-t="${v.offset}"` : ''}><span class="n">arm ${a.index}</span><span class="l">${fmt(a.length)}</span><span class="c">${c}${flags}</span></div>`;
       }
     }
@@ -331,7 +334,7 @@ function renderMoments() {
     <img loading="lazy" src="/frame/${encodeURIComponent(S.session)}/${encodeURIComponent(m.video)}/${(m.start + Math.min(2, (m.end - m.start) / 2)).toFixed(2)}">
     <span class="ttl">${esc(m.title)} ${(m.tags || []).map(pill).join('')}</span>
     <span class="act"><button class="small" data-link="${m.id}" title="copy link">⛓</button><button class="small" data-edit="${m.id}" title="edit">✎</button><button class="small" data-del="${m.id}" title="delete">✕</button></span>
-    <span class="t">${$('#allClips').checked ? m.video.slice(-7, -4) + ' · ' : ''}${fmt(m.start)}–${fmt(m.end)}${m.metrics ? ' · ' + metricLine(m.metrics) : ''}</span>
+    <span class="t">${$('#allClips').checked ? clipNum(m.video) + ' · ' : ''}${fmt(m.start)}–${fmt(m.end)}${m.metrics ? ' · ' + metricLine(m.metrics) : ''}</span>
     <span class="note">${esc(m.note || '')}</span></div>`).join('') || '<div class="empty">no moments yet: set in/out with <kbd>i</kbd> <kbd>o</kbd>, then <kbd>t</kbd></div>';
   document.querySelectorAll('.m').forEach(el => el.onclick = e => {
     if (e.target.dataset.link) return copyLink(e.target.dataset.link);

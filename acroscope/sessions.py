@@ -64,18 +64,20 @@ def resolve_session(name: str) -> str:
 
 
 def resolve_clip(session: str, file: str) -> str:
-    """A clip's file name from a name, number or path; a clip that is only in the database (file gone) still resolves."""
-    try:
-        return video.resolve_video(session, file).name
-    except FileNotFoundError:
-        known = [v["file"] for v in load(session)["videos"]]
-        if file in known:
-            return file
-        if file.isdigit():
-            hits = [k for k in known if Path(k).stem.endswith(f"_{int(file):03d}")]
-            if len(hits) == 1:
-                return hits[0]
-        raise
+    """A clip's file name (its id on disk) from its file name, its readable name ('2026-10-07_007'), its number
+    ('007'/'7') or a path; a clip that is only in the database (file gone) still resolves."""
+    vids = load(session)["videos"]
+    by_file = {v["file"]: v for v in vids}
+    if file in by_file:
+        return file
+    if Path(file).name in by_file:
+        return Path(file).name
+    hits = [v["file"] for v in vids if v.get("name") == file or Path(v["file"]).stem == file]
+    if file.isdigit():
+        hits += [v["file"] for v in vids if (v.get("name") or "").endswith(f"_{int(file):03d}")]
+    if len(set(hits)) == 1:
+        return hits[0]
+    return video.resolve_video(session, file).name     # a file not registered yet, or a FileNotFoundError
 
 
 def clip_files(d: Path) -> list[str]:

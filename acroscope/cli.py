@@ -7,6 +7,7 @@ server; without it, it opens the local database (ACROSCOPE_DB) itself.
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import blackbox, events as ev, metrics, osd, sessions, video, xspf
 from .config import CACHE_DIR, DATA_DIR, TAGS
@@ -69,7 +70,8 @@ def cmd_sessions(a):
         cov = "; ".join(f"arm {m['arm']} @ +{m['offset']}s" for m in ms) or "no log"
         d = fmt_time(v["duration"]) if v.get("duration") else "?"
         gone = f"  MISSING since {v['missing_since'][:10]}" if v.get("missing_since") else ""
-        print(f"  {v['file']:24} {d:>7}  {cov}{gone}" + (f"  | {v['note']}" if v.get("note") else ""))
+        label = v["file"] if v.get("name") in (None, Path(v["file"]).stem) else f"{v['name']} ({v['file']})"
+        print(f"  {label:24} {d:>7}  {cov}{gone}" + (f"  | {v['note']}" if v.get("note") else ""))
     print("\n## arms")
     for b in s["blackbox"]:                       # one block per log, so three "arm 4" rows can't be confused
         rows = [r for r in s.get("arms", []) if r["bbl"] == b]

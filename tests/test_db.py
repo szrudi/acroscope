@@ -31,7 +31,7 @@ class DbTest(unittest.TestCase):
         m2 = self.db.tag(S, "2026-10-07_001.mp4", 0.5, 2, "earlier", [])
         self.db.tag(S, "2026-10-07_001.mp4", 1, 5, "flip edited", ["flip", "roll"], mid=m1["id"])
         s = self.db.load(S)
-        self.assertEqual(s["videos"], [{"file": "2026-10-07_001.mp4", "duration": 10.5, "codec": "h264", "note": ""}])
+        self.assertEqual(s["videos"], [{"file": "2026-10-07_001.mp4", "name": "2026-10-07_001", "duration": 10.5, "codec": "h264", "note": ""}])
         self.assertEqual(s["blackbox"], ["a.bbl"])                   # attached by the match
         self.assertEqual(s["matches"], [{"video": "2026-10-07_001.mp4", "bbl": "a.bbl", "arm": 3, "offset": 2.0, "note": ""}])
         self.assertEqual([m["id"] for m in s["moments"]], [m2["id"], m1["id"]])   # sorted by start
@@ -43,6 +43,16 @@ class DbTest(unittest.TestCase):
         self.assertFalse(self.db.untag(S, m2["id"]))
         self.assertEqual(self.db.unmatch(S, "2026-10-07_001.mp4"), 1)
         self.assertEqual(self.db.sessions()[0]["moments"], 1)
+
+    def test_names_and_fields(self):
+        S = "2026-10-07-s"
+        self.db.upsert_video(S, "c0ffee0001.mp4", name="2026-10-07_003")      # an ingested clip: id on disk, readable name
+        self.db.upsert_video(S, "c0ffee0001.mp4", 12.0, "h264")              # a later probe keeps the name
+        self.db.set_video_fields(S, "c0ffee0001.mp4", cuts=[[0, 5.0], [9.5, 12.0]], original="originals/x.mov", original_until="2026-10-17")
+        v = self.db.load(S)["videos"][0]
+        self.assertEqual((v["name"], v["duration"], v["cuts"], v["original"]), ("2026-10-07_003", 12.0, [[0, 5.0], [9.5, 12.0]], "originals/x.mov"))
+        self.db.upsert_video("2026-10-07-other", "2026-10-07_004.mp4")
+        self.assertEqual(sorted(self.db.names_on("2026-10-07")), ["2026-10-07_003", "2026-10-07_004"])
 
     def test_missing_and_purge(self):
         S = "2026-10-09-s"

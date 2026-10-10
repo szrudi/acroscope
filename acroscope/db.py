@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   name TEXT PRIMARY KEY, date TEXT, note TEXT NOT NULL DEFAULT '', created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS videos (
   session TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE, file TEXT NOT NULL,
-  duration REAL, codec TEXT, note TEXT NOT NULL DEFAULT '', missing_since TEXT,
+  name TEXT, duration REAL, codec TEXT, note TEXT NOT NULL DEFAULT '', missing_since TEXT,
+  cuts TEXT, original TEXT, original_until TEXT,
   PRIMARY KEY (session, file));
 CREATE TABLE IF NOT EXISTS blackbox (
   session TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE, file TEXT NOT NULL, pos INTEGER NOT NULL,
@@ -61,6 +62,7 @@ class Db:
         self.c.execute("PRAGMA journal_mode=WAL")
         self.c.execute("PRAGMA foreign_keys=ON")
         self.c.executescript(SCHEMA)
+        self._migrate()
         if not self.c.execute("SELECT 1 FROM tag_categories LIMIT 1").fetchone():
             for name, color in SEED_CATEGORIES:
                 self.set_category(name, color)
@@ -69,6 +71,17 @@ class Db:
 
     def __repr__(self):
         return f"sqlite {self.path}"
+
+    def _migrate(self) -> None:
+        """Columns added after a table first shipped (CREATE TABLE IF NOT EXISTS does not add them)."""
+        have = {r["name"] for r in self.c.execute("PRAGMA table_info(videos)")}
+        for col, decl in (("name", "TEXT"), ("cuts", "TEXT"), ("original", "TEXT"), ("original_until", "TEXT")):
+            if col not in have:
+                self.c.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
+        # the readable name of a clip imported before ids: its file name without the extension
+        rows = self.c.execute("SELECT session, file FROM videos WHERE name IS NULL OR name = '' OR name LIKE '%.'").fetchall()
+        self.c.executemany("UPDATE videos SET name = ? WHERE session = ? AND file = ?",
+                           [(Path(r["file"]).stem, r["session"], r["file"]) for r in rows])
 
     # ---- sessions ---------------------------------------------------------------------------------------------
 
@@ -97,10 +110,11 @@ class Db:
                "videos": [], "blackbox": [], "matches": [], "moments": []}
         if not s:
             return out
-        for r in self.c.execute("SELECT * FROM videos WHERE session = ? ORDER BY file", (session,)):
-            v = {"file": r["file"], "duration": r["duration"], "codec": r["codec"], "note": r["note"]}
-            if r["missing_since"]:
-                v["missing_since"] = r["missing_since"]
+        for r in self.c.execute("SELECT * FROM videos WHERE session = ? ORDER BY name, file", (session,)):
+            v = {"file": r["file"], "name": r["name"] or r["file"], "duration": r["duration"], "codec": r["codec"], "note": r["note"]}
+            for k in ("missing_since", "cuts", "original", "original_until"):
+                if r[k]:
+                    v[k] = json.loads(r[k]) if k == "cuts" else r[k]
             out["videos"].append(v)
         out["blackbox"] = self._blackbox(session)
         out["matches"] = [dict(r) for r in self.c.execute(
@@ -134,16 +148,31 @@ class Db:
     # ---- clips and logs ---------------------------------------------------------------------------------------
 
     def upsert_video(self, session: str, file: str, duration=None, codec=None, missing_since: str | None = None,
-                     keep_probe: bool = True) -> None:
-        """Add or update a clip. With keep_probe, a known duration/codec is not overwritten by None."""
+                     keep_probe: bool = True, name: str | None = None) -> None:
+        """Add or update a clip. With keep_probe, a known duration/codec is not overwritten by None. The readable
+        name defaults to the file name without its extension and is kept once set."""
         self.ensure_session(session)
-        self.c.execute("""INSERT INTO videos (session, file, duration, codec, missing_since) VALUES (?, ?, ?, ?, ?)
+        self.c.execute("""INSERT INTO videos (session, file, name, duration, codec, missing_since) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (session, file) DO UPDATE SET
+              name = COALESCE(?, videos.name),
               duration = CASE WHEN excluded.duration IS NULL AND ? THEN videos.duration ELSE excluded.duration END,
               codec = CASE WHEN excluded.codec IS NULL AND ? THEN videos.codec ELSE excluded.codec END,
               missing_since = excluded.missing_since""",
-                       (session, file, duration, codec, missing_since, keep_probe, keep_probe))
+                       (session, file, name or Path(file).stem, duration, codec, missing_since, name, keep_probe, keep_probe))
         self._touch(session)
+
+    def set_video_fields(self, session: str, file: str, **fields) -> None:
+        """Set name, cuts (a list), original, original_until on a clip."""
+        allowed = {"name", "cuts", "original", "original_until", "codec", "duration"}
+        cols = {k: (json.dumps(v) if k == "cuts" and v is not None else v) for k, v in fields.items() if k in allowed}
+        if cols:
+            self.c.execute(f"UPDATE videos SET {', '.join(k + ' = ?' for k in cols)} WHERE session = ? AND file = ?",
+                           (*cols.values(), session, file))
+            self._touch(session)
+
+    def names_on(self, date: str) -> list[str]:
+        """Every clip name starting with a date, over all sessions: numbering continues across the day's sessions."""
+        return [r["name"] for r in self.c.execute("SELECT name FROM videos WHERE name LIKE ?", (date + "_%",))]
 
     def set_blackbox(self, session: str, files: list[str]) -> None:
         self.ensure_session(session)
