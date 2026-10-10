@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import blackbox, events as ev, metrics, osd, sessions, video, xspf
+from . import blackbox, events as ev, ingest, metrics, osd, sessions, video, xspf
 from .config import CACHE_DIR, DATA_DIR, TAGS
 
 
@@ -129,6 +129,40 @@ def cmd_purge(a):
 
 def cmd_import_json(a):
     out(sessions.import_json(_session(a.session) if a.session else None))
+
+
+def cmd_inbox(a):
+    rows = ingest.list_inbox()
+    if a.json:
+        return out(rows)
+    if not rows:
+        return print(f"inbox empty ({ingest.INBOX_DIR})")
+    for b in rows:
+        extra = f"  -> {b['session']}" if b.get("session") else ""
+        prog = b.get("progress") or {}
+        p = f"  {prog.get('step', '')} {prog.get('clip', '')} {prog.get('pct', '')}%".rstrip(" %") if prog else ""
+        err = f"  ERROR {b['error']}" if b.get("error") else ""
+        print(f"  {b['id']:30} {b['status']:9} {b.get('clips', '?'):>3} clips {b.get('logs', '?'):>2} logs{extra}{p}{err}")
+
+
+def cmd_ingest(a):
+    if sessions.remote():
+        sys.exit("ingest runs where the data is: on the server (unset ACROSCOPE_URL there)")
+    batches = a.batches or ingest.pending()
+    if not batches:
+        return print("nothing to ingest")
+    for b in batches:
+        try:
+            out(ingest.process_batch(b, log=lambda m: print(m, file=sys.stderr)))
+        except Exception as e:  # noqa: BLE001
+            print(f"{b}: FAILED {type(e).__name__}: {e}", file=sys.stderr)
+
+
+def cmd_housekeeping(a):
+    if sessions.remote():
+        sys.exit("housekeeping runs on the server")
+    out({"originals_removed": ingest.cleanup_originals(log=lambda m: print(m, file=sys.stderr)),
+         "backup": str(ingest.backup_db() or "")})
 
 
 def cmd_tags(a):
@@ -408,6 +442,10 @@ def main(argv=None):
     p.set_defaults(f=cmd_purge)
     p = sp.add_parser("import-json", help="one-off: import the pre-database videos/<session>/session.json files")
     p.add_argument("session", nargs="?"); p.set_defaults(f=cmd_import_json)
+    p = sp.add_parser("inbox", help="the batches in inbox/ and their status"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_inbox)
+    p = sp.add_parser("ingest", help="consume inbox batches now (all pending ones, or the named ones); the server does this on its own")
+    p.add_argument("batches", nargs="*"); p.set_defaults(f=cmd_ingest)
+    p = sp.add_parser("housekeeping", help="delete originals past their retention and back the database up into the data dir"); p.set_defaults(f=cmd_housekeeping)
     p = sp.add_parser("tags", help="the tag vocabulary by category, with how many moments use each tag")
     p.add_argument("session", nargs="?", help="count in one session only"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_tags)
     p = sp.add_parser("tagdef", help="define a tag in a category (or move it there); --rm drops the definition")

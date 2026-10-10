@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import blackbox, events as ev, metrics, sessions, video
+from . import blackbox, events as ev, ingest, metrics, sessions, video
 from .config import VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
@@ -25,6 +25,7 @@ _lock = threading.Lock()
 _busy: set[str] = set()          # blackbox files being decoded / sessions being probed right now
 _busy_lock = threading.Lock()
 SCAN_EVERY = 300                 # seconds between background walks of the data dir
+INBOX_EVERY = 20                 # seconds between looks at inbox/ for a complete batch
 
 
 def _background(key: str, fn):
@@ -87,14 +88,34 @@ def first_start() -> None:
             print(f"imported {len(done)} session file(s) into {sessions.store()}", flush=True)
 
 
+def ingest_pending() -> None:
+    """One batch at a time, in a child process (ffmpeg, the decoder and the OSD reader live there)."""
+    for b in ingest.pending():
+        print(f"ingest {b}", flush=True)
+        _cli("ingest", b)
+
+
 def background_scans():
+    """Every INBOX_EVERY s: ingest complete batches. Every SCAN_EVERY s: walk the data dir. Once a day: originals
+    past retention go, the database is backed up into the data dir."""
     def run():
         first_start()
+        last_scan, last_day = 0.0, None
         while True:
-            t = time.time()
-            scan_all()
-            print(f"scan done in {time.time() - t:.0f} s", flush=True)
-            time.sleep(SCAN_EVERY)
+            if time.time() - last_scan >= SCAN_EVERY:
+                t = time.time()
+                scan_all()
+                print(f"scan done in {time.time() - t:.0f} s", flush=True)
+                last_scan = time.time()
+            try:
+                ingest_pending()
+            except Exception as e:  # noqa: BLE001
+                print(f"ingest: {type(e).__name__}: {e}", flush=True)
+            day = time.strftime("%Y-%m-%d")
+            if day != last_day:
+                _cli("housekeeping")
+                last_day = day
+            time.sleep(INBOX_EVERY)
     threading.Thread(target=run, name="scan", daemon=True).start()
 
 
@@ -208,6 +229,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file(video.frame(VIDEOS_DIR / parts[1] / parts[2], float(parts[3])), "image/jpeg", "max-age=86400")
             if parts[:2] == ["api", "sessions"]:
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
+            if parts == ["api", "inbox"]:
+                return self._json(ingest.list_inbox())
             if parts[:2] == ["api", "store"]:
                 return self._json({"store": repr(sessions.store()), "data": str(VIDEOS_DIR.parent)})
             if parts == ["api", "tags"]:
@@ -274,6 +297,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(sessions.scan())
             if parts == ["api", "import"]:
                 return self._json(sessions.import_json(self._body().get("session")))
+            if parts[:2] == ["api", "inbox"] and len(parts) == 4 and parts[3] == "retry":
+                sessions.store().set_batch(parts[2], status="pending", error=None)
+                return self._json({"ok": True})
             if parts == ["api", "tags"]:
                 b = self._body()
                 return self._json(sessions.store().set_tag(b["name"], b["category"], b.get("color")))

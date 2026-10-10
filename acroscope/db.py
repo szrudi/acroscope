@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS moments (
   start REAL NOT NULL, end REAL NOT NULL, title TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '[]',
   note TEXT NOT NULL DEFAULT '', metrics TEXT, created_at TEXT, updated_at TEXT,
   PRIMARY KEY (session, id));
+CREATE TABLE IF NOT EXISTS batches (
+  id TEXT PRIMARY KEY, status TEXT NOT NULL, session TEXT, date TEXT, started_at TEXT, finished_at TEXT,
+  error TEXT, progress TEXT);
+CREATE TABLE IF NOT EXISTS batch_clips (
+  batch TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE, source TEXT NOT NULL, file TEXT NOT NULL, session TEXT NOT NULL,
+  PRIMARY KEY (batch, source));
 CREATE TABLE IF NOT EXISTS tag_categories (name TEXT PRIMARY KEY, color TEXT NOT NULL, pos INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS tags (
   name TEXT PRIMARY KEY, category TEXT NOT NULL REFERENCES tag_categories(name), color TEXT, pos INTEGER NOT NULL);
@@ -258,6 +264,41 @@ class Db:
         if out:
             self._touch(session)
         return out
+
+    # ---- ingest batches ---------------------------------------------------------------------------------------
+
+    def batches(self) -> list[dict]:
+        out = []
+        for r in self.c.execute("SELECT * FROM batches ORDER BY started_at"):
+            b = dict(r)
+            b["progress"] = json.loads(b["progress"]) if b["progress"] else None
+            out.append(b)
+        return out
+
+    def set_batch(self, batch: str, **fields) -> None:
+        allowed = {"status", "session", "date", "started_at", "finished_at", "error", "progress"}
+        cols = {k: (json.dumps(v) if k == "progress" and v is not None else v) for k, v in fields.items() if k in allowed}
+        self.c.execute("INSERT OR IGNORE INTO batches (id, status) VALUES (?, 'pending')", (batch,))
+        if cols:
+            self.c.execute(f"UPDATE batches SET {', '.join(k + ' = ?' for k in cols)} WHERE id = ?", (*cols.values(), batch))
+
+    def batch_clips(self, batch: str) -> dict:
+        return {r["source"]: r["file"] for r in self.c.execute("SELECT source, file FROM batch_clips WHERE batch = ?", (batch,))}
+
+    def add_batch_clip(self, batch: str, source: str, file: str, session: str) -> None:
+        self.c.execute("INSERT OR REPLACE INTO batch_clips (batch, source, file, session) VALUES (?, ?, ?, ?)", (batch, source, file, session))
+
+    def expired_originals(self, before: str) -> list[tuple[str, str, str]]:
+        return [(r["session"], r["file"], r["original"]) for r in self.c.execute(
+            "SELECT session, file, original FROM videos WHERE original IS NOT NULL AND original_until IS NOT NULL AND original_until < ?", (before,))]
+
+    def backup_to(self, path: Path) -> None:
+        """A consistent copy of the whole database (SQLite's online backup)."""
+        dst = sqlite3.connect(path)
+        try:
+            self.c.backup(dst)
+        finally:
+            dst.close()
 
     # ---- tag vocabulary ---------------------------------------------------------------------------------------
 

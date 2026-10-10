@@ -81,6 +81,12 @@ class Remote:
     def tags(self) -> dict:
         return self._call("GET", "/api/tags")
 
+    def batches(self) -> list[dict]:
+        return self._call("GET", "/api/inbox")
+
+    def names_on(self, date: str) -> list[str]:
+        return [v["name"] for s in self.sessions() for v in self.load(s["session"])["videos"] if (v.get("name") or "").startswith(date + "_")]
+
     def set_category(self, name, color=None) -> dict:
         return self._call("POST", "/api/tag-categories", {"name": name, "color": color})
 
