@@ -6,10 +6,10 @@ services:
     image: acroscope:local
     container_name: acroscope
     restart: unless-stopped
-    # user: "${ACROSCOPE_UID:-1000}:${ACROSCOPE_GID:-1000}"   # the owner of the bind mount; root when left out
+    # runs as root: Data/fpv is owned by CT 109's root (host uid 100000); inbox/ belongs to the push user fpvpush
     ports:
       - "8070:8070"
     volumes:
-      - /mnt/fpv:/data                         # Data/fpv: videos/, blackbox/, inbox/, originals/, state/
+      - /data:/data                            # CT 109's mp0 of Data/fpv: videos/, blackbox/, inbox/, originals/, state/
       - /opt/acroscope/cache:/cache            # decoded arms, frames, OSD readings, H.264 proxies: disposable
       - /opt/acroscope/state:/state            # the database (matches, moments, notes): backed up nightly into /data/state too
