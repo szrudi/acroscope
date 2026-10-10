@@ -52,7 +52,13 @@ def cmd_sessions(a):
         for r in rows:
             print(f"{r['session']:40} {r['videos']:5} {r['missing'] or '-':>4} {r['matches']:5} {r['moments']:4}  {', '.join(b[25:40] for b in r['blackbox'])}")
         return
-    s = sessions.overview(_session(a.session))
+    name = _session(a.session)
+    for b in sessions.load(name)["blackbox"]:     # decoding happens here, with progress, not silently inside the view
+        try:
+            blackbox.index_bbl(b, progress=lambda m: print(m, file=sys.stderr))
+        except FileNotFoundError as e:
+            print(f"{b}: {e}", file=sys.stderr)
+    s = sessions.overview(name)
     if a.json:
         return out(s)
     print(f"# {s['session']}  {s.get('note', '')}")
@@ -65,11 +71,20 @@ def cmd_sessions(a):
         gone = f"  MISSING since {v['missing_since'][:10]}" if v.get("missing_since") else ""
         print(f"  {v['file']:24} {d:>7}  {cov}{gone}" + (f"  | {v['note']}" if v.get("note") else ""))
     print("\n## arms")
-    for r in s.get("arms", []):
-        vids = ", ".join(f"{x['video'][-7:-4]} +{x['offset']}" for x in r["videos"]) or "no clip"
-        flags = ("" if r["motors_spun"] else " (motors off)") + ("" if r["complete"] else " (cut off)")
-        vb = f"{r['vbat_start']:.2f}→{r['vbat_end']:.2f} V" if r.get("vbat_start") is not None else "no frames"
-        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  {vb:12}  {vids}{flags}")
+    for b in s["blackbox"]:                       # one block per log, so three "arm 4" rows can't be confused
+        rows = [r for r in s.get("arms", []) if r["bbl"] == b]
+        if b in s.get("arms_pending", []):
+            print(f"  {b}: not decoded yet (run `acroscope arms {b[25:40]}`)")
+            continue
+        if not rows:
+            print(f"  {b}: no arms" + ("" if (DATA_DIR / 'blackbox' / b).exists() else " (file not found)"))
+            continue
+        print(f"  {b}  ({len(rows)} arms, {sum(1 for r in rows if r['videos'])} with a clip)")
+        for r in rows:
+            vids = ", ".join(f"{x['video'][-7:-4]} +{x['offset']}" for x in r["videos"]) or "no clip"
+            flags = ("" if r["motors_spun"] else " (motors off)") + ("" if r["complete"] else " (cut off)")
+            vb = f"{r['vbat_start']:.2f}→{r['vbat_end']:.2f} V" if r.get("vbat_start") is not None else "no frames"
+            print(f"    arm {r['index']:2}  {r['length']:6.1f} s  {vb:12}  {vids}{flags}")
     print("\n## moments")
     for m in s["moments"]:
         print(f"  {m['id']:4} {m['video'][-7:-4]} {fmt_time(m['start'])}-{fmt_time(m['end'])}  {m['title']}  [{', '.join(m['tags'])}]" + (f"  | {m['note']}" if m.get("note") else ""))
