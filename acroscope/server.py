@@ -269,6 +269,8 @@ class Handler(BaseHTTPRequestHandler):
                 name = parts[2]
                 if len(parts) == 3:
                     if not sessions.store().exists(name):
+                        if name not in {d.name for d in sessions.session_dirs()}:   # a GET registers nothing
+                            return self._json({"error": f"{name}: no such session"}, 404)
                         sessions.refresh(name, probe_videos=False)
                     o = sessions.overview(name, cached_only=True)
                     for b in o["arms_pending"]:

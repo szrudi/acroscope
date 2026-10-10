@@ -52,6 +52,12 @@ def session_path(session: str) -> Path:
     return VIDEOS_DIR / session / "session.json"
 
 
+def _check_name(session: str) -> None:
+    """A session is a folder name; anything with a slash or a '..' would reach outside videos/ on disk."""
+    if not session or "/" in session or session in (".", "..") or "\\" in session:
+        raise ValueError(f"{session!r}: not a session name")
+
+
 def resolve_session(name: str) -> str:
     """Accept the full name or a unique fragment ('10-07', 'schammer'); folders and database sessions both count."""
     names = {d.name for d in session_dirs()} | {s["session"] for s in store().sessions()}
@@ -164,6 +170,7 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
     clip at all, marks nothing: an unmounted or half-synced Drive must not look like a deletion."""
     if remote():
         return store().refresh(session, probe_videos)
+    _check_name(session)
     db = store()
     d = VIDEOS_DIR / session
     db.ensure_session(session, session[:10])
@@ -274,6 +281,7 @@ def rename_session(session: str, new: str) -> dict:
     """videos/<session> and originals/<session> become <new>; every row follows. The date is the new name's."""
     if remote():
         return store().rename_session(session, new)
+    _check_name(session)
     if not SESSION_RE.match(new):
         raise ValueError(f"{new}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
     if (VIDEOS_DIR / new).exists() or store().exists(new):
@@ -295,6 +303,7 @@ def move_clip(session: str, vid: str, to: str) -> dict:
     """A clip, its original, its matches and its moments go to session `to` (created if new)."""
     if remote():
         return store().move_clip(session, vid, to)
+    _check_name(session)
     if not SESSION_RE.match(to):
         raise ValueError(f"{to}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
     file = resolve_clip(session, vid)
@@ -320,6 +329,7 @@ def merge_sessions(session: str, into: str) -> dict:
     """Every clip and log of `session` goes to `into`; the emptied session is removed."""
     if remote():
         return store().merge_sessions(session, into)
+    _check_name(session)
     s = load(session)
     for v in s["videos"]:
         move_clip(session, v["file"], into)

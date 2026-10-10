@@ -105,6 +105,21 @@ class ApiTest(unittest.TestCase):
         with self.assertRaises(RemoteError):
             r.cli(["frame", "2026-10-07-s", str(outside), "0"])
 
+    def test_unknown_session_is_404_and_edits_take_names_only(self):
+        import urllib.error
+        before = [s["session"] for s in self.r.sessions()]
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(self.url + "/api/session/not-a-session")
+        self.assertEqual(cm.exception.code, 404)
+        self.assertEqual([s["session"] for s in self.r.sessions()], before)          # a GET registers nothing
+        outside = Path(self.tmp.name) / "outside_dir"
+        outside.mkdir()
+        with self.assertRaises(RemoteError):
+            self.r.rename_session("../../outside_dir", "2026-01-01-pwn")
+        self.assertTrue(outside.is_dir())                                           # nothing moved
+        with self.assertRaises(RemoteError):
+            self.r.refresh("../../outside_dir", probe_videos=False)
+
     def test_file_routes_stay_inside_their_dirs(self):
         # an encoded slash in a path segment must not walk out of videos/ or static/ (the database sits two up)
         import urllib.error
