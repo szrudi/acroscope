@@ -41,6 +41,7 @@ class IngestTest(unittest.TestCase):
         self.assertEqual(ingest.keep_segments(noise + sig + noise, 30), [(9.0, 21.0)])      # static at both ends trimmed, padded
         self.assertEqual(ingest.keep_segments(sig + [15, 15] + sig, 21), [(0, 21)])          # a 1 s breakup mid-flight is kept
         self.assertEqual(ingest.keep_segments(sig + noise + sig, 30), [(0, 11.0), (19.0, 30)])  # a 10 s gap is cut
+        self.assertEqual(ingest.keep_segments(sig + [15] * 10 + sig, 30), [(0, 11.0), (14.0, 26.0)])  # exactly 5 s: cut
         self.assertEqual(ingest.keep_segments(noise, 10), [])
 
     def test_batch(self):
