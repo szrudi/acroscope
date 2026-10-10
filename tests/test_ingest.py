@@ -89,5 +89,29 @@ class IngestTest(unittest.TestCase):
         self.assertTrue(list((self.data / "state").glob("acroscope-*.db")))
 
 
+class HostileInboxTest(IngestTest):
+    def test_symlink_and_manifest_paths_fail_the_batch(self):
+        b = self.data / "inbox" / "evil"
+        b.mkdir(parents=True)
+        make_clip(b / "VID0001.mov")
+        os.symlink("/etc/hostname", b / "VID0002.mov")                 # a link posing as a clip
+        (b / ".done").write_text("")
+        r = self.cli("ingest", "evil")
+        self.assertIn("not a regular file", r.stderr)
+        self.assertTrue((b / "VID0001.mov").exists())                   # nothing was taken
+        os.unlink(b / "VID0002.mov")
+        (b / ".done").write_text(json.dumps({"files": {"../../videos/x": 1}}))
+        r = self.cli("ingest", "evil")
+        self.assertIn("not a plain file name", r.stderr)
+        (b / "sub").mkdir()                                             # a directory in a batch
+        (b / ".done").write_text("")
+        r = self.cli("ingest", "evil")
+        self.assertIn("not a regular file", r.stderr)
+        db = Db(self.root / "t.db")
+        self.assertEqual(db.batches()[0]["status"], "failed")
+        with self.assertRaises(ValueError):
+            ingest.plain_name("a/b")
+
+
 if __name__ == "__main__":
     unittest.main()
