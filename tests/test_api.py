@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -118,16 +119,26 @@ class ApiTest(unittest.TestCase):
         root = Path(self.tmp.name)
         S = "2026-10-06-cold"
         (root / "data" / "videos" / S).mkdir()
-        for f in ("2026-10-06_001.mp4", "2026-10-06_002.mp4"):
-            (root / "data" / "videos" / S / f).write_bytes(b"")
-        for b in ("z1.bbl", "z2.bbl"):
+        for n in range(1, 5):
+            (root / "data" / "videos" / S / f"2026-10-06_00{n}.mp4").write_bytes(b"")
+        for b in ("z1.bbl", "z2.bbl", "z3.bbl", "z4.bbl"):
             (root / "data" / "blackbox" / b).write_bytes(b"")
         self.r.refresh(S, probe_videos=False)
-        self.r.set_match(S, "2026-10-06_001.mp4", "z1.bbl", 1, 0)
-        self.r.set_match(S, "2026-10-06_002.mp4", "z2.bbl", 1, 0)
-        get = lambda what, clip: json.loads(urllib.request.urlopen(f"{self.url}/api/session/{S}/{what}?video={clip}").read())
+        for n in range(1, 5):
+            self.r.set_match(S, f"2026-10-06_00{n}.mp4", f"z{n}.bbl", 1, 0)
+        get = lambda what, clip, extra="": json.loads(urllib.request.urlopen(f"{self.url}/api/session/{S}/{what}?video={clip}{extra}").read())
         self.assertEqual(get("events", "2026-10-06_001.mp4"), [])
         self.assertEqual(get("series", "2026-10-06_002.mp4"), [])
+        with self.assertRaises(urllib.error.HTTPError) as cm:                   # metrics: 503 until the log is decoded
+            get("metrics", "2026-10-06_003.mp4", "&from=0&to=1")
+        self.assertEqual(cm.exception.code, 503)
+        (root / "data" / "blackbox" / "z4.bbl").unlink()                           # a log that is gone: nothing, not a 404
+        self.assertEqual(get("events", "2026-10-06_004.mp4"), [])
+        for _ in range(50):                                                        # the child decode of z1 lands in the cache
+            if (root / "cache" / "arms" / "z1" / "arms.json").exists():
+                break
+            time.sleep(0.1)
+        self.assertTrue((root / "cache" / "arms" / "z1" / "arms.json").exists())
 
     def test_moment_times_are_checked(self):
         self.r.refresh("2026-10-07-s", probe_videos=False)
@@ -158,7 +169,6 @@ class ApiTest(unittest.TestCase):
         with self.assertRaises(RemoteError):
             r.cli(["serve"])                                   # not for clients
         # the file endpoint hands out cache files only, and a proxied command gets names, never paths
-        import urllib.error
         outside = Path(self.tmp.name) / "outside.txt"
         outside.write_text("not for the client")
         with self.assertRaises(urllib.error.HTTPError) as cm:
@@ -168,7 +178,6 @@ class ApiTest(unittest.TestCase):
             r.cli(["frame", "2026-10-07-s", str(outside), "0"])
 
     def test_unknown_session_is_404_and_edits_take_names_only(self):
-        import urllib.error
         before = [s["session"] for s in self.r.sessions()]
         with self.assertRaises(urllib.error.HTTPError) as cm:
             urllib.request.urlopen(self.url + "/api/session/not-a-session")
@@ -184,7 +193,6 @@ class ApiTest(unittest.TestCase):
 
     def test_file_routes_stay_inside_their_dirs(self):
         # an encoded slash in a path segment must not walk out of videos/ or static/ (the database sits two up)
-        import urllib.error
         for path in ("/video/..%2F../t.db", "/frame/..%2F../t.db/0", "/static/..%2F..%2Fpyproject.toml"):
             with self.assertRaises(urllib.error.HTTPError, msg=path) as cm:
                 urllib.request.urlopen(self.url + path)

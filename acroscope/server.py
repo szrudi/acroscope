@@ -75,8 +75,11 @@ def _decode_async(bbl: str):
 def _indexed(bbl: str) -> bool:
     """True when the log's arms are in the cache. Else start the decode in a child and answer False: a request
     thread must never decode (30 s with the GIL held freezes every other request)."""
-    if blackbox.index_bbl(bbl, cached_only=True) is not None:
-        return True
+    try:
+        if blackbox.index_bbl(bbl, cached_only=True) is not None:
+            return True
+    except FileNotFoundError:            # the log file is gone: nothing to show, nothing to decode
+        return False
     _decode_async(bbl)
     return False
 
@@ -318,11 +321,11 @@ class Handler(BaseHTTPRequestHandler):
                 if parts[3] == "metrics":
                     s = sessions.load(name)
                     t0, t1 = float(q["from"]), float(q["to"])
+                    if not all(_indexed(m["bbl"]) for m in s["matches"] if m["video"] == q.get("video")):
+                        return self._json({"error": "log not decoded yet, try again shortly"}, 503)   # before match_for measures the arms
                     m = sessions.match_for(s, q["video"], t0)
                     if not m:
                         return self._json({"error": "no match"}, 404)
-                    if not _indexed(m["bbl"]):
-                        return self._json({"error": f"{m['bbl']}: not decoded yet, try again shortly"}, 503)
                     a = blackbox.load_arm(m["bbl"], m["arm"])
                     return self._json({"summary": metrics.summary(a, t0 - m["offset"], t1 - m["offset"]),
                                        "segments": metrics.rotation_segments(a, t0 - m["offset"], t1 - m["offset"])})
