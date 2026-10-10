@@ -27,7 +27,7 @@ _busy_lock = threading.Lock()
 SCAN_EVERY = 300                 # seconds between background walks of the data dir
 # CLI commands a client may run here (they need the clips, the logs or the cache, which only the server has);
 # each runs in a child process, so the reader's pure-Python work never holds this process's GIL
-PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox"}
+PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach"}
 INBOX_EVERY = 20                 # seconds between looks at inbox/ for a complete batch
 
 

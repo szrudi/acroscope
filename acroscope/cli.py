@@ -435,7 +435,7 @@ def cmd_serve(a):
 
 # with ACROSCOPE_URL set these run on the server (they need the clips, the logs or the cache); frames and sheets
 # come back as files into the local cache under the same relative path
-PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "inbox", "sessions"}
+PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach"}
 
 
 def _proxy(argv: list[str]) -> None:
