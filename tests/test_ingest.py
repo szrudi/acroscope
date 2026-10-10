@@ -105,6 +105,7 @@ class IngestTest(unittest.TestCase):
         self.assertEqual(db.batches()[0]["status"], "failed")
         self.assertTrue((b / "VID0001.mov").exists() and (b / "VID0002.mov").exists())
         self.assertEqual(list((self.data / "originals").glob("*/*")), [])
+        self.assertEqual(list((self.data / "videos").glob("*/*")), [])
         self.assertEqual(db.batch_clips("b3"), {})
         make_clip(b / "VID0001.mov")                                 # the laptop pushes a good copy
         db.set_batch("b3", status="pending", error=None)             # what POST /api/inbox/b3/retry does

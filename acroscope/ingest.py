@@ -222,12 +222,16 @@ def process_batch(batch: str, log=print) -> dict:
             def pct(x, prog=prog):
                 prog["pct"] = round(x * 100)
                 db.set_batch(batch, progress=prog)
-            res = compress(src, dst, pct)       # from the inbox: a clip that fails here stays there for the retry
-            shutil.move(str(src), orig)
-            db.upsert_video(session, dst.name, res["duration"], res["codec"], name=name)
-            db.set_video_fields(session, dst.name, cuts=res["kept"], original=str(orig.relative_to(DATA_DIR)),
-                                original_until=(now() + timedelta(days=ORIGINAL_DAYS)).isoformat() if res["verified"] else None)
-            db.add_batch_clip(batch, src.name, dst.name, session)
+            try:
+                res = compress(src, dst, pct)       # from the inbox: a clip that fails here stays there for the retry
+                db.upsert_video(session, dst.name, res["duration"], res["codec"], name=name)
+                db.set_video_fields(session, dst.name, cuts=res["kept"], original=str(orig.relative_to(DATA_DIR)),
+                                    original_until=(now() + timedelta(days=ORIGINAL_DAYS)).isoformat() if res["verified"] else None)
+                db.add_batch_clip(batch, src.name, dst.name, session)
+            except Exception:
+                dst.unlink(missing_ok=True)         # nothing half-registered for the scan to pick up as a clip
+                raise
+            shutil.move(str(src), orig)             # last: recorded first, so a retry never compresses it twice
             if not res["verified"]:
                 log(f"{batch}: {name}: compressed clip is {res['duration']} s, kept stretches add up to {sum(e - s for s, e in res['kept']):.1f} s: original kept")
             imported.append(dst.name)
