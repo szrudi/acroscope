@@ -223,7 +223,9 @@ def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: s
     """Record video <-> arm with `offset` (video = arm time + offset). With boot=True, also record every other arm
     of the same power cycle, their offsets derived from the FC uptime (video = uptime + boot offset)."""
     vid = resolve_clip(session, vid)
-    bbl_name = blackbox.resolve_bbl(bbl).name
+    if boot and remote():
+        raise ValueError("match --boot reads the log: run it where the data is (unset ACROSCOPE_URL)")
+    bbl_name = bbl if remote() else blackbox.resolve_bbl(bbl).name      # the server resolves it against its own logs
     new = [(arm, round(offset, 2), note)]
     if boot:
         idx = blackbox.index_bbl(bbl_name)
@@ -264,11 +266,11 @@ def set_note(session: str, note: str, vid: str | None = None) -> None:
 
 
 def attach(session: str, bbl: str) -> list[str]:
-    return store().attach(session, blackbox.resolve_bbl(bbl).name)
+    return store().attach(session, bbl if remote() else blackbox.resolve_bbl(bbl).name)
 
 
 def detach(session: str, bbl: str) -> list[str]:
-    return store().detach(session, blackbox.resolve_bbl(bbl).name)
+    return store().detach(session, bbl if remote() else blackbox.resolve_bbl(bbl).name)
 
 
 def purge(session: str, vid: str | None = None, days: float = 0) -> list[dict]:

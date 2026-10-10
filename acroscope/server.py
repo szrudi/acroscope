@@ -348,8 +348,8 @@ class Handler(BaseHTTPRequestHandler):
                 if what == "note":
                     sessions.set_note(name, b.get("note", ""), b.get("video"))
                     return self._json({"ok": True})
-                if what == "match":
-                    return self._json(sessions.store().set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", "")))
+                if what == "match":                     # resolves the clip and the log like the CLI does
+                    return self._json(sessions.set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", "")))
                 if what == "blackbox":
                     for f in b.get("add", []):
                         sessions.attach(name, f)

@@ -1,5 +1,6 @@
 """The server's API through the remote client: a real `acroscope serve` child on a free port with a scratch
 database and an empty data dir, driven exactly as the CLI on another machine drives it."""
+import json
 import os
 import socket
 import subprocess
@@ -27,6 +28,7 @@ class ApiTest(unittest.TestCase):
         (root / "data" / "videos" / "2026-10-07-s").mkdir(parents=True)
         (root / "data" / "videos" / "2026-10-07-s" / "2026-10-07_001.mp4").write_bytes(b"")   # a clip that is not probeable
         (root / "data" / "blackbox").mkdir()
+        (root / "data" / "blackbox" / "x.bbl").write_bytes(b"")          # a log the server has (empty: no arms)
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"),
                    ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="")
@@ -87,6 +89,26 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(r.exists("2026-10-09-other"))
         with self.assertRaises(RemoteError):
             r.rename_session("2026-10-09-renamed", "not a session name")
+
+    def test_cli_as_client(self):
+        """The CLI on another machine: no data dir of its own, everything through the server."""
+        root = Path(self.tmp.name)
+        env = dict(os.environ, ACROSCOPE_URL=self.url, ACROSCOPE_DATA=str(root / "nowhere"),
+                   ACROSCOPE_CACHE=str(root / "client-cache"), ACROSCOPE_DB=str(root / "unused.db"))
+
+        def cli(*args):
+            return subprocess.run([sys.executable, "-m", "acroscope.cli", *args], env=env, capture_output=True, text=True)
+        self.r.refresh("2026-10-07-s", probe_videos=False)
+        r = cli("attach", "2026-10-07-s", "x.bbl")                             # the server resolves the log, not the client
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = cli("match", "2026-10-07-s", "001", "x.bbl", "1", "0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)[0]["arm"], 1)
+        r = cli("sessions", "2026-10-07-s")                                    # runs on the server: the arms are in its cache
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("x.bbl", r.stdout)
+        self.assertNotIn("file not found", r.stdout)
+        self.assertEqual(self.r.unmatch("2026-10-07-s", "2026-10-07_001.mp4", 1), 1)
 
     def test_cli_proxy(self):
         r = self.r
