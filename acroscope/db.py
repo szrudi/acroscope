@@ -285,7 +285,7 @@ class Db:
         row = self.c.execute("SELECT * FROM sessions WHERE name = ?", (old,)).fetchone()
         if not row:
             raise ValueError(f"session {old}: no such session")
-        self.c.execute("BEGIN")
+        self.c.execute("BEGIN IMMEDIATE")   # the write lock first: a read-then-write transaction cannot wait out a concurrent commit
         try:
             self.c.execute("INSERT INTO sessions (name, date, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                            (new, new[:10], row["note"], row["created_at"], now()))
@@ -303,7 +303,7 @@ class Db:
     def move_clip(self, session: str, file: str, to: str) -> None:
         """A clip and its matches and moments go to another session (the file keeps its name: it is the id)."""
         self.ensure_session(to, to[:10])
-        self.c.execute("BEGIN")
+        self.c.execute("BEGIN IMMEDIATE")   # the write lock first: a read-then-write transaction cannot wait out a concurrent commit
         try:
             # moment ids count per session (m01, m02, ...): one that `to` already uses gets the next free id there
             for r in self.c.execute("SELECT id FROM moments WHERE session = ? AND video = ? ORDER BY start", (session, file)).fetchall():
