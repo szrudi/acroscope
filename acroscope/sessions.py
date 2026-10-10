@@ -1,29 +1,45 @@
-"""Session files: videos/<session>/session.json is the source of truth for a flying session.
+"""Sessions: what the database knows about a flying session, plus the folder scan that feeds it.
 
-{
-  "session": "2026-10-07-schammer",
-  "date": "2026-10-07",
-  "note": "free text about the session",
-  "videos":  [{"file": "2026-10-07_007.mp4", "duration": 175.02, "note": "..."}],
-  "blackbox": ["BTFL_BLACKBOX_LOG_..._20261007_212530_....bbl"],
-  "matches": [{"video": "2026-10-07_007.mp4", "bbl": "...", "arm": 13, "offset": 53.2, "note": "..."}],
-  "moments": [{"id": "m07", "video": "2026-10-07_007.mp4", "start": 78.0, "end": 87.0, "title": "powerloop 1",
-               "tags": ["powerloop"], "note": "...", "metrics": {...}}]
-}
+A session is videos/<YYYY-MM-DD-name>/ in the data dir. The database (db.Db, or remote.Remote when the CLI talks to
+a server) holds its clips (with duration, codec, note, and `missing_since` once the file is gone), blackbox files,
+matches (video <-> arm + offset) and moments. The clips and the logs themselves stay in the data dir.
+
 Times are video seconds. video time = arm time + offset (offset holds within one arm; the clips have static cut
 out, so a clip's timeline is not continuous across arms). Arm details come from the blackbox cache, not from here.
 """
-import json
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 from . import blackbox, video
-from .config import BLACKBOX_DIR, VIDEOS_DIR
+from .config import DB_PATH, SERVER_URL, VIDEOS_DIR
+from .db import now
 
 VIDEO_EXT = (".mp4", ".mov", ".mkv")
+_store = None
 
+
+def store():
+    """The database (default), or a client of the server named by ACROSCOPE_URL."""
+    global _store
+    if _store is None:
+        if SERVER_URL:
+            from .remote import Remote
+            _store = Remote(SERVER_URL)
+        else:
+            from .db import Db
+            if not DB_PATH.exists():
+                print(f"acroscope: new local database {DB_PATH} (set ACROSCOPE_URL to use a server's instead)", file=sys.stderr)
+            _store = Db(DB_PATH)
+    return _store
+
+
+def remote() -> bool:
+    return bool(SERVER_URL)
+
+
+# ---- folders ----------------------------------------------------------------------------------------------------
 
 def session_dirs() -> list[Path]:
     if not VIDEOS_DIR.is_dir():   # data dir not mounted (yet): no sessions rather than a crash
@@ -32,57 +48,48 @@ def session_dirs() -> list[Path]:
 
 
 def session_path(session: str) -> Path:
+    """The pre-database session file (only read by import_json now)."""
     return VIDEOS_DIR / session / "session.json"
 
 
 def resolve_session(name: str) -> str:
-    """Accept the full dir name or a unique fragment ('10-07', 'schammer')."""
-    if (VIDEOS_DIR / name).is_dir():
+    """Accept the full name or a unique fragment ('10-07', 'schammer'); folders and database sessions both count."""
+    names = {d.name for d in session_dirs()} | {s["session"] for s in store().sessions()}
+    if name in names:
         return name
-    hits = [d.name for d in session_dirs() if name in d.name]
+    hits = sorted(n for n in names if name in n)
     if len(hits) != 1:
         raise FileNotFoundError(f"{name}: {len(hits)} sessions match (need exactly 1)")
     return hits[0]
 
 
+def resolve_clip(session: str, file: str) -> str:
+    """A clip's file name from a name, number or path; a clip that is only in the database (file gone) still resolves."""
+    try:
+        return video.resolve_video(session, file).name
+    except FileNotFoundError:
+        known = [v["file"] for v in load(session)["videos"]]
+        if file in known:
+            return file
+        if file.isdigit():
+            hits = [k for k in known if Path(k).stem.endswith(f"_{int(file):03d}")]
+            if len(hits) == 1:
+                return hits[0]
+        raise
+
+
+def clip_files(d: Path) -> list[str]:
+    return sorted(f.name for f in d.iterdir() if f.suffix.lower() in VIDEO_EXT)
+
+
+# ---- reading ----------------------------------------------------------------------------------------------------
+
 def load(session: str) -> dict:
-    p = session_path(session)
-    if p.exists():
-        return json.loads(p.read_text())
-    return {"session": session, "date": session[:10], "note": "", "videos": [], "blackbox": [], "matches": [],
-            "moments": []}
+    return store().load(session)
 
 
-def save(s: dict) -> Path:
-    p = session_path(s["session"])
-    s["moments"].sort(key=lambda m: (m["video"], m["start"]))
-    p.write_text(json.dumps(s, indent=1, ensure_ascii=False) + "\n")
-    return p
-
-
-def refresh(session: str, probe_videos: bool = True) -> dict:
-    """Create or update the session file from the folder: add new clips (with duration), keep notes, and pick the
-    blackbox files of that date when none are set. Nothing is removed."""
-    s = load(session)
-    d = VIDEOS_DIR / session
-    known = {v["file"]: v for v in s["videos"]}
-    for f in sorted(d.iterdir()):
-        if f.suffix.lower() in VIDEO_EXT and f.name not in known:
-            known[f.name] = {"file": f.name, "duration": None, "note": ""}
-    if probe_videos:
-        for v in known.values():
-            if (v.get("duration") is None or v.get("codec") is None) and (d / v["file"]).exists():
-                try:
-                    info = video.probe(d / v["file"])
-                except subprocess.CalledProcessError:   # still syncing / half-written: try again next refresh
-                    print(f"{v['file']}: ffprobe failed (still syncing?), skipped", file=sys.stderr)
-                    continue
-                v["duration"], v["codec"] = info["duration"], info["codec"]
-    s["videos"] = sorted(known.values(), key=lambda v: v["file"])
-    if not s["blackbox"]:
-        s["blackbox"] = [b.name for b in blackbox.all_bbls() if blackbox.bbl_date(b) == s["date"] and b.stat().st_size]
-    save(s)
-    return s
+def all_sessions() -> list[dict]:
+    return store().sessions()
 
 
 def match_for(s: dict, vid: str, t: float | None = None) -> dict | None:
@@ -110,70 +117,8 @@ def arm_length(m: dict) -> float | None:
     return None
 
 
-def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: str = "", boot: bool = False) -> dict:
-    """Record video <-> arm with `offset` (video = arm time + offset). With boot=True, also record every other arm
-    of the same power cycle, their offsets derived from the FC uptime (video = uptime + boot offset)."""
-    s = load(session)
-    vid = video.resolve_video(session, vid).name
-    bbl_name = blackbox.resolve_bbl(bbl).name
-    new = [(arm, round(offset, 2), note)]
-    if boot:
-        idx = blackbox.index_bbl(bbl_name)
-        meta = {a["index"]: a for a in idx["arms"]}
-        b = next((b for b in idx.get("boots", []) if arm in b["arms"]), None)
-        if b:
-            boot_offset = offset - meta[arm]["uptime_start"]
-            new = [(i, round(boot_offset + meta[i]["uptime_start"], 2), note if i == arm else f"derived from arm {arm} via uptime (boot {b['first']}-{b['last']})")
-                   for i in b["arms"]]
-    for i, off, n in new:
-        s["matches"] = [m for m in s["matches"] if not (m["video"] == vid and m["bbl"] == bbl_name and m["arm"] == i)]
-        s["matches"].append({"video": vid, "bbl": bbl_name, "arm": i, "offset": off, "note": n})
-    s["matches"].sort(key=lambda m: (m["video"], m["offset"]))
-    if bbl_name not in s["blackbox"]:
-        s["blackbox"].append(bbl_name)
-    save(s)
-    return s
-
-
-def unmatch(session: str, vid: str, arm: int | None = None) -> int:
-    """Remove the matches of a clip (all, or one arm). Returns how many were removed."""
-    s = load(session)
-    vid = video.resolve_video(session, vid).name
-    before = len(s["matches"])
-    s["matches"] = [m for m in s["matches"] if not (m["video"] == vid and (arm is None or m["arm"] == arm))]
-    save(s)
-    return before - len(s["matches"])
-
-
-def next_id(s: dict) -> str:
-    n = max((int(m["id"][1:]) for m in s["moments"] if re.fullmatch(r"m\d+", m.get("id", ""))), default=0)
-    return f"m{n + 1:02d}"
-
-
-def tag(session: str, vid: str, start: float, end: float, title: str, tags: list[str], note: str = "",
-        metrics: dict | None = None, mid: str | None = None) -> dict:
-    """Add a moment, or replace the one with id `mid`."""
-    s = load(session)
-    vid = video.resolve_video(session, vid).name
-    m = {"id": mid or next_id(s), "video": vid, "start": round(start, 2), "end": round(end, 2), "title": title,
-         "tags": tags, "note": note}
-    if metrics:
-        m["metrics"] = metrics
-    s["moments"] = [x for x in s["moments"] if x["id"] != m["id"]] + [m]
-    save(s)
-    return m
-
-
-def untag(session: str, mid: str) -> bool:
-    s = load(session)
-    before = len(s["moments"])
-    s["moments"] = [x for x in s["moments"] if x["id"] != mid]
-    save(s)
-    return len(s["moments"]) < before
-
-
 def overview(session: str, with_arms: bool = True, cached_only: bool = False) -> dict:
-    """Session file plus the arm index of its blackbox files and coverage (which arms have a clip).
+    """The session plus the arm index of its blackbox files and coverage (which arms have a clip).
     With cached_only, blackbox files not decoded yet are listed in `arms_pending` instead of decoded here."""
     s = load(session)
     out = dict(s)
@@ -197,11 +142,114 @@ def overview(session: str, with_arms: bool = True, cached_only: bool = False) ->
     return out
 
 
-def all_sessions() -> list[dict]:
-    rows = []
+# ---- the folder scan ----------------------------------------------------------------------------------------------
+
+def scan() -> list[dict]:
+    """Register every session folder in the database (no probing). Returns the session list."""
+    if remote():
+        return store().scan()
     for d in session_dirs():
-        s = load(d.name)
-        rows.append({"session": d.name, "videos": len(s["videos"]) or len([f for f in d.iterdir() if f.suffix.lower() in VIDEO_EXT]),
-                     "has_file": session_path(d.name).exists(), "matches": len(s["matches"]), "moments": len(s["moments"]),
-                     "blackbox": s["blackbox"]})
-    return rows
+        store().ensure_session(d.name, d.name[:10])
+    return store().sessions()
+
+
+def refresh(session: str, probe_videos: bool = True) -> dict:
+    """Bring a session in line with its folder: new clips are added (and probed for duration/codec), clips whose
+    file is gone are marked `missing_since` (never removed: purge() does that), clips that are back are unmarked,
+    and the blackbox files of that date are attached when none are. A folder that cannot be listed, or lists no
+    clip at all, marks nothing: an unmounted or half-synced Drive must not look like a deletion."""
+    if remote():
+        return store().refresh(session, probe_videos)
+    db = store()
+    d = VIDEOS_DIR / session
+    db.ensure_session(session, session[:10])
+    s = db.load(session)
+    present = clip_files(d) if d.is_dir() else None
+    known = {v["file"]: v for v in s["videos"]}
+    if present:
+        for f in present:
+            if f not in known:
+                db.upsert_video(session, f)
+                known[f] = {"file": f, "duration": None, "codec": None}
+    for f, v in known.items():
+        if present is None or not present:
+            continue                                    # folder unreadable or empty: leave every mark as it is
+        if f in present:
+            if v.get("missing_since"):
+                db.upsert_video(session, f, missing_since=None)
+                print(f"{f}: back", file=sys.stderr)
+        elif not v.get("missing_since"):
+            db.upsert_video(session, f, missing_since=now())
+            print(f"{f}: file gone, marked missing (purge removes it)", file=sys.stderr)
+    if probe_videos and present:
+        for f, v in known.items():
+            if (v.get("duration") is None or v.get("codec") is None) and f in present:
+                try:
+                    info = video.probe(d / f)
+                except subprocess.CalledProcessError:   # still syncing / half-written: try again next refresh
+                    print(f"{f}: ffprobe failed (still syncing?), skipped", file=sys.stderr)
+                    continue
+                db.upsert_video(session, f, info["duration"], info["codec"])
+    if not s["blackbox"]:
+        db.set_blackbox(session, [b.name for b in blackbox.all_bbls() if blackbox.bbl_date(b) == session[:10] and b.stat().st_size])
+    return db.load(session)
+
+
+# ---- writing ------------------------------------------------------------------------------------------------------
+
+def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: str = "", boot: bool = False) -> dict:
+    """Record video <-> arm with `offset` (video = arm time + offset). With boot=True, also record every other arm
+    of the same power cycle, their offsets derived from the FC uptime (video = uptime + boot offset)."""
+    vid = resolve_clip(session, vid)
+    bbl_name = blackbox.resolve_bbl(bbl).name
+    new = [(arm, round(offset, 2), note)]
+    if boot:
+        idx = blackbox.index_bbl(bbl_name)
+        meta = {a["index"]: a for a in idx["arms"]}
+        b = next((b for b in idx.get("boots", []) if arm in b["arms"]), None)
+        if b:
+            boot_offset = offset - meta[arm]["uptime_start"]
+            new = [(i, round(boot_offset + meta[i]["uptime_start"], 2), note if i == arm else f"derived from arm {arm} via uptime (boot {b['first']}-{b['last']})")
+                   for i in b["arms"]]
+    for i, off, n in new:
+        store().set_match(session, vid, bbl_name, i, off, n)
+    return load(session)
+
+
+def unmatch(session: str, vid: str, arm: int | None = None) -> int:
+    """Remove the matches of a clip (all, or one arm). Returns how many were removed."""
+    return store().unmatch(session, resolve_clip(session, vid), arm)
+
+
+def tag(session: str, vid: str, start: float, end: float, title: str, tags: list[str], note: str = "",
+        metrics: dict | None = None, mid: str | None = None) -> dict:
+    """Add a moment, or replace the one with id `mid`."""
+    return store().tag(session, resolve_clip(session, vid), start, end, title, tags, note, metrics, mid)
+
+
+def untag(session: str, mid: str) -> bool:
+    return store().untag(session, mid)
+
+
+def set_note(session: str, note: str, vid: str | None = None) -> None:
+    store().set_note(session, note, resolve_clip(session, vid) if vid else None)
+
+
+def attach(session: str, bbl: str) -> list[str]:
+    return store().attach(session, blackbox.resolve_bbl(bbl).name)
+
+
+def detach(session: str, bbl: str) -> list[str]:
+    return store().detach(session, blackbox.resolve_bbl(bbl).name)
+
+
+def purge(session: str, vid: str | None = None, days: float = 0) -> list[dict]:
+    return store().purge(session, resolve_clip(session, vid) if vid else None, days)
+
+
+def import_json(session: str | None = None) -> list[dict]:
+    """Import the pre-database videos/<session>/session.json files (one session, or every one found)."""
+    if remote():
+        return store().import_json(session)
+    paths = [session_path(session)] if session else [session_path(d.name) for d in session_dirs()]
+    return [store().import_json(p) for p in paths if p.exists()]

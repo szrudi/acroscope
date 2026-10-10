@@ -15,6 +15,7 @@ services:
     volumes:
       - /opt/acroscope/rclone:/config          # rclone.conf (0600); writable so refreshed tokens persist
       - /opt/acroscope/cache:/cache            # decoded arms, frames, H.264 proxies, rclone VFS cache
+      - /opt/acroscope/state:/state            # the database (matches, moments, notes): the one thing to back up
     devices:
       - /dev/fuse
     cap_add:

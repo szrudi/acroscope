@@ -1,13 +1,17 @@
-"""The player: a stdlib HTTP server for one HTML page, JSON endpoints over the session files, and the clips as
-static files with Range support (seeking needs it). Writes go through the same functions as the CLI."""
+"""The player and the API: a stdlib HTTP server for one HTML page, JSON endpoints over the database, and the clips
+as static files with Range support (seeking needs it). The server owns the database; the CLI on another machine
+uses these endpoints (remote.Remote). Writes go through the same functions as the CLI.
+
+The data dir is only walked in the background (a scan at start and every SCAN_EVERY seconds, and on request): a
+page open never waits on the Drive mount."""
 import json
 import mimetypes
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
+import time
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,6 +24,7 @@ STATIC = Path(__file__).parent / "static"
 _lock = threading.Lock()
 _busy: set[str] = set()          # blackbox files being decoded / sessions being probed right now
 _busy_lock = threading.Lock()
+SCAN_EVERY = 300                 # seconds between background walks of the data dir
 
 
 def _background(key: str, fn):
@@ -43,7 +48,8 @@ def _background(key: str, fn):
 def _cli(*args: str):
     """Run an acroscope CLI command in a child process. Decoding is pure Python and would hold the GIL for
     30 s per file inside this server; a child process keeps requests responsive and uses another core."""
-    subprocess.run([sys.executable, "-m", "acroscope.cli", *args], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    env = dict(os.environ, ACROSCOPE_URL="")      # the child writes the database directly, never through this server
+    subprocess.run([sys.executable, "-m", "acroscope.cli", *args], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
 
 def _decode_async(bbl: str):
@@ -51,22 +57,45 @@ def _decode_async(bbl: str):
 
 
 def _probe_async(session: str):
-    _background(f"probe:{session}", lambda: _cli("refresh", session))
+    # ffprobe is a subprocess, so a thread is fine here (unlike decoding)
+    _background(f"probe:{session}", lambda: sessions.refresh(session))
 
 
-def warm_up():
-    """At start: decode every blackbox file and probe every clip the session files refer to, one child process at
-    a time, so the first page open never waits on the Drive mount. Sessions without a file get one."""
-    def run():
-        for d in sessions.session_dirs():
-            s = sessions.load(d.name)
+def scan_all(decode: bool = True) -> None:
+    """Walk the data dir: register new session folders, refresh every session (new clips probed, gone clips marked
+    missing), and decode blackbox files that are not in the cache yet (one child process at a time)."""
+    if not sessions.session_dirs():
+        print("scan: data dir not mounted, nothing to do", flush=True)
+        return
+    for row in sessions.scan():
+        try:
+            s = sessions.refresh(row["session"])
+        except Exception as e:  # noqa: BLE001
+            print(f"scan {row['session']}: {type(e).__name__}: {e}", flush=True)
+            continue
+        if decode:
             for b in s["blackbox"]:
                 if blackbox.index_bbl(b, cached_only=True) is None:
                     _cli("arms", b)
-            if not sessions.session_path(d.name).exists() or any(v.get("codec") is None for v in s["videos"]):
-                _cli("refresh", d.name)
-        print("warm-up done", flush=True)
-    _background("warm-up", run)
+
+
+def first_start() -> None:
+    """An empty database next to a data dir with the old session.json files: import them once."""
+    if not sessions.remote() and not sessions.store().sessions():
+        done = sessions.import_json()
+        if done:
+            print(f"imported {len(done)} session file(s) into {sessions.store()}", flush=True)
+
+
+def background_scans():
+    def run():
+        first_start()
+        while True:
+            t = time.time()
+            scan_all()
+            print(f"scan done in {time.time() - t:.0f} s", flush=True)
+            time.sleep(SCAN_EVERY)
+    threading.Thread(target=run, name="scan", daemon=True).start()
 
 
 @lru_cache(maxsize=64)
@@ -178,13 +207,15 @@ class Handler(BaseHTTPRequestHandler):
             if parts[0] == "frame" and len(parts) == 4:
                 return self._file(video.frame(VIDEOS_DIR / parts[1] / parts[2], float(parts[3])), "image/jpeg", "max-age=86400")
             if parts[:2] == ["api", "sessions"]:
-                return self._json(sessions.all_sessions())
+                return self._json(sessions.all_sessions())             # the database: never the Drive mount
+            if parts[:2] == ["api", "store"]:
+                return self._json({"store": repr(sessions.store()), "data": str(VIDEOS_DIR.parent)})
             if parts[:2] == ["api", "tags"]:
                 return self._json(TAGS)
             if parts[:2] == ["api", "session"] and len(parts) >= 3:
                 name = parts[2]
                 if len(parts) == 3:
-                    if not sessions.session_path(name).exists():
+                    if not sessions.store().exists(name):
                         sessions.refresh(name, probe_videos=False)
                     o = sessions.overview(name, cached_only=True)
                     for b in o["arms_pending"]:
@@ -201,6 +232,8 @@ class Handler(BaseHTTPRequestHandler):
                         o["probe_pending"] = True
                         _probe_async(name)
                     return self._json(o)
+                if parts[3] == "data":
+                    return self._json(sessions.load(name))
                 if parts[3] == "events":
                     s = sessions.load(name)
                     rows = []
@@ -235,43 +268,68 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/") if p]
         try:
-            if parts[:2] == ["api", "session"] and len(parts) == 4 and parts[3] == "moment":
-                b = self._body()
-                with _lock:
-                    m = sessions.tag(parts[2], b["video"], float(b["start"]), float(b["end"]), b.get("title", ""),
-                                     [t for t in b.get("tags", []) if t], b.get("note", ""), b.get("metrics"), b.get("id"))
-                return self._json(m)
-            if parts[:2] == ["api", "session"] and len(parts) == 4 and parts[3] == "note":
-                b = self._body()
-                with _lock:
-                    s = sessions.load(parts[2])
-                    if "video" in b:
-                        for v in s["videos"]:
-                            if v["file"] == b["video"]:
-                                v["note"] = b.get("note", "")
-                    else:
-                        s["note"] = b.get("note", "")
-                    sessions.save(s)
-                return self._json({"ok": True})
+            if parts == ["api", "scan"]:
+                return self._json(sessions.scan())
+            if parts == ["api", "import"]:
+                return self._json(sessions.import_json(self._body().get("session")))
+            if parts[:2] != ["api", "session"] or len(parts) != 4:
+                return self._json({"error": "not found"}, 404)
+            name, what, b = parts[2], parts[3], self._body()
+            with _lock:
+                if what == "moment":
+                    return self._json(sessions.tag(name, b["video"], float(b["start"]), float(b["end"]), b.get("title", ""),
+                                                   [t for t in b.get("tags", []) if t], b.get("note", ""), b.get("metrics"), b.get("id")))
+                if what == "note":
+                    sessions.set_note(name, b.get("note", ""), b.get("video"))
+                    return self._json({"ok": True})
+                if what == "match":
+                    return self._json(sessions.store().set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", "")))
+                if what == "blackbox":
+                    for f in b.get("add", []):
+                        sessions.attach(name, f)
+                    for f in b.get("remove", []):
+                        sessions.detach(name, f)
+                    return self._json(sessions.load(name)["blackbox"])
+                if what == "purge":
+                    return self._json(sessions.purge(name, b.get("video"), float(b.get("days") or 0)))
+            if what == "refresh":                      # walks the mount: outside the lock, it can take a while
+                return self._json(sessions.refresh(name, probe_videos=b.get("probe", True)))
             return self._json({"error": "not found"}, 404)
+        except FileNotFoundError as e:
+            return self._json({"error": str(e)}, 404)
         except Exception as e:  # noqa: BLE001
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def do_DELETE(self):
-        parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/") if p]
-        if parts[:2] == ["api", "session"] and len(parts) == 5 and parts[3] == "moment":
-            with _lock:
-                ok = sessions.untag(parts[2], parts[4])
-            return self._json({"removed": ok})
-        return self._json({"error": "not found"}, 404)
+        u = urlparse(self.path)
+        parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        try:
+            if parts[:2] == ["api", "session"] and len(parts) == 5 and parts[3] == "moment":
+                with _lock:
+                    ok = sessions.untag(parts[2], parts[4])
+                return self._json({"removed": ok})
+            if parts[:2] == ["api", "session"] and len(parts) == 4 and parts[3] == "match":
+                with _lock:
+                    n = sessions.unmatch(parts[2], q["video"], int(q["arm"]) if q.get("arm") else None)
+                return self._json({"removed": n})
+            return self._json({"error": "not found"}, 404)
+        except FileNotFoundError as e:
+            return self._json({"error": str(e)}, 404)
+        except Exception as e:  # noqa: BLE001
+            return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
 
 def serve(host="0.0.0.0", port=8070, warm: bool = True):
+    if sessions.remote():
+        sys.exit("acroscope serve: unset ACROSCOPE_URL, the server owns the database itself")
     srv = ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
-    print(f"acroscope player on http://{host}:{port}/  (data {VIDEOS_DIR.parent})")
+    print(f"acroscope player on http://{host}:{port}/  (data {VIDEOS_DIR.parent}, {sessions.store()})")
     if warm:
-        warm_up()
+        background_scans()
+    else:
+        first_start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

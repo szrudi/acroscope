@@ -1,13 +1,16 @@
-"""Where the data and the cache live.
+"""Where the data, the database and the cache live.
 
-The data dir is the Google Drive "FPV drone" folder (videos/, blackbox/). The cache holds decoded arms,
-extracted frames and H.264 proxies, and is never synced.
+The data dir is the Google Drive "FPV drone" folder (videos/, blackbox/): clips and logs only. Matches, moments and
+notes live in a SQLite database owned by the server (ACROSCOPE_DB). A CLI on another machine talks to the server
+instead (ACROSCOPE_URL). The cache holds decoded arms, extracted frames and H.264 proxies, and is never synced.
 """
 import os
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("ACROSCOPE_DATA", "~/gdrive/fpv")).expanduser()
 CACHE_DIR = Path(os.environ.get("ACROSCOPE_CACHE", "~/.cache/acroscope")).expanduser()
+DB_PATH = Path(os.environ.get("ACROSCOPE_DB", "~/.local/share/acroscope/acroscope.db")).expanduser()
+SERVER_URL = os.environ.get("ACROSCOPE_URL", "").rstrip("/")   # set: the CLI is a client of that server's database
 
 VIDEOS_DIR = DATA_DIR / "videos"
 BLACKBOX_DIR = DATA_DIR / "blackbox"

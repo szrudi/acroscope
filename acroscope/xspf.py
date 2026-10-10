@@ -11,8 +11,7 @@ def import_session(session: str) -> list[dict]:
     p = VIDEOS_DIR / session / "moments.xspf"
     if not p.exists():
         return []
-    s = sessions.load(session)
-    have = {(m["video"], m["start"], m["end"]) for m in s["moments"]}
+    have = {(m["video"], m["start"], m["end"]) for m in sessions.load(session)["moments"]}
     added = []
     for tr in ET.parse(p).getroot().iterfind(".//x:track", NS):
         loc = tr.findtext("x:location", default="", namespaces=NS)
@@ -24,8 +23,5 @@ def import_session(session: str) -> list[dict]:
         # titles are "10-07 powerloop 1": strip the date prefix
         if len(title) > 6 and title[2] == "-" and title[:2].isdigit() and title[5] == " ":
             title = title[6:]
-        m = {"id": sessions.next_id(s), "video": loc, "start": start, "end": end, "title": title, "tags": [], "note": ""}
-        s["moments"].append(m)
-        added.append(m)
-    sessions.save(s)
+        added.append(sessions.tag(session, loc, start, end, title, []))
     return added

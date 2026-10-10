@@ -14,16 +14,29 @@ stays in the Betaflight App's blackbox viewer.
 
 ## Data layout
 
-The data dir (`ACROSCOPE_DATA`, default `~/gdrive/fpv`, the Google Drive "FPV drone" folder) is the source of truth:
+The data dir (`ACROSCOPE_DATA`, default `~/gdrive/fpv`, the Google Drive "FPV drone" folder) holds the footage and
+the logs:
 
 ```
 videos/<YYYY-MM-DD-session>/<date>_NNN.mp4   DVR clips (cobra-compress.py output; H.264 since 2026-10-10)
-videos/<session>/session.json                videos, blackbox files, matches (video <-> arm + offset), moments
+videos/<session>/<date>_NNN.cuts.json        which stretches of the original the compressor kept (not read yet)
 blackbox/*.bbl                               full flash dumps, many arms per file
 ```
 
+Everything acroscope knows about a session (its clips with duration and codec, its blackbox files, the matches
+video <-> arm + offset, the moments, the notes) is in one SQLite database (`ACROSCOPE_DB`, default
+`~/.local/share/acroscope/acroscope.db`), owned by the server. The server walks the data dir in the background (at
+start, every 5 minutes, and on `refresh`): new session folders and clips are registered, a clip whose file is gone
+is marked `missing_since` and keeps its matches and moments until an explicit `purge`. A folder that cannot be
+listed, or lists no clip at all, marks nothing, so an unmounted or half-synced Drive never looks like a deletion.
+
+A CLI on another machine does not open the database: set `ACROSCOPE_URL=http://<server>:8070` and it uses the
+server's API for everything in the database, while metrics, events and frames still run locally against that
+machine's own mount of the data dir. The pre-database `videos/<session>/session.json` files are imported once by
+`acroscope import-json` (a server with an empty database does it at start) and not read afterwards.
+
 The cache (`ACROSCOPE_CACHE`, default `~/.cache/acroscope`) holds decoded arms (`arms/<bbl>/arm-NN.bin` plus
-`arms.json`), extracted frames, ffprobe results and H.264 proxies. Delete it any time.
+`arms.json`), extracted frames, ffprobe results, OSD readings and H.264 proxies. Delete it any time.
 
 `video time = arm time + offset`. The clips have static cut out, so an offset only holds within one arm; a clip can
 have several matches.
@@ -41,14 +54,20 @@ the package is installed anyway (the Dockerfile tolerates it and checks the impo
 ## Deployment
 
 The homelab runs it as the Komodo stack `acroscope` (one container from `Dockerfile` + `compose.yaml`: the rclone
-Drive mount plus `acroscope serve`), reachable at `acroscope.hakhorst.eu`. Hosting notes live in the homelab repo,
+Drive mount plus `acroscope serve`), reachable at `acroscope.hakhorst.eu`. The database is on the host in
+`/opt/acroscope/state`, the one directory worth backing up. Hosting notes live in the homelab repo,
 `services/acroscope.md`.
 
 ## CLI (the agent side)
 
 ```
 acroscope sessions [session]                     list sessions / show one: clips, arms with coverage, moments
-acroscope refresh <session>                      create or update session.json from the folder (durations, bbl by date)
+acroscope scan                                   register every session folder (the server does it every 5 min)
+acroscope refresh <session>                      the folder's clips in (durations, codecs), gone clips marked missing, bbl by date
+acroscope purge <session> [clip] [--days N --yes]   remove clips marked missing, with their matches and moments
+acroscope note <session> "<text>" [--clip NNN]   session or clip note
+acroscope attach|detach <session> <bbl>          a blackbox file dated another day
+acroscope import-json [session]                  one-off: the pre-database session.json files
 acroscope arms <bbl>                             list the arms (decodes the whole file into the cache once, ~30 s)
 acroscope decode <bbl> <arm> [--csv]             cache one arm; --csv dumps it like blackbox_decode for the old scripts
 acroscope match <session> <video> <bbl> <arm> <offset>   record a video <-> arm match
@@ -67,6 +86,27 @@ acroscope serve [--port 8070]
 ```
 
 Sessions and clips accept unique fragments: `acroscope events 10-07 007`. Times are seconds or `m:ss.s`.
+`acroscope --version` says which store the CLI is using (the local database, or the server from `ACROSCOPE_URL`).
+
+### API
+
+What the player and the remote CLI use, JSON over HTTP on the server:
+
+```
+GET  /api/sessions                      the session list (counts of clips, missing clips, matches, moments)
+GET  /api/session/<s>                   the session plus its arms (from the cache) and coverage
+GET  /api/session/<s>/data              the session as stored: videos, blackbox, matches, moments
+GET  /api/session/<s>/events?video=     detector suggestions for a clip
+GET  /api/session/<s>/series?video=     throttle/tilt/vbat/gyro lanes per arm for the strip
+GET  /api/session/<s>/metrics?video=&from=&to=
+POST /api/session/<s>/moment            {id?, video, start, end, title, tags, note, metrics?}   DELETE /api/session/<s>/moment/<id>
+POST /api/session/<s>/match             {video, bbl, arm, offset, note}                        DELETE /api/session/<s>/match?video=&arm=
+POST /api/session/<s>/note              {note, video?}
+POST /api/session/<s>/blackbox          {add: [...], remove: [...]}
+POST /api/session/<s>/refresh           {probe?}      walks the folder, returns the session
+POST /api/session/<s>/purge             {video?, days?}
+POST /api/scan   POST /api/import       GET /api/store
+```
 
 ### Matching clips to arms
 

@@ -6,13 +6,15 @@ architecture and the CLI). This file is for the session that changes the code.
 ## Where things are
 - Code: this repo (`szrudi/acroscope`, main). Venv `.venv` (`.venv/bin/acroscope`), Python 3.13; the dependencies are
   the stdlib plus orangebox, nothing else (no numpy: the container is python:3.13-slim). ffmpeg/ffprobe on the PATH.
-  No unit tests (`tests/` is empty): the real-data runs below are the test suite. `gh` on this machine is logged in
-  as `joan-grazo`, so issues and PRs filed from here carry that account.
-- Data (source of truth): `~/gdrive/fpv` = Rudi's Drive "FPV drone" folder, mounted by rclone. Rudi's laptop syncs
-  it with Insync and the hosted container mounts it with rclone, so a `session.json` written here is in the player
-  within about a minute, and the other way round. `videos/<session>/session.json` holds matches and moments; never
-  edit those by hand when a CLI command exists (`match`, `tag`, `automatch`). Session and clip notes have no CLI
-  command yet (the player writes them). Every CLI command does load-modify-save; don't hold an edit across a slow step.
+  Unit tests only for the database (`.venv/bin/python -m unittest discover tests`); the real-data runs below are the
+  rest of the test suite. `gh` on this machine is logged in as `joan-grazo`, so issues and PRs filed from here carry
+  that account.
+- Data: `~/gdrive/fpv` = Rudi's Drive "FPV drone" folder, mounted by rclone (Rudi's laptop syncs it with Insync, the
+  hosted container mounts it with rclone). It holds clips and logs only. Matches, moments and notes are in the
+  server's SQLite database (`acroscope/db.py`); the hosted one is `/opt/acroscope/state/acroscope.db` on LXC 109,
+  the one thing to back up. The CLI on joan must talk to that server: `export ACROSCOPE_URL=http://10.10.10.17:8070`
+  (without it the CLI opens a private local database and says so on stderr). The `videos/<session>/session.json`
+  files are the pre-database format, imported once; nothing reads them any more.
 - The data dir has its own docs. Its `CLAUDE.md` is the flight-analysis session's brief (gear, decoder quirks,
   history, and the acroscope workflow that session follows: keep that bullet in step with CLI changes).
   `app-handover.md` holds the plan, the decisions (H.264 for Chrome, digit templates instead of OCR, VLC playlists
@@ -29,7 +31,9 @@ architecture and the CLI). This file is for the session that changes the code.
   change there follows homelab's own CLAUDE.md (worktree per session, never self-merge).
 - A local `acroscope serve --port 8070` is often already running from an earlier session (log in
   `~/.cache/acroscope/serve.log`). It loaded the code at start: restart it after changing `server.py`; `static/` is
-  read per request. To try things beside it: `acroscope serve --port 8071 --no-warm`.
+  read per request. To try things beside it with a throwaway database: `ACROSCOPE_DB=/tmp/x.db acroscope serve
+  --port 8071` (an empty database imports the session.json files at start), then the CLI against it with
+  `ACROSCOPE_URL=http://127.0.0.1:8071`. `serve` refuses to run with `ACROSCOPE_URL` set.
 - Backlog: GitHub issues on `szrudi/acroscope`. The flight-analysis session files them; this session implements.
 
 ## Conventions
@@ -56,7 +60,6 @@ architecture and the CLI). This file is for the session that changes the code.
   stage is indoor cruising, not tricks.
 - `cuts.json` sidecars (written by `cobra-compress.py` since 2026-10-09, `{"source": "<mov>", "kept": [[from, to],
   ...]}` in source seconds) are not read yet; they would carry a boot offset across cut static exactly.
-- `refresh` never removes anything, so a clip deleted after compression stays listed (10-09 attic still carries
-  `2026-10-09_016.mov` next to its `.mp4`).
-- No CLI command for session and clip notes; the player's `POST /api/session/<s>/note` is the only writer.
+- The Drive mount is fine for the footage for now; a different store for the videos is expected later.
+- An MCP server over the same store and metrics, for agents other than Claude Code.
 - Container runs as root (rclone mount). Hardening to the non-root pattern is a to-do.

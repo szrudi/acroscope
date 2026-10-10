@@ -1,6 +1,8 @@
 """acroscope command line: the agent side. Every command prints JSON unless it is a table for humans.
 
 Times: video seconds or m:ss.s ('1:32.7'). Sessions and clips can be given by a unique fragment ('schammer', '007').
+Matches, moments and notes live in the server's database: with ACROSCOPE_URL set, this CLI is a client of that
+server; without it, it opens the local database (ACROSCOPE_DB) itself.
 """
 import argparse
 import json
@@ -43,9 +45,12 @@ def _arm_for(s: dict, vid: str, t: float):
 def cmd_sessions(a):
     if not a.session:
         rows = sessions.all_sessions()
-        print(f"{'session':40} {'clips':>5} {'file':>4} {'match':>5} {'mom.':>4}  blackbox")
+        if a.json:
+            return out(rows)
+        print(f"# {sessions.store()}")
+        print(f"{'session':40} {'clips':>5} {'gone':>4} {'match':>5} {'mom.':>4}  blackbox")
         for r in rows:
-            print(f"{r['session']:40} {r['videos']:5} {'yes' if r['has_file'] else '-':>4} {r['matches']:5} {r['moments']:4}  {', '.join(b[25:40] for b in r['blackbox'])}")
+            print(f"{r['session']:40} {r['videos']:5} {r['missing'] or '-':>4} {r['matches']:5} {r['moments']:4}  {', '.join(b[25:40] for b in r['blackbox'])}")
         return
     s = sessions.overview(_session(a.session))
     if a.json:
@@ -57,7 +62,8 @@ def cmd_sessions(a):
         ms = [m for m in s["matches"] if m["video"] == v["file"]]
         cov = "; ".join(f"arm {m['arm']} @ +{m['offset']}s" for m in ms) or "no log"
         d = fmt_time(v["duration"]) if v.get("duration") else "?"
-        print(f"  {v['file']:24} {d:>7}  {cov}" + (f"  | {v['note']}" if v.get("note") else ""))
+        gone = f"  MISSING since {v['missing_since'][:10]}" if v.get("missing_since") else ""
+        print(f"  {v['file']:24} {d:>7}  {cov}{gone}" + (f"  | {v['note']}" if v.get("note") else ""))
     print("\n## arms")
     for r in s.get("arms", []):
         vids = ", ".join(f"{x['video'][-7:-4]} +{x['offset']}" for x in r["videos"]) or "no clip"
@@ -70,8 +76,42 @@ def cmd_sessions(a):
 
 
 def cmd_refresh(a):
-    s = sessions.refresh(_session(a.session), probe_videos=not a.no_probe)
-    out({"session": s["session"], "videos": len(s["videos"]), "blackbox": s["blackbox"], "path": str(sessions.session_path(s["session"]))})
+    name = a.session if (video.VIDEOS_DIR / a.session).is_dir() else _session(a.session)   # a new folder is not known yet
+    s = sessions.refresh(name, probe_videos=not a.no_probe)
+    out({"session": s["session"], "videos": len(s["videos"]), "missing": [v["file"] for v in s["videos"] if v.get("missing_since")],
+         "blackbox": s["blackbox"], "store": repr(sessions.store())})
+
+
+def cmd_scan(a):
+    rows = sessions.scan()
+    out([{k: r[k] for k in ("session", "videos", "missing", "matches", "moments")} for r in rows])
+
+
+def cmd_note(a):
+    sessions.set_note(_session(a.session), a.text, a.clip)
+    out({"ok": True})
+
+
+def cmd_attach(a):
+    out(sessions.attach(_session(a.session), a.bbl))
+
+
+def cmd_detach(a):
+    out(sessions.detach(_session(a.session), a.bbl))
+
+
+def cmd_purge(a):
+    s = _session(a.session)
+    if a.clip is None and not a.yes:
+        gone = [v for v in sessions.load(s)["videos"] if v.get("missing_since")]
+        print(f"{len(gone)} clip(s) marked missing in {s}; add --yes to remove those missing for more than {a.days} days, "
+              f"or name one clip", file=sys.stderr)
+        return out([{"video": v["file"], "missing_since": v["missing_since"]} for v in gone])
+    out(sessions.purge(s, a.clip, a.days))
+
+
+def cmd_import_json(a):
+    out(sessions.import_json(_session(a.session) if a.session else None))
 
 
 def cmd_arms(a):
@@ -295,13 +335,24 @@ def cmd_serve(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="acroscope", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--version", action="version", version=f"acroscope (data {DATA_DIR}, cache {CACHE_DIR})")
+    ap.add_argument("--version", action="version", version=f"acroscope (data {DATA_DIR}, cache {CACHE_DIR}, store {sessions.store()})")
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     p = sp.add_parser("sessions", help="list sessions, or show one (videos, arms, matches, moments)")
     p.add_argument("session", nargs="?"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_sessions)
-    p = sp.add_parser("refresh", help="create/update videos/<session>/session.json from the folder")
+    p = sp.add_parser("refresh", help="bring a session in line with its folder: new clips in, gone clips marked missing")
     p.add_argument("session"); p.add_argument("--no-probe", action="store_true", help="skip ffprobe (durations)"); p.set_defaults(f=cmd_refresh)
+    p = sp.add_parser("scan", help="register every session folder in the database (the server also does this every 5 min)"); p.set_defaults(f=cmd_scan)
+    p = sp.add_parser("note", help="set the note of a session, or of one clip")
+    p.add_argument("session"); p.add_argument("text"); p.add_argument("--clip"); p.set_defaults(f=cmd_note)
+    p = sp.add_parser("attach", help="add a blackbox file to a session (a log dated another day)")
+    p.add_argument("session"); p.add_argument("bbl"); p.set_defaults(f=cmd_attach)
+    p = sp.add_parser("detach", help="remove a blackbox file from a session"); p.add_argument("session"); p.add_argument("bbl"); p.set_defaults(f=cmd_detach)
+    p = sp.add_parser("purge", help="remove clips marked missing (one clip, or with --yes every one missing for more than --days), with their matches and moments")
+    p.add_argument("session"); p.add_argument("clip", nargs="?"); p.add_argument("--days", type=float, default=7); p.add_argument("--yes", action="store_true")
+    p.set_defaults(f=cmd_purge)
+    p = sp.add_parser("import-json", help="one-off: import the pre-database videos/<session>/session.json files")
+    p.add_argument("session", nargs="?"); p.set_defaults(f=cmd_import_json)
     p = sp.add_parser("arms", help="list the arms of a .bbl (decodes every arm into the cache once)")
     p.add_argument("bbl"); p.add_argument("--force", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_arms)
     p = sp.add_parser("decode", help="decode one arm into the cache; --csv dumps it like blackbox_decode")
