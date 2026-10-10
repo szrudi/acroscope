@@ -16,8 +16,10 @@ architecture and the CLI). This file is for the session that changes the code.
   the 2026-10-10 copy: fine for the real-data tests, not for anything new.
   It holds clips, logs, the inbox and the originals; matches, moments and notes are in the server's SQLite database
   (`acroscope/db.py`), live at `/opt/acroscope/state/acroscope.db` on LXC 109 with a nightly copy in the data dir's
-  `state/`. The CLI on joan must talk to that server: `export ACROSCOPE_URL=http://10.10.10.17:8070` (without it
-  the CLI opens a private local database and says so on stderr). After the move joan has no mount: frames and
+  `state/`. The CLI on joan must talk to that server: `ACROSCOPE_URL`, else the one line of
+  `~/.config/acroscope/url` (on joan: `http://10.10.10.17:8070`). Unsetting the variable therefore still reaches the
+  live server; a throwaway run needs `ACROSCOPE_URL=` (empty: a private local database, said on stderr). Check
+  with `acroscope --version` (it names the store) before anything that writes. After the move joan has no mount: frames and
   sheets come from the server. The `videos/<session>/session.json` files are the pre-database format, imported
   once; nothing reads them any more. With `ACROSCOPE_URL` set, the CLI's data-reading commands (`cli.PROXIED`)
   run on the server through `POST /api/cli` (child process, allow-listed in `server.PROXIED`) and frames/sheets
