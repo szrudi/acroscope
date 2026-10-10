@@ -347,12 +347,13 @@ def cmd_transcode(a):
 
 def cmd_osd(a):
     s = _session(a.session)
-    rows = osd.read_timers(video.resolve_video(s, a.video), a.fps)
+    rt = osd.read_timers(video.resolve_video(s, a.video), a.fps)
     if a.json:
-        return out(rows)
-    ok = [r for r in rows if r["top"] is not None]
-    print(f"{len(rows)} frames, {len(ok)} with a readable arm timer")
-    for v in osd.arms_from_timers(rows, a.fps):
+        return out(rt)
+    rows, cum = rt["rows"], osd.LAYOUTS[rt["layout"]]["cumulative"]
+    ok = [r for r in rows if (r["bottom"] if cum else r["top"]) is not None]
+    print(f"layout {rt['layout']}: {len(rows)} frames, {len(ok)} with a readable {'total' if cum else 'arm'} timer")
+    for v in osd.video_arms(rt, a.fps):
         print(f"  arm run: video {fmt_time(v['start'])} - {fmt_time(v['end'])}  {v['length']:5.1f} s  (timer {v['timer_max']} s, total before {v['total_before']}, {v['readings']} readings)")
 
 

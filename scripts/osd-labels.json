@@ -4,195 +4,510 @@
   "clip": "010",
   "t": 60,
   "top": "00:26",
-  "bottom": "00:27"
+  "bottom": "00:27",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "010",
   "t": 120,
   "top": "00:32",
-  "bottom": "01:25"
+  "bottom": "01:25",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "010",
   "t": 150,
   "top": "00:14",
-  "bottom": "01:46"
+  "bottom": "01:46",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "010",
   "t": 180,
   "top": "00:11",
-  "bottom": "02:18"
+  "bottom": "02:18",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "011",
   "t": 60,
   "top": "00:02",
-  "bottom": "00:34"
+  "bottom": "00:34",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "011",
   "t": 120,
   "top": "00:02",
-  "bottom": "01:16"
+  "bottom": "01:16",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "011",
   "t": 180,
   "top": null,
-  "bottom": "02:01"
+  "bottom": "02:01",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "014",
   "t": 20,
   "top": "00:11",
-  "bottom": "00:11"
+  "bottom": "00:11",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "014",
   "t": 60,
   "top": null,
-  "bottom": "00:31"
+  "bottom": "00:31",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "014",
   "t": 180,
   "top": "00:02",
-  "bottom": "02:00"
+  "bottom": "02:00",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "014",
   "t": 240,
   "top": "00:00",
-  "bottom": "02:44"
+  "bottom": "02:44",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "018",
   "t": 20,
   "top": "00:10",
-  "bottom": "00:10"
+  "bottom": "00:10",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "018",
   "t": 60,
   "top": "00:50",
-  "bottom": "00:50"
+  "bottom": "00:50",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "018",
   "t": 120,
   "top": "00:02",
-  "bottom": "01:40"
+  "bottom": "01:40",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "018",
   "t": 180,
   "top": null,
-  "bottom": "02:31"
+  "bottom": "02:31",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-foxeer-test",
   "clip": "008",
   "t": 40,
   "top": "00:03",
-  "bottom": "00:03"
+  "bottom": "00:03",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-foxeer-test",
   "clip": "008",
   "t": 80,
   "top": "00:00",
-  "bottom": "00:26"
+  "bottom": "00:26",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-foxeer-test",
   "clip": "008",
   "t": 120,
   "top": "00:07",
-  "bottom": "00:56"
+  "bottom": "00:56",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-foxeer-test",
   "clip": "008",
   "t": 160,
   "top": "00:15",
-  "bottom": "01:26"
+  "bottom": "01:26",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-foxeer-test",
   "clip": "008",
   "t": 200,
   "top": "00:01",
-  "bottom": "01:53"
+  "bottom": "01:53",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-foxeer-test",
   "clip": "008",
   "t": 220,
   "top": "00:08",
-  "bottom": "02:17"
+  "bottom": "02:17",
+  "layout": "otto"
  },
  {
   "session": "2026-10-07-schammer",
   "clip": "007",
   "t": 80,
   "top": "00:27",
-  "bottom": "00:44"
+  "bottom": "00:44",
+  "layout": "otto"
  },
  {
   "session": "2026-10-07-schammer",
   "clip": "003",
   "t": 100,
   "top": "00:14",
-  "bottom": "00:15"
+  "bottom": "00:15",
+  "layout": "otto"
  },
  {
   "session": "2026-10-07-schammer",
   "clip": "010",
   "t": 90,
   "top": "01:08",
-  "bottom": "01:10"
+  "bottom": "01:10",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "018",
   "t": 59,
   "top": "00:49",
-  "bottom": "00:49"
+  "bottom": "00:49",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "010",
   "t": 119,
   "top": "00:32",
-  "bottom": "01:24"
+  "bottom": "01:24",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-attick-is-the-limit",
   "clip": "014",
   "t": 19,
   "top": "00:10",
-  "bottom": "00:10"
+  "bottom": "00:10",
+  "layout": "otto"
  },
  {
   "session": "2026-10-09-foxeer-test",
   "clip": "008",
   "t": 59,
   "top": "00:03",
-  "bottom": "00:13"
+  "bottom": "00:13",
+  "layout": "otto"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 20,
+  "layout": "air65f",
+  "total": "00:02"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 30,
+  "layout": "air65f",
+  "total": "00:12"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 34,
+  "layout": "air65f",
+  "total": "00:16"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 37,
+  "layout": "air65f",
+  "total": "00:19"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 40,
+  "layout": "air65f",
+  "total": "00:22"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 60,
+  "layout": "air65f",
+  "total": "00:34"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 120,
+  "layout": "air65f",
+  "total": "00:59"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 130,
+  "layout": "air65f",
+  "total": "01:04"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 20,
+  "layout": "air65f",
+  "total": "00:13"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 23,
+  "layout": "air65f",
+  "total": "00:16"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 26,
+  "layout": "air65f",
+  "total": "00:19"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 30,
+  "layout": "air65f",
+  "total": "00:23"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 40,
+  "layout": "air65f",
+  "total": "00:33"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 46,
+  "layout": "air65f",
+  "total": "00:39"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 50,
+  "layout": "air65f",
+  "total": "00:43"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 56,
+  "layout": "air65f",
+  "total": "00:49"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 60,
+  "layout": "air65f",
+  "total": "00:53"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 66,
+  "layout": "air65f",
+  "total": "00:59"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 70,
+  "layout": "air65f",
+  "total": "01:03"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 76,
+  "layout": "air65f",
+  "total": "01:09"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 80,
+  "layout": "air65f",
+  "total": "01:13"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 90,
+  "layout": "air65f",
+  "total": "01:23"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 100,
+  "layout": "air65f",
+  "total": "01:33"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 110,
+  "layout": "air65f",
+  "total": "01:43"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 150,
+  "layout": "air65f",
+  "total": "00:01"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 160,
+  "layout": "air65f",
+  "total": "00:11"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 170,
+  "layout": "air65f",
+  "total": "00:21"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "005",
+  "t": 20,
+  "layout": "air65f-b",
+  "total": "00:08"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "005",
+  "t": 30,
+  "layout": "air65f-b",
+  "total": "00:15"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "005",
+  "t": 40,
+  "layout": "air65f-b",
+  "total": "00:25"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "005",
+  "t": 50,
+  "layout": "air65f-b",
+  "total": "00:35"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 156.0,
+  "layout": "air65f",
+  "total": "00:07"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 166.0,
+  "layout": "air65f",
+  "total": "00:17"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 176.0,
+  "layout": "air65f",
+  "total": "00:27"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 25.0,
+  "layout": "air65f",
+  "total": "00:07"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "002",
+  "t": 35.0,
+  "layout": "air65f",
+  "total": "00:17"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 157.0,
+  "layout": "air65f",
+  "total": "00:08"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 155.0,
+  "layout": "air65f",
+  "total": "00:06"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 165.0,
+  "layout": "air65f",
+  "total": "00:16"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 157.5,
+  "layout": "air65f",
+  "total": "00:09"
+ },
+ {
+  "session": "2026-10-04-motor-jitter-testing",
+  "clip": "003",
+  "t": 167.5,
+  "layout": "air65f",
+  "total": "00:19"
  }
 ]

@@ -37,7 +37,7 @@ class RealDataTest(unittest.TestCase):
         self.assertAlmostEqual(found["left roll"], 94.5, delta=1)                   # index: 1:34.5
 
     def test_osd_arm_runs_clip_008(self):
-        runs = osd.arms_from_timers(osd.read_timers(CLIP))
+        runs = osd.video_arms(osd.read_timers(CLIP))
         self.assertEqual([round(r["start"], 1) for r in runs], [4.7, 20.2, 64.2])
         self.assertEqual([r["timer_max"] for r in runs], [12, 7, 24])
 
