@@ -83,10 +83,6 @@ class DbTest(unittest.TestCase):
         self.assertEqual(self.db.next_id("2026-10-07-s"), "m08")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class EditTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -118,4 +114,9 @@ class EditTest(unittest.TestCase):
         self.assertEqual([v["file"] for v in self.db.load("2026-10-12-renamed")["videos"]], ["c2.mp4"])
         self.db.delete_session(B)
         self.assertFalse(self.db.exists(B))
-        self.assertEqual(self.db.load(B)["videos"], [])          # cascaded
+        for t in ("videos", "matches", "moments"):               # cascaded (load() would hide orphans: it returns the empty shape)
+            self.assertEqual(self.db.c.execute(f"SELECT count(*) FROM {t} WHERE session = ?", (B,)).fetchone()[0], 0, t)
+
+
+if __name__ == "__main__":
+    unittest.main()

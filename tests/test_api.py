@@ -27,6 +27,8 @@ class ApiTest(unittest.TestCase):
         root = Path(cls.tmp.name)
         (root / "data" / "videos" / "2026-10-07-s").mkdir(parents=True)
         (root / "data" / "videos" / "2026-10-07-s" / "2026-10-07_001.mp4").write_bytes(b"")   # a clip that is not probeable
+        (root / "data" / "videos" / "2026-10-05-tags").mkdir()                    # test_tags_api's own session
+        (root / "data" / "videos" / "2026-10-05-tags" / "2026-10-05_001.mp4").write_bytes(b"")
         (root / "data" / "blackbox").mkdir()
         (root / "data" / "blackbox" / "x.bbl").write_bytes(b"")          # a log the server has (empty: no arms)
         cls.port = free_port()
@@ -65,7 +67,7 @@ class ApiTest(unittest.TestCase):
                          ("session note", "clip note", ["x.bbl"], 2, {"k": 1}))
         self.assertEqual(r.unmatch("2026-10-07-s", "2026-10-07_001.mp4", 2), 1)
         self.assertTrue(r.untag("2026-10-07-s", "m01"))
-        self.assertEqual(r.sessions()[0]["moments"], 0)
+        self.assertEqual(next(s for s in r.sessions() if s["session"] == "2026-10-07-s")["moments"], 0)
         self.assertEqual(r.purge("2026-10-07-s", days=0), [])          # nothing is missing
         self.assertFalse(r.untag("2026-10-07-s", "m99"))
         with self.assertRaises(RemoteError):
@@ -132,7 +134,8 @@ class ApiTest(unittest.TestCase):
         for start, end in ((1e400, 2), (float("nan"), 2), (5, 1)):
             with self.assertRaises(RemoteError, msg=(start, end)):
                 self.r.tag("2026-10-07-s", "2026-10-07_001.mp4", start, end, "bad", [])
-        self.assertEqual(json.loads(urllib.request.urlopen(self.url + "/api/session/2026-10-07-s/data").read())["moments"], [])
+        d = json.loads(urllib.request.urlopen(self.url + "/api/session/2026-10-07-s/data").read())
+        self.assertEqual([m for m in d["moments"] if m["title"] == "bad"], [])
 
     def test_head_sends_no_body(self):
         # a raw socket: http.client's buffered reader would swallow a stray body and hide the bug
@@ -200,8 +203,9 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(r.delete_category("cruise"))
         with self.assertRaises(RemoteError):
             r.set_tag("x", "no-such-category")
-        r.tag("2026-10-07-s", "2026-10-07_001.mp4", 1, 2, "t", ["flip", "custom"])
-        self.assertEqual(r.tag_usage("2026-10-07-s"), {"flip": 1, "custom": 1})
+        r.refresh("2026-10-05-tags", probe_videos=False)
+        r.tag("2026-10-05-tags", "2026-10-05_001.mp4", 1, 2, "t", ["flip", "custom"])
+        self.assertEqual(r.tag_usage("2026-10-05-tags"), {"flip": 1, "custom": 1})
 
 
 if __name__ == "__main__":
