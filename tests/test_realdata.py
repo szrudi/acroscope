@@ -37,9 +37,24 @@ class RealDataTest(unittest.TestCase):
         self.assertAlmostEqual(found["left roll"], 94.5, delta=1)                   # index: 1:34.5
 
     def test_osd_arm_runs_clip_008(self):
+        """The three arm runs of clip 008 (arms 14, 15, 17 by hand), and nothing else that the aligner would take:
+        a stray run read off the STATS screen while disarmed may survive, but it is ghost-sized and matches no arm."""
         runs = osd.video_arms(osd.read_timers(CLIP))
-        self.assertEqual([round(r["start"], 1) for r in runs], [4.7, 20.2, 64.2])
-        self.assertEqual([r["timer_max"] for r in runs], [12, 7, 24])
+        real = [r for r in runs if r["length"] >= 2]
+        self.assertEqual([round(r["start"], 1) for r in real], [4.7, 20.2, 64.2])
+        self.assertEqual([r["timer_max"] for r in real], [12, 7, 24])
+        idx = blackbox.index_bbl(BBL)
+        boot_of = {i: k for k, bt in enumerate(idx["boots"]) for i in bt["arms"]}
+        cum, logs = {}, []
+        for a in idx["arms"]:
+            if a["frames"] and a["motors_spun"]:
+                k = boot_of[a["index"]]
+                logs.append({"index": a["index"], "length": a["length"], "cum_before": round(cum.get(k, 0.0), 1),
+                             "boot": k, "uptime_start": a["uptime_start"]})
+                cum[k] = cum.get(k, 0.0) + a["length"]
+        pairs = osd.consistent_pairs(runs, logs, osd.align(runs, logs))
+        # arm 16 (2.1 s, 30 s further on in the boot than the stray run) must not be taken
+        self.assertEqual(sorted(logs[li]["index"] for _, li in pairs), [14, 15, 17])
 
 
 if __name__ == "__main__":
