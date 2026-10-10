@@ -61,3 +61,9 @@ magick -density 96 banner.svg banner.png
 - Do not add a fill inside the ring, drop the ticks (except in the favicon), or rotate the mark.
 - Wordmark: lowercase "acroscope", DejaVu Sans Bold, letter-spacing about -2% of the size; `logo.svg` has it as
   paths, so use that rather than re-setting the type.
+
+## Decision
+
+Approved by Rudi on 2026-10-10 as is. Three alternatives (a dark tile behind the mark, the loop with a reticle dot
+and no ring, OSD corner brackets) were compared on a contact sheet and not taken; they are in the git history of
+this folder (commit af42900) should a light-tab-bar favicon ever be wanted.
