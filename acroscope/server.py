@@ -190,7 +190,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":           # a HEAD with a body corrupts the next request on a keep-alive connection
+            self.wfile.write(body)
 
     def _file(self, path: Path, ctype=None, cache="no-store"):
         if not path.is_file():
