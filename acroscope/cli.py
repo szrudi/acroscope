@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from . import blackbox, events as ev, ingest, metrics, osd, sessions, video, xspf
-from .config import CACHE_DIR, DATA_DIR, TAGS
+from .config import CACHE_DIR, DATA_DIR, DB_PATH, SERVER_URL, TAGS
 
 
 def parse_time(s: str) -> float:
@@ -21,7 +21,7 @@ def parse_time(s: str) -> float:
 
 
 def fmt_time(t: float) -> str:
-    m, s = divmod(t, 60)
+    m, s = divmod(round(max(t, 0.0), 1), 60)      # round first, or 59.96 prints as 0:60.0
     return f"{int(m)}:{s:04.1f}"
 
 
@@ -463,7 +463,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="acroscope", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     class Version(argparse.Action):   # the store is opened only when asked: `--help` must not create a database
         def __call__(self, parser, ns, values, option_string=None):
-            print(f"acroscope (data {DATA_DIR}, cache {CACHE_DIR}, store {sessions.store()})"); parser.exit()
+            store = f"server {SERVER_URL}" if SERVER_URL else f"sqlite {DB_PATH}"      # named, not opened
+            print(f"acroscope (data {DATA_DIR}, cache {CACHE_DIR}, store {store})"); parser.exit()
     ap.add_argument("--version", action=Version, nargs=0)
     sp = ap.add_subparsers(dest="cmd", required=True)
 
