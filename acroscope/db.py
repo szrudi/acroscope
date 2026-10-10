@@ -291,6 +291,8 @@ class Db:
                            (new, new[:10], row["note"], row["created_at"], now()))
             for t in ("videos", "blackbox", "matches", "moments", "batch_clips"):
                 self.c.execute(f"UPDATE {t} SET session = ? WHERE session = ?", (new, old))
+            self.c.execute("UPDATE videos SET original = replace(original, ?, ?) WHERE session = ? AND original LIKE ?",
+                           (f"originals/{old}/", f"originals/{new}/", new, f"originals/{old}/%"))   # the folder moves too
             self.c.execute("UPDATE batches SET session = ? WHERE session = ?", (new, old))
             self.c.execute("DELETE FROM sessions WHERE name = ?", (old,))
             self.c.execute("COMMIT")

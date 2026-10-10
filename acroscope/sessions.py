@@ -280,6 +280,12 @@ def purge(session: str, vid: str | None = None, days: float = 0) -> list[dict]:
 SESSION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-[A-Za-z0-9_-]+)?$")
 
 
+def _mounted() -> None:
+    """Folders and rows move together: with the data dir unmounted, an edit would move rows only."""
+    if not session_dirs():
+        raise ValueError("data dir not mounted (no session folders): nothing is moved")
+
+
 def _move_dir(old: Path, new: Path) -> None:
     if old.is_dir():
         if new.exists():
@@ -293,9 +299,10 @@ def rename_session(session: str, new: str) -> dict:
     if remote():
         return store().rename_session(session, new)
     _check_name(session)
+    _mounted()
     if not SESSION_RE.match(new):
         raise ValueError(f"{new}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
-    if (VIDEOS_DIR / new).exists() or store().exists(new):
+    if (VIDEOS_DIR / new).exists() or (VIDEOS_DIR.parent / "originals" / new).exists() or store().exists(new):
         raise ValueError(f"{new} exists")
     _move_dir(VIDEOS_DIR / session, VIDEOS_DIR / new)
     _move_dir(VIDEOS_DIR.parent / "originals" / session, VIDEOS_DIR.parent / "originals" / new)
@@ -315,6 +322,7 @@ def move_clip(session: str, vid: str, to: str) -> dict:
     if remote():
         return store().move_clip(session, vid, to)
     _check_name(session)
+    _mounted()
     if not SESSION_RE.match(to):
         raise ValueError(f"{to}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
     file = resolve_clip(session, vid)
@@ -341,6 +349,9 @@ def merge_sessions(session: str, into: str) -> dict:
     if remote():
         return store().merge_sessions(session, into)
     _check_name(session)
+    _mounted()
+    if into == session:
+        raise ValueError(f"{session}: cannot merge a session into itself")
     s = load(session)
     for v in s["videos"]:
         move_clip(session, v["file"], into)

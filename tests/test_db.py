@@ -103,10 +103,12 @@ class EditTest(unittest.TestCase):
         self.db.set_match(A, "c1.mp4", "x.bbl", 1, 2.0)
         self.db.tag(A, "c1.mp4", 0, 1, "m", ["flip"])
         self.db.set_note(A, "note a")
+        self.db.set_video_fields(A, "c1.mp4", original=f"originals/{A}/c1.mov")
         self.db.rename_session(A, "2026-10-12-renamed")
         s = self.db.load("2026-10-12-renamed")
         self.assertEqual((s["date"], s["note"], len(s["videos"]), s["blackbox"], len(s["matches"]), len(s["moments"])),
                          ("2026-10-12", "note a", 2, ["x.bbl"], 1, 1))
+        self.assertEqual(s["videos"][0]["original"], "originals/2026-10-12-renamed/c1.mov")   # the folder moved with it
         self.assertFalse(self.db.exists(A))
         with self.assertRaises(ValueError):
             self.db.rename_session("2026-10-12-renamed", "2026-10-12-renamed")
