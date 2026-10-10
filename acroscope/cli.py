@@ -410,17 +410,27 @@ def cmd_osd(a):
 def cmd_automatch(a):
     s = _session(a.session)
     clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]
+    results = []
     for c in clips:
         try:
             r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite)
         except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
             print(f"{c}: {type(e).__name__}: {e}", file=sys.stderr)
             continue
+        results.append(r)
+        if a.json:
+            continue
         print(f"{r['clip']}: {r['readable']}/{r['readings']} frames readable, {len(r['video_arms'])} arm runs, {len(r['matches'])} matched" + (" (written)" if a.write else ""))
         for m in r["matches"]:
-            print(f"   arm {m['arm']:2} @ +{m['offset']:7.2f}  video run {m['video_length']:5.1f} s vs log {m['log_length']:5.1f} s" + ("" if not a.write else ("  written" if m.get("written") else "  kept existing")))
+            how = f"video run {m['video_length']:5.1f} s vs log {m['log_length']:5.1f} s" if not m.get("derived") else f"derived from the boot's fit, log {m['log_length']:5.1f} s"
+            print(f"   arm {m['arm']:2} @ +{m['offset']:7.2f}  {how}" + ("" if not a.write else ("  written" if m.get("written") else "  kept existing")))
+        for b, f in sorted(r.get("boot_fits", {}).items()):
+            if f["a"] != 1.0:
+                print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms; {100 * (f['a'] - 1):+.2f} % clock difference)")
         for v in r["unmatched_video_arms"]:
             print(f"   unmatched run at {fmt_time(v['start'])}: {v['length']} s")
+    if a.json:
+        out(results[0] if len(results) == 1 else results)
 
 
 def cmd_osd_learn(a):
@@ -535,7 +545,7 @@ def main(argv=None):
     p.add_argument("session"); p.add_argument("video"); p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_osd)
     p = sp.add_parser("automatch", help="match clips to arms from the OSD timers (proposes; --write records)")
     p.add_argument("session"); p.add_argument("videos", nargs="*"); p.add_argument("--write", action="store_true"); p.add_argument("--overwrite", action="store_true", help="replace existing matches of the clip too")
-    p.add_argument("--fps", type=float, default=2.0); p.set_defaults(f=cmd_automatch)
+    p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_automatch)
     p = sp.add_parser("osd-learn", help="rebuild the OSD digit templates from a labels file")
     p.add_argument("labels", nargs="?", default="scripts/osd-labels.json"); p.set_defaults(f=cmd_osd_learn)
     p = sp.add_parser("serve", help="run the player (http)"); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8070)

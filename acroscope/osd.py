@@ -53,6 +53,11 @@ LAYOUTS = {
                      "glyph": GLYPH_BOLD, "cumulative": False, "arm_row": 1, "templates": "otto-bold"},
 }
 SHIFTS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]   # the analog picture jitters a pixel or so
+# The OSD shows a timer value about this long after the log reached it (OSD refresh, the analog link, the DVR):
+# measured on 10-10 001 frame by frame against a yaw snap and a roll (#4, automatch 0.17-0.27 s late with the
+# tenths timer), and consistent with the +0.2 s calibrated earlier on whole-second timers (where the floor of the
+# seconds adds +0.5 on average: 0.5 - 0.25 = 0.25).
+OSD_LAG = 0.25
 OSD_VERSION = 8     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
 TEMPLATES = Path(__file__).parent / "static" / "osd-templates.json"
 BLANK_STD = 25.0                                   # glyph-box contrast below this = no digit
@@ -264,10 +269,10 @@ def arms_from_timers(rows: list[dict], fps: float = 2.0, min_readings: int = 3) 
         if len(c) < min_readings or (max(vs) == min(vs) and c[-1][1] - c[0][1] > 1.2):
             continue
         keys = sorted(p[0] for p in c)
-        # the timer shows floor(seconds): the implied start sits ~0.2 s early (calibrated on 10-09 008 against
-        # impact-refined offsets); with tenths on the timer the bias is a tenth of that
+        # the timer shows the floor of its last digit (half a unit early on average), and the picture shows it
+        # OSD_LAG after the log did
         tenths = any(p[2] != int(p[2]) for p in c)
-        start = keys[len(keys) // 2] + (0.02 if tenths else 0.2)
+        start = keys[len(keys) // 2] + (0.05 if tenths else 0.5) - OSD_LAG
         vmax = max(vs)
         tb = [p[3] - p[2] for p in c if p[3] is not None]
         arms.append({"start": round(start, 2), "end": round(c[-1][1], 2), "length": round(vmax + (0.05 if tenths else 0.5), 2), "timer_max": vmax,
@@ -290,7 +295,7 @@ def arms_from_cumulative(rows: list[dict], min_readings: int = 3) -> list[dict]:
         keys = sorted(p[0] for p in c)
         key = keys[len(keys) // 2]
         t0 = min(p[1] for p in c)
-        arms.append({"start": round(key + v0 + 0.2, 2), "end": round(max(p[1] for p in c), 2), "length": round(v1 - v0 + 0.5, 2),
+        arms.append({"start": round(key + v0 + 0.5 - OSD_LAG, 2), "end": round(max(p[1] for p in c), 2), "length": round(v1 - v0 + 0.5, 2),
                      "timer_max": v1 - v0, "total_before": v0, "readings": len(c),
                      # the clip starts inside this arm: its length is only what the clip shows, the start is unknown
                      "partial_start": t0 < 1.5})
@@ -375,28 +380,69 @@ def consistent_pairs(video_arms: list[dict], log_arms: list[dict], pairs: list[t
     return kept
 
 
-def place_by_boot(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[int, int]], tol: float = 2.0) -> list[tuple[int, int]]:
-    """Second pass: the pairs give each boot's offset (median of video start - uptime start), which puts every
-    other arm of the boot at a known place in the video. An unmatched run whose start sits within `tol` of exactly
-    one unmatched arm's place is that arm, however long the run reads: a run's length is only what the timer
-    showed, and the end of an arm is often unreadable (a crash, a broken-up picture, the STATS screen)."""
-    offs: dict = {}
+def fit_boots(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[int, int]]) -> dict:
+    """Per boot, video time as a line in the FC uptime: video = a * uptime + b, from the pairs. The two clocks
+    differ by a few tenths of a percent (#4: about 0.3 % on the Cobra SD against this FC), half a second over a
+    four-minute clip, so one offset per boot is not enough. Least squares when three or more pairs span a minute;
+    the median offset with a = 1 otherwise. {boot: {a, b, n}}."""
+    pts: dict = {}
     for vi, li in pairs:
         l = log_arms[li]
         if l.get("boot") is not None and l.get("uptime_start") is not None:
-            offs.setdefault(l["boot"], []).append(video_arms[vi]["start"] - l["uptime_start"])
-    boot_off = {b: sorted(o)[len(o) // 2] for b, o in offs.items()}
+            pts.setdefault(l["boot"], []).append((l["uptime_start"], video_arms[vi]["start"]))
+    out = {}
+    for b, xy in pts.items():
+        xs, ys = [x for x, _ in xy], [y for _, y in xy]
+        if len(xy) >= 3 and max(xs) - min(xs) >= 60:
+            mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+            sxx = sum((x - mx) ** 2 for x in xs)
+            a = sum((x - mx) * (y - my) for x, y in xy) / sxx
+            out[b] = {"a": round(a, 5), "b": round(my - a * mx, 3), "n": len(xy)}
+        else:
+            offs = sorted(y - x for x, y in xy)
+            out[b] = {"a": 1.0, "b": round(offs[len(offs) // 2], 3), "n": len(xy)}
+    return out
+
+
+def _at(fit: dict, uptime: float) -> float:
+    return fit["a"] * uptime + fit["b"]
+
+
+def place_by_boot(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[int, int]], tol: float = 2.0) -> list[tuple[int, int]]:
+    """Second pass: the pairs give each boot's line (fit_boots), which puts every other arm of the boot at a known
+    place in the video. An unmatched run whose start sits within `tol` of exactly one unmatched arm's place is that
+    arm, however long the run reads: a run's length is only what the timer showed, and the end of an arm is often
+    unreadable (a crash, a broken-up picture, the STATS screen)."""
+    fits = fit_boots(video_arms, log_arms, pairs)
     used_v, used_l = {vi for vi, _ in pairs}, {li for _, li in pairs}
     out = list(pairs)
     for vi, v in enumerate(video_arms):
         if vi in used_v or v.get("partial_start"):
             continue
-        hits = [li for li, l in enumerate(log_arms) if li not in used_l and l.get("boot") in boot_off
-                and abs(v["start"] - (boot_off[l["boot"]] + l["uptime_start"])) <= tol and v["length"] <= l["length"] + tol]
+        hits = [li for li, l in enumerate(log_arms) if li not in used_l and l.get("boot") in fits
+                and abs(v["start"] - _at(fits[l["boot"]], l["uptime_start"])) <= tol and v["length"] <= l["length"] + tol]
         if len(hits) == 1:
             out.append((vi, hits[0]))
             used_v.add(vi); used_l.add(hits[0])
     out.sort()
+    return out
+
+
+def derive_unread(log_arms: list[dict], pairs: list[tuple[int, int]], fits: dict, duration: float | None) -> list[tuple[int, float]]:
+    """Arms of a fitted boot that no run was read for (too short for the reader, or unreadable), placed by the
+    boot's line when they fall inside the clip: [(log index, video start)]. Marked as derived in the match note."""
+    used_l = {li for _, li in pairs}
+    out = []
+    for li, l in enumerate(log_arms):
+        if li in used_l or l.get("boot") not in fits or l.get("uptime_start") is None:
+            continue
+        f = fits[l["boot"]]
+        if f["n"] < 2:
+            continue
+        start = _at(f, l["uptime_start"])
+        if start < -0.5 or (duration is not None and start + l["length"] > duration + 0.5):
+            continue
+        out.append((li, round(start, 2)))
     return out
 
 
@@ -433,6 +479,8 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
         if best is None or score > best[0]:
             best = (score, pairs, logs)
     _, pairs, logs = best if best else ((0, 0), [], [])
+    fits = fit_boots(varms, logs, pairs)
+    duration = next((v.get("duration") for v in s["videos"] if v["file"] == path.name), None)
     matches = []
     for vi, li in pairs:
         v, l = varms[vi], logs[li]
@@ -442,6 +490,13 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
                         "video_start": v["start"], "video_length": v["length"], "log_length": l["length"],
                         "note": f"osd automatch: timer run {v['length']} s vs log {l['length']} s, total before {v['total_before']} vs {l['cum_before']} ({v['readings']} readings)"
                                 + ("" if abs(v["length"] - l["length"]) <= 2 else "; placed by the boot's offset, the run reads shorter than the arm")})
+    for li, start in derive_unread(logs, pairs, fits, duration):
+        l = logs[li]
+        f = fits[l["boot"]]
+        matches.append({"video": path.name, "bbl": l["bbl"], "arm": l["index"], "offset": start, "video_start": start,
+                        "video_length": None, "log_length": l["length"], "derived": True,
+                        "note": f"derived from the boot's fit (video = {f['a']:.5f} x uptime + {f['b']:.2f}, {f['n']} arms read), the arm's timer was not read"})
+    matches.sort(key=lambda m: m["offset"])
     unmatched = [v for k, v in enumerate(varms) if k not in {vi for vi, _ in pairs}]
     if write:
         have = {(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] == path.name}
@@ -449,7 +504,7 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
             if overwrite or (m["bbl"], m["arm"]) not in have:
                 sessions.set_match(session, m["video"], m["bbl"], m["arm"], m["offset"], m["note"])
                 m["written"] = True
-    return {"clip": path.name, "layout": rt["layout"], "readings": len(rows),
+    return {"clip": path.name, "layout": rt["layout"], "readings": len(rows), "boot_fits": fits,
             "readable": sum(1 for r in rows if (r["top"] if not LAYOUTS[rt["layout"]]["cumulative"] else r["bottom"]) is not None),
             "video_arms": varms, "matches": matches, "unmatched_video_arms": unmatched}
 

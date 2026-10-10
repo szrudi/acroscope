@@ -217,15 +217,26 @@ def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: s
         meta = {a["index"]: a for a in idx["arms"]}
         b = next((b for b in idx.get("boots", []) if arm in b["arms"]), None)
         if b:
-            boot_offset = offset - meta[arm]["uptime_start"]
-            dur = next((v.get("duration") for v in load(session)["videos"] if v["file"] == vid), None)
+            # the clip's clock runs a few tenths of a percent off the FC's (#4): when this clip already has three
+            # or more arms of the boot matched over a minute, derive along their line, anchored on the named arm
+            cur = load(session)
+            known = [(meta[m["arm"]]["uptime_start"], m["offset"]) for m in cur["matches"]
+                     if m["video"] == vid and m["bbl"] == bbl_name and m["arm"] in b["arms"] and m["arm"] != arm and m["arm"] in meta]
+            known.append((meta[arm]["uptime_start"], offset))
+            a = 1.0
+            xs = [x for x, _ in known]
+            if len(known) >= 3 and max(xs) - min(xs) >= 60:
+                mx, my = sum(xs) / len(xs), sum(y for _, y in known) / len(known)
+                a = sum((x - mx) * (y - my) for x, y in known) / sum((x - mx) ** 2 for x in xs)
+            boot_offset = offset - a * meta[arm]["uptime_start"]
+            dur = next((v.get("duration") for v in cur["videos"] if v["file"] == vid), None)
             new = []
             for i in b["arms"]:
-                off = round(boot_offset + meta[i]["uptime_start"], 2)
+                off = round(boot_offset + a * meta[i]["uptime_start"], 2)
                 # an arm of the boot that lies outside this clip belongs to another clip (or to none): leave it
                 if i != arm and dur and (off > dur or off + meta[i]["length"] < 0):
                     continue
-                new.append((i, off, note if i == arm else f"derived from arm {arm} via uptime (boot {b['first']}-{b['last']})"))
+                new.append((i, off, note if i == arm else f"derived from arm {arm} via uptime (boot {b['first']}-{b['last']}" + (f", clock {100 * (a - 1):+.2f} %)" if a != 1.0 else ")")))
     for i, off, n in new:
         store().set_match(session, vid, bbl_name, i, off, n)
     return load(session)

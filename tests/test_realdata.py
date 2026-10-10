@@ -92,5 +92,21 @@ class RealDataTest(unittest.TestCase):
         self.assertEqual(sorted(logs[li]["index"] for _, li in pairs), [14, 15, 17])
 
 
+@unittest.skipUnless(REMOTE, "the 10-10 clips live on the server only")
+class TenTenTest(unittest.TestCase):
+    """automatch against the frame-by-frame truths of szrudi/acroscope#4 on 2026-10-10 001: arm 1 at 7.95 (yaw snap
+    and nose-down hit), arm 9 at 150.35 (a right roll); and the clock difference the boot fit measures."""
+    def test_clip_001_offsets_and_fit(self):
+        r = sessions.store().cli(["automatch", "2026-10-10", "001", "--json"])
+        self.assertEqual(r["code"], 0, r["stderr"])
+        res = json.loads(r["stdout"])
+        by = {m["arm"]: m["offset"] for m in res["matches"]}
+        self.assertAlmostEqual(by[1], 7.95, delta=0.15)
+        self.assertAlmostEqual(by[9], 150.35, delta=0.15)
+        self.assertTrue({3, 7, 8, 14} <= set(by), sorted(by))                   # the short arms, derived from the fit
+        fit = list(res["boot_fits"].values())[0]
+        self.assertAlmostEqual(fit["a"], 0.997, delta=0.001)
+
+
 if __name__ == "__main__":
     unittest.main()
