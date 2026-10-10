@@ -383,8 +383,16 @@ class Db:
         return {"categories": [dict(r) for r in self.c.execute("SELECT name, color, pos FROM tag_categories ORDER BY pos")],
                 "tags": [dict(r) for r in self.c.execute("SELECT name, category, color, pos FROM tags ORDER BY pos")]}
 
+    @staticmethod
+    def _color(color: str | None) -> str | None:
+        """#rrggbb, or None/'' as given: the player puts it into an attribute and a style, so nothing else goes in."""
+        if color and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            raise ValueError(f"{color!r}: not a colour (#rrggbb)")
+        return color
+
     def set_category(self, name: str, color: str | None = None) -> dict:
         """Create a category (colour required) or change its colour; the position is kept."""
+        color = self._color(color)
         row = self.c.execute("SELECT * FROM tag_categories WHERE name = ?", (name,)).fetchone()
         if row:
             if color:
@@ -398,6 +406,7 @@ class Db:
 
     def set_tag(self, name: str, category: str, color: str | None = None) -> dict:
         """Define a tag in a category, or move it there; color None keeps the colour, '' clears it."""
+        color = self._color(color)
         if not self.c.execute("SELECT 1 FROM tag_categories WHERE name = ?", (category,)).fetchone():
             raise ValueError(f"category {category}: no such category")
         row = self.c.execute("SELECT * FROM tags WHERE name = ?", (name,)).fetchone()

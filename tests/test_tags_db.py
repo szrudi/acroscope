@@ -39,6 +39,19 @@ class TagsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.db.set_tag("x", "no-such-category")
 
+    def test_colours_are_colours(self):
+        """The player puts a colour into an attribute and a style: anything but #rrggbb is refused (it would be markup)."""
+        for bad in ['"><img src=x onerror=alert(1)>', "red", "#12345", "#1234567", "#12345g", "url(x)"]:
+            with self.subTest(bad):
+                with self.assertRaises(ValueError):
+                    self.db.set_category("c-" + str(len(bad)), bad)
+                with self.assertRaises(ValueError):
+                    self.db.set_tag("flip", "tricks", bad)
+        self.db.set_category("cruise", "#A0b1C2")
+        self.db.set_tag("hover", "cruise", "#00ff00")
+        self.db.set_tag("hover", "cruise", "")                      # '' still clears a tag's own colour
+        self.assertIsNone({x["name"]: x for x in self.db.tags()["tags"]}["hover"]["color"])
+
     def test_delete(self):
         self.db.set_category("c1", "#111111")
         self.db.set_tag("t1", "c1")
