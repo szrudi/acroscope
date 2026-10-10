@@ -16,4 +16,4 @@ acroscope = "acroscope.cli:main"
 include = ["acroscope*"]
 
 [tool.setuptools.package-data]
-acroscope = ["static/*"]
+acroscope = ["static/*", "static/brand/*"]

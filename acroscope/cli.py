@@ -82,8 +82,9 @@ def cmd_sessions(a):
             print(f"  {b}: no arms" + ("" if (DATA_DIR / 'blackbox' / b).exists() else " (file not found)"))
             continue
         print(f"  {b}  ({len(rows)} arms, {sum(1 for r in rows if r['videos'])} with a clip)")
+        names = {v["file"]: (v.get("name") or v["file"]) for v in s["videos"]}
         for r in rows:
-            vids = ", ".join(f"{x['video'][-7:-4]} +{x['offset']}" for x in r["videos"]) or "no clip"
+            vids = ", ".join(f"{names.get(x['video'], x['video'])[-3:]} +{x['offset']}" for x in r["videos"]) or "no clip"
             flags = ("" if r["motors_spun"] else " (motors off)") + ("" if r["complete"] else " (cut off)")
             vb = f"{r['vbat_start']:.2f}→{r['vbat_end']:.2f} V" if r.get("vbat_start") is not None else "no frames"
             print(f"    arm {r['index']:2}  {r['length']:6.1f} s  {vb:12}  {vids}{flags}")
@@ -438,7 +439,7 @@ def cmd_serve(a):
 
 # with ACROSCOPE_URL set these run on the server (they need the clips, the logs or the cache); frames and sheets
 # come back as files into the local cache under the same relative path
-PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "sessions"}
+PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach"}
 
 
 def _proxy(argv: list[str]) -> None:

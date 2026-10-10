@@ -92,11 +92,7 @@ def resolve_clip(session: str, file: str) -> str:
 
 
 def clip_path(session: str, file: str) -> Path:
-    """The clip's file on disk, from anything resolve_clip takes (an ingested clip's number or readable name is
-    only known to the database, not to the folder), or a path as given."""
-    p = Path(file).expanduser()
-    if p.is_file():
-        return p
+    """The file of a clip given by file name, readable name, number or path."""
     return VIDEOS_DIR / session / resolve_clip(session, file)
 
 

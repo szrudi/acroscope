@@ -6,9 +6,10 @@ architecture and the CLI). This file is for the session that changes the code.
 ## Where things are
 - Code: this repo (`szrudi/acroscope`, main). Venv `.venv` (`.venv/bin/acroscope`), Python 3.13; the dependencies are
   the stdlib plus orangebox, nothing else (no numpy: the container is python:3.13-slim). ffmpeg/ffprobe on the PATH.
-  Tests: `.venv/bin/python -m unittest discover tests` (~20 s: the database incl. threads, the API through a real
-  server child, the CLI as a client, ingest on a synthetic clip, clip resolution and the session edits); the
-  real-data runs below are the rest of the test suite. `gh` on this machine is logged in as `joan-grazo`, so issues and PRs filed from here carry
+  `.venv/bin/python -m unittest discover tests`: the database incl. threads, the API against a server child, the
+  CLI as a client, ingest end to end on a synthetic batch, clip resolution and the session edits, and the
+  real-data pins of 10-07 (through the server from joan); the smoke checks below are
+  the rest. `gh` on this machine is logged in as `joan-grazo`, so issues and PRs filed from here carry
   that account.
 - Data: the data dir (`ACROSCOPE_DATA`) is CT 109's `/data`, a bind mount of the homelab's `Data/fpv` dataset
   (szrudi/homelab#102; this repo's #5 was the app side). joan's `~/gdrive/fpv` is the old Drive mount, frozen at

@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>acroscope</title>
+<link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/static/brand/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
 <style>
   :root { --bg:#14161a; --panel:#1c1f25; --line:#2b3039; --fg:#e6e8ec; --dim:#9aa3b2; --acc:#f5a524; --acc2:#4cc2ff; --bad:#ff6b6b; --ok:#5fd68b; }
   * { box-sizing:border-box }
@@ -87,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1>acroscope</h1>
+  <h1><img src="/static/brand/icon.svg" alt="" style="height:22px;vertical-align:-5px;margin-right:6px" onerror="this.remove()">acroscope</h1>
   <select id="session"></select>
   <button class="small" id="renameSession" title="rename this session (YYYY-MM-DD-name); the date is the first ten characters">✎</button>
   <span id="status" style="color:var(--dim)"></span>
@@ -253,6 +256,7 @@ async function renderInbox() {
     const line = b.status === 'running' ? `${p.step || ''} ${p.clip || ''} ${p.pct != null ? p.pct + '%' : ''}` : b.status === 'arriving' ? 'still arriving (no .done yet)' : '';
     return `<div class="batch"><span class="id">${esc(b.id)}</span> <span class="st ${b.status}">${esc(b.status)}</span>` +
       (b.session ? ` → <b>${esc(b.session)}</b>` : '') + `<div class="st">${b.clips ?? '?'} clips · ${b.logs ?? '?'} logs ${esc(line)}</div>${pg}` +
+      (b.result ? `<div class="st">${esc((b.result.clips || []).join(', '))}${b.result.logs?.length ? ' · ' + esc(b.result.logs.map(l => l.slice(25, 40)).join(', ')) : ''}</div>` : '') +
       (b.error ? `<div class="err">${esc(b.error)}</div><button class="small" data-retry="${esc(b.id)}">retry</button>` : '') + `</div>`;
   }).join('') || '<div class="empty">inbox empty: the laptop drops batches into inbox/&lt;batch&gt;/ with a .done marker</div>';
   $('#inbox').querySelectorAll('[data-retry]').forEach(el => el.onclick = async () => { await api(`/api/inbox/${encodeURIComponent(el.dataset.retry)}/retry`, {method: 'POST'}); renderInbox(); });
@@ -286,7 +290,7 @@ function renderLogs() {
   }
   $('#logs').innerHTML = h || '<div class="empty">no blackbox file in this session</div>';
   $('#logs').querySelectorAll('.arm.has').forEach(el => el.onclick = async () => {
-    const t = Math.max(0, +el.dataset.t + 0.5);
+    const t = Math.max(0, +el.dataset.t - 1.0);   // a second before the arm, so the ARMED moment is on screen
     if (clip !== el.dataset.v) await loadClip(el.dataset.v);
     v.currentTime = t; v.play();
   });

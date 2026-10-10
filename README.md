@@ -1,3 +1,5 @@
+![acroscope](acroscope/static/brand/banner.png)
+
 # acroscope
 
 A trick-learning tool for FPV: find the tricks (flips, rolls, powerloops, split-S, dives, orbits) and the crashes in
@@ -53,6 +55,9 @@ The cache (`ACROSCOPE_CACHE`, default `~/.cache/acroscope`) holds decoded arms (
 
 `video time = arm time + offset`. The clips have static cut out, so an offset only holds within one arm; a clip can
 have several matches.
+
+The mark and the wordmark live in `acroscope/static/brand/` (`BRAND.md` there has the concept, the palette and how
+to regenerate the PNGs; `scripts/brand.py` generates the geometry).
 
 ## Install
 

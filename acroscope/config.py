@@ -10,7 +10,19 @@ from pathlib import Path
 DATA_DIR = Path(os.environ.get("ACROSCOPE_DATA", "~/gdrive/fpv")).expanduser()
 CACHE_DIR = Path(os.environ.get("ACROSCOPE_CACHE", "~/.cache/acroscope")).expanduser()
 DB_PATH = Path(os.environ.get("ACROSCOPE_DB", "~/.local/share/acroscope/acroscope.db")).expanduser()
-SERVER_URL = os.environ.get("ACROSCOPE_URL", "").rstrip("/")   # set: the CLI is a client of that server's database
+
+
+def _server_url() -> str:
+    """ACROSCOPE_URL, else the one line of ~/.config/acroscope/url (the durable way to point a machine's CLI at
+    the server: shells started by an agent do not carry exported variables). Empty = the local database."""
+    env = os.environ.get("ACROSCOPE_URL")
+    if env is not None:
+        return env.rstrip("/")
+    f = Path("~/.config/acroscope/url").expanduser()
+    return f.read_text().strip().rstrip("/") if f.is_file() else ""
+
+
+SERVER_URL = _server_url()   # set: the CLI is a client of that server's database
 
 VIDEOS_DIR = DATA_DIR / "videos"
 BLACKBOX_DIR = DATA_DIR / "blackbox"

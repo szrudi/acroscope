@@ -27,7 +27,7 @@ _busy_lock = threading.Lock()
 SCAN_EVERY = 300                 # seconds between background walks of the data dir
 # CLI commands a client may run here (they need the clips, the logs or the cache, which only the server has);
 # each runs in a child process, so the reader's pure-Python work never holds this process's GIL
-PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox"}
+PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach"}
 INBOX_EVERY = 20                 # seconds between looks at inbox/ for a complete batch
 
 
@@ -258,8 +258,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not parts:
                 return self._file(STATIC / "index.html", "text/html; charset=utf-8")
-            if parts[0] == "static" and len(parts) == 2:
-                return self._file(_under(STATIC, parts[1]))
+            if parts[0] == "static" and 2 <= len(parts) <= 3:          # static/<file> or static/brand/<file>
+                return self._file(_under(STATIC, *parts[1:]), cache="max-age=3600")
             if parts[0] == "video" and len(parts) == 3:
                 return self._file(video.playable(_under(VIDEOS_DIR, parts[1], parts[2])), "video/mp4", "max-age=3600")
             if parts[0] == "frame" and len(parts) == 4:
