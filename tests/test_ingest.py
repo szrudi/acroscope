@@ -76,6 +76,9 @@ class IngestTest(_Scratch):
         self.assertTrue((self.data / "videos" / "2026-10-11-Test-Flight" / v["file"]).exists())
         self.assertFalse(b.exists())                                                              # consumed
         self.assertEqual(db.batches()[0]["status"], "done")
+        self.assertEqual(db.batches()[0]["result"], {"clips": ["2026-10-11_001", "2026-10-11_002"], "logs": []})
+        r = self.cli("inbox", "--json")
+        self.assertEqual(json.loads(r.stdout)[0]["clips"], 2)                                     # the dir is gone; the result tells
         # numbering continues across the day: a second batch, unnamed, lands in <date>-unsorted as 003
         b2 = self.data / "inbox" / "b2"
         b2.mkdir()

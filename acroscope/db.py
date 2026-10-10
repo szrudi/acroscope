@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS moments (
   PRIMARY KEY (session, id));
 CREATE TABLE IF NOT EXISTS batches (
   id TEXT PRIMARY KEY, status TEXT NOT NULL, session TEXT, date TEXT, started_at TEXT, finished_at TEXT,
-  error TEXT, progress TEXT);
+  error TEXT, progress TEXT, result TEXT);
 CREATE TABLE IF NOT EXISTS batch_clips (
   batch TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE, source TEXT NOT NULL, file TEXT NOT NULL, session TEXT NOT NULL,
   PRIMARY KEY (batch, source));
@@ -84,6 +84,8 @@ class Db:
         for col, decl in (("name", "TEXT"), ("cuts", "TEXT"), ("original", "TEXT"), ("original_until", "TEXT")):
             if col not in have:
                 self.c.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
+        if "result" not in {r["name"] for r in self.c.execute("PRAGMA table_info(batches)")}:
+            self.c.execute("ALTER TABLE batches ADD COLUMN result TEXT")
         # the readable name of a clip imported before ids: its file name without the extension
         rows = self.c.execute("SELECT session, file FROM videos WHERE name IS NULL OR name = '' OR name LIKE '%.'").fetchall()
         self.c.executemany("UPDATE videos SET name = ? WHERE session = ? AND file = ?",
@@ -312,12 +314,13 @@ class Db:
         for r in self.c.execute("SELECT * FROM batches ORDER BY started_at"):
             b = dict(r)
             b["progress"] = json.loads(b["progress"]) if b["progress"] else None
+            b["result"] = json.loads(b["result"]) if b["result"] else None
             out.append(b)
         return out
 
     def set_batch(self, batch: str, **fields) -> None:
-        allowed = {"status", "session", "date", "started_at", "finished_at", "error", "progress"}
-        cols = {k: (json.dumps(v) if k == "progress" and v is not None else v) for k, v in fields.items() if k in allowed}
+        allowed = {"status", "session", "date", "started_at", "finished_at", "error", "progress", "result"}
+        cols = {k: (json.dumps(v) if k in ("progress", "result") and v is not None else v) for k, v in fields.items() if k in allowed}
         self.c.execute("INSERT OR IGNORE INTO batches (id, status) VALUES (?, 'pending')", (batch,))
         if cols:
             self.c.execute(f"UPDATE batches SET {', '.join(k + ' = ?' for k in cols)} WHERE id = ?", (*cols.values(), batch))

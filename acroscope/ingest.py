@@ -59,7 +59,9 @@ def list_inbox() -> list[dict]:
             b = rows.pop(d.name, None) or {"id": d.name, "status": "pending" if (d / ".done").exists() else "arriving"}
             b = dict(b, files=len(files), clips=sum(1 for f in files if CLIP_RE.match(f)), logs=sum(1 for f in files if f.lower().endswith(".bbl")))
             out.append(b)
-    out += list(rows.values())          # done or failed batches whose dir is gone
+    for b in rows.values():             # done or failed batches whose dir is gone: what they produced
+        r = b.get("result") or {}
+        out.append(dict(b, clips=len(r.get("clips", [])), logs=len(r.get("logs", []))))
     return out
 
 
@@ -324,7 +326,9 @@ def process_batch(batch: str, log=print) -> dict:
                 f.unlink()
         if not any(d.iterdir()):
             d.rmdir()
-        db.set_batch(batch, status="done", finished_at=now().isoformat(), progress=None)
+        names = {v["file"]: v.get("name") for v in db.load(session)["videos"]}
+        result = {"clips": [names.get(c, c) for c in imported], "logs": attached}
+        db.set_batch(batch, status="done", finished_at=now().isoformat(), progress=None, result=result)
         return {"batch": batch, "session": session, "clips": imported, "logs": attached}
     except Exception as e:  # noqa: BLE001
         db.set_batch(batch, status="failed", finished_at=now().isoformat(), error=f"{type(e).__name__}: {e}")

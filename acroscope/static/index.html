@@ -255,6 +255,7 @@ async function renderInbox() {
     const line = b.status === 'running' ? `${p.step || ''} ${p.clip || ''} ${p.pct != null ? p.pct + '%' : ''}` : b.status === 'arriving' ? 'still arriving (no .done yet)' : '';
     return `<div class="batch"><span class="id">${esc(b.id)}</span> <span class="st ${b.status}">${esc(b.status)}</span>` +
       (b.session ? ` → <b>${esc(b.session)}</b>` : '') + `<div class="st">${b.clips ?? '?'} clips · ${b.logs ?? '?'} logs ${esc(line)}</div>${pg}` +
+      (b.result ? `<div class="st">${esc((b.result.clips || []).join(', '))}${b.result.logs?.length ? ' · ' + esc(b.result.logs.map(l => l.slice(25, 40)).join(', ')) : ''}</div>` : '') +
       (b.error ? `<div class="err">${esc(b.error)}</div><button class="small" data-retry="${esc(b.id)}">retry</button>` : '') + `</div>`;
   }).join('') || '<div class="empty">inbox empty: the laptop drops batches into inbox/&lt;batch&gt;/ with a .done marker</div>';
   $('#inbox').querySelectorAll('[data-retry]').forEach(el => el.onclick = async () => { await api(`/api/inbox/${encodeURIComponent(el.dataset.retry)}/retry`, {method: 'POST'}); renderInbox(); });
@@ -288,7 +289,7 @@ function renderLogs() {
   }
   $('#logs').innerHTML = h || '<div class="empty">no blackbox file in this session</div>';
   $('#logs').querySelectorAll('.arm.has').forEach(el => el.onclick = async () => {
-    const t = Math.max(0, +el.dataset.t + 0.5);
+    const t = Math.max(0, +el.dataset.t - 1.0);   // a second before the arm, so the ARMED moment is on screen
     if (clip !== el.dataset.v) await loadClip(el.dataset.v);
     v.currentTime = t; v.play();
   });
