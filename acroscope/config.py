@@ -19,8 +19,8 @@ BLACKBOX_DIR = DATA_DIR / "blackbox"
 H264_ARGS = ["-c:v", "libx264", "-preset", "medium", "-crf", "23", "-pix_fmt", "yuv420p",
              "-g", "30", "-keyint_min", "30", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"]
 
-# Moment tags the UI offers first. Free text is allowed too.
-TAGS = ["flip", "roll", "powerloop", "split-s", "dive", "orbit", "crash", "gyro-kick", "motor-loss", "poi"]
+# The tag names a new database is seeded with (db.SEED_TAGS has the categories and colours); only for help text.
+TAGS = ["flip", "roll", "powerloop", "split-s", "dive", "orbit", "milestone", "crash", "gyro-kick", "motor-loss", "poi"]
 
 
 def cache(*parts: str) -> Path:

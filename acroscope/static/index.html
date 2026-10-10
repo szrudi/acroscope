@@ -38,9 +38,16 @@
   button { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:5px 10px; cursor:pointer; font:inherit }
   button:hover { background:#343a46 } button.primary { background:var(--acc); color:#1a1200; border-color:var(--acc); font-weight:600 }
   button.small { padding:2px 7px; font-size:12px }
-  .chip { display:inline-block; padding:2px 9px; border-radius:12px; border:1px solid var(--line); cursor:pointer; font-size:12px; user-select:none }
-  .chip.on { background:var(--acc2); color:#001; border-color:var(--acc2) }
-  .tag { display:inline-block; padding:0 7px; border-radius:10px; font-size:11px; background:#2f3542; color:var(--acc2); margin-right:3px }
+  .chip { display:inline-block; padding:2px 9px; border-radius:12px; border:1px solid var(--c, var(--line)); cursor:pointer; font-size:12px; user-select:none }
+  .chip.on { background:var(--c, var(--acc2)); color:#111; border-color:var(--c, var(--acc2)) }
+  .chip .n { opacity:.7; margin-left:4px; font-size:11px }
+  .tag { display:inline-block; padding:0 7px; border-radius:10px; font-size:11px; background:#2f3542; color:var(--c, var(--acc2)); margin-right:3px }
+  .tagbar { display:flex; flex-wrap:wrap; gap:4px 6px; align-items:center; min-height:22px }
+  .cat { color:var(--dim); text-transform:uppercase; letter-spacing:.5px; font-size:11px; margin-left:10px; cursor:pointer; user-select:none }
+  .cat:first-child { margin-left:0 } .cat.on { color:var(--fg) }
+  .tagbar .mgr { margin-left:auto }
+  #tagmgr .row { gap:6px } #tagmgr input[type=color] { width:28px; height:24px; padding:0; border:0; background:none; cursor:pointer }
+  #tagmgr select { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:3px 6px; font:inherit }
   .right h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin:0; padding:10px 12px 6px; display:flex; align-items:center; gap:8px }
   .right h2 label { font-weight:400; text-transform:none; letter-spacing:0; margin-left:auto; cursor:pointer }
   /* each pane takes its content height, shrinks (and scrolls) when the two together overflow, never grows into a gap */
@@ -73,6 +80,7 @@
   <section class="center">
     <video id="v" controls preload="metadata"></video>
     <canvas id="strip" height="54"></canvas>
+    <div class="tagbar" id="tagbar"></div>
     <div class="readout" id="readout"></div>
     <div class="snote" id="snote"></div>
     <div class="editor" id="editor">
@@ -87,6 +95,7 @@
       <div class="row"><button class="primary" onclick="saveMoment()">save</button><button onclick="closeEditor()">cancel</button>
         <span id="edWhy" style="color:var(--dim);font-size:12px"></span></div>
     </div>
+    <div class="editor" id="tagmgr"></div>
   </section>
   <div class="right">
     <div class="pane" id="paneMoments">
@@ -102,8 +111,13 @@
 <script>
 const $ = s => document.querySelector(s);
 const v = $('#v'), strip = $('#strip'), ctx = strip.getContext('2d');
-let S = null, clip = null, series = [], sugg = [], TAGS = [], cur = null, loopM = null, armLen = {};
-const COLORS = {flip:'#f5a524', roll:'#ffd166', powerloop:'#4cc2ff', 'split-s':'#8ab4ff', dive:'#9b7bff', orbit:'#5fd68b', crash:'#ff6b6b', 'gyro-kick':'#ff9f6b', 'motor-loss':'#ff6bd6', poi:'#9aa3b2'};
+let S = null, clip = null, series = [], sugg = [], TAGS = {categories: [], tags: []}, cur = null, loopM = null, armLen = {};
+let filter = new Set();   // tags selected in the bar under the strip; empty = everything. The list and the markers follow it.
+const tagDef = t => TAGS.tags.find(x => x.name === t);
+const catDef = c => TAGS.categories.find(x => x.name === c);
+const tagColor = t => tagDef(t)?.color || catDef(tagDef(t)?.category)?.color || '#9aa3b2';
+const passes = m => !filter.size || (m.tags || []).some(t => filter.has(t));
+const pill = t => `<span class="tag" style="--c:${tagColor(t)}">${esc(t)}</span>`;
 const fmt = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); };
 const parse = s => { s = String(s).trim(); if (s.includes(':')) { const [m, x] = s.split(':'); return +m * 60 + +x; } return +s; };
 const api = (p, o) => fetch(p, o).then(r => r.json());
@@ -118,6 +132,7 @@ async function init() {
   sel.onchange = () => loadSession(sel.value);
   // the URL wins over what was open last time: ?session=…&clip=007&m=m13&t=80.5 is a link to a spot
   const q = new URLSearchParams(location.search);
+  if (q.get('tags')) filter = new Set(q.get('tags').split(',').filter(Boolean));
   const want = q.get('session') || localStorage.getItem('acro.session');
   sel.value = list.some(s => s.session === want) ? want : (list.filter(s => s.moments).pop() || list[list.length - 1]).session;
   await loadSession(sel.value, q.get('clip') || localStorage.getItem('acro.clip'));
@@ -132,6 +147,7 @@ function setUrl() {
   if (clip) q.set('clip', /_\d{3}\.\w+$/.test(clip) ? clip.slice(-7, -4) : clip);
   if (cur) q.set('m', cur);
   else if (clip && v.paused && v.currentTime > 0) q.set('t', v.currentTime.toFixed(1));
+  if (filter.size) q.set('tags', [...filter].join(','));
   history.replaceState(null, '', '?' + q.toString());
 }
 function momentLink(id) { const m = S.moments.find(x => x.id === id); return `${location.origin}/?${new URLSearchParams({session: S.session, clip: m.video.slice(-7, -4), m: id})}`; }
@@ -191,14 +207,73 @@ async function loadClip(file) {
   renderSugg(); drawStrip();
 }
 
-function momentsShown() { return $('#allClips').checked ? S.moments : S.moments.filter(m => m.video === clip); }
+function momentsBase() { return $('#allClips').checked ? S.moments : S.moments.filter(m => m.video === clip); }
+function momentsShown() { return momentsBase().filter(passes); }
+
+// ---- the tag bar under the strip: the session's tags by category with counts; clicking filters the timeline
+function renderTagbar() {
+  const use = {};
+  for (const m of momentsBase()) for (const t of m.tags || []) use[t] = (use[t] || 0) + 1;
+  const groups = TAGS.categories.map(c => [c.name, TAGS.tags.filter(t => t.category === c.name && use[t.name]).map(t => t.name)]);
+  const loose = Object.keys(use).filter(t => !tagDef(t)).sort();
+  if (loose.length) groups.push(['other', loose]);
+  let h = '';
+  for (const [c, ts] of groups) {
+    if (!ts.length) continue;
+    const allOn = ts.every(t => filter.has(t));
+    h += `<span class="cat ${allOn ? 'on' : ''}" data-c="${esc(c)}" title="toggle the whole category">${esc(c)}</span>`;
+    h += ts.map(t => `<span class="chip ${filter.has(t) ? 'on' : ''}" data-t="${esc(t)}" style="--c:${tagColor(t)}">${esc(t)}<span class="n">${use[t]}</span></span>`).join('');
+  }
+  if (filter.size) h += ` <button class="small" id="clearFilter">clear</button>`;
+  h += `<button class="small mgr" id="openTagMgr" title="categories, tags, colours">⚙ tags</button>`;
+  $('#tagbar').innerHTML = h;
+  const groupOf = c => (groups.find(g => g[0] === c) || [c, []])[1];
+  $('#tagbar').querySelectorAll('.chip').forEach(el => el.onclick = () => { const t = el.dataset.t; filter.has(t) ? filter.delete(t) : filter.add(t); applyFilter(); });
+  $('#tagbar').querySelectorAll('.cat').forEach(el => el.onclick = () => { const ts = groupOf(el.dataset.c); const allOn = ts.every(t => filter.has(t)); ts.forEach(t => allOn ? filter.delete(t) : filter.add(t)); applyFilter(); });
+  const cf = $('#clearFilter'); if (cf) cf.onclick = () => { filter.clear(); applyFilter(); };
+  $('#openTagMgr').onclick = openTagMgr;
+}
+function applyFilter() { renderMoments(); renderSugg(); drawStrip(); setUrl(); }
+
+// ---- categories, tags and colours (changes are saved as they are made)
+async function openTagMgr() {
+  const box = $('#tagmgr'); box.classList.add('open');
+  const sel = (cur) => `<select data-cat>${TAGS.categories.map(c => `<option ${c.name === cur ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`;
+  box.innerHTML = `<div class="row"><b>categories</b></div>` +
+    TAGS.categories.map(c => `<div class="row" data-cn="${esc(c.name)}"><span style="min-width:110px">${esc(c.name)}</span><input type="color" value="${c.color}" data-ccolor>` +
+      `<button class="small" data-cdel title="remove (only when empty)">✕</button></div>`).join('') +
+    `<div class="row"><input id="newCat" placeholder="new category" style="width:140px"><input type="color" id="newCatColor" value="#4cc2ff"><button class="small" id="addCat">add</button></div>` +
+    `<div class="row" style="margin-top:6px"><b>tags</b> <span style="color:var(--dim);font-size:12px">a tag without its own colour takes the category's</span></div>` +
+    TAGS.tags.map(t => `<div class="row" data-tn="${esc(t.name)}"><span style="min-width:110px">${pill(t.name)}</span>${sel(t.category)}<input type="color" value="${tagColor(t.name)}" data-tcolor>` +
+      `<button class="small" data-tclear title="use the category colour">↺</button><button class="small" data-tdel title="drop the definition (moments keep the tag)">✕</button></div>`).join('') +
+    `<div class="row"><input id="newTag" placeholder="new tag" style="width:140px">${sel(TAGS.categories[0]?.name)}<button class="small" id="addTag">add</button></div>` +
+    `<div class="row"><button onclick="closeTagMgr()">close</button></div>`;
+  const reload = async () => { TAGS = await api('/api/tags'); openTagMgr(); applyFilter(); };
+  const post = async (p, body) => { const r = await api(p, {method: 'POST', body: JSON.stringify(body)}); if (r.error) alert(r.error); return r; };
+  const del = async (p) => { const r = await api(p, {method: 'DELETE'}); if (r.error) alert(r.error); return r; };
+  box.querySelectorAll('[data-cn]').forEach(row => {
+    row.querySelector('[data-ccolor]').onchange = async e => { await post('/api/tag-categories', {name: row.dataset.cn, color: e.target.value}); reload(); };
+    row.querySelector('[data-cdel]').onclick = async () => { await del('/api/tag-categories/' + encodeURIComponent(row.dataset.cn)); reload(); };
+  });
+  box.querySelectorAll('[data-tn]').forEach(row => {
+    const save = async (color) => { await post('/api/tags', {name: row.dataset.tn, category: row.querySelector('[data-cat]').value, color}); reload(); };
+    row.querySelector('[data-cat]').onchange = () => save(null);
+    row.querySelector('[data-tcolor]').onchange = e => save(e.target.value);
+    row.querySelector('[data-tclear]').onclick = () => save('');
+    row.querySelector('[data-tdel]').onclick = async () => { await del('/api/tags/' + encodeURIComponent(row.dataset.tn)); reload(); };
+  });
+  $('#addCat').onclick = async () => { const n = $('#newCat').value.trim(); if (!n) return; await post('/api/tag-categories', {name: n, color: $('#newCatColor').value}); reload(); };
+  $('#addTag').onclick = async () => { const n = $('#newTag').value.trim(); if (!n) return; await post('/api/tags', {name: n, category: $('#addTag').previousElementSibling.value}); reload(); };
+}
+function closeTagMgr() { $('#tagmgr').classList.remove('open'); }
 
 function renderMoments() {
+  renderTagbar();
   const ms = momentsShown();
   $('#mcount').textContent = `(${ms.length})`;
   $('#moments').innerHTML = ms.map(m => `<div class="m ${cur === m.id ? 'on' : ''}" data-id="${m.id}">
     <img loading="lazy" src="/frame/${encodeURIComponent(S.session)}/${encodeURIComponent(m.video)}/${(m.start + Math.min(2, (m.end - m.start) / 2)).toFixed(2)}">
-    <span class="ttl">${esc(m.title)} ${(m.tags || []).map(t => `<span class="tag">${t}</span>`).join('')}</span>
+    <span class="ttl">${esc(m.title)} ${(m.tags || []).map(pill).join('')}</span>
     <span class="act"><button class="small" data-link="${m.id}" title="copy link">⛓</button><button class="small" data-edit="${m.id}" title="edit">✎</button><button class="small" data-del="${m.id}" title="delete">✕</button></span>
     <span class="t">${$('#allClips').checked ? m.video.slice(-7, -4) + ' · ' : ''}${fmt(m.start)}–${fmt(m.end)}${m.metrics ? ' · ' + metricLine(m.metrics) : ''}</span>
     <span class="note">${esc(m.note || '')}</span></div>`).join('') || '<div class="empty">no moments yet: set in/out with <kbd>i</kbd> <kbd>o</kbd>, then <kbd>t</kbd></div>';
@@ -214,10 +289,11 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 
 function renderSugg() {
   const ms = S.moments.filter(m => m.video === clip);
-  const open = sugg.filter(e => !ms.some(m => e.start < m.end + 1 && e.end > m.start - 1 && (m.tags || []).includes(e.tag)));
+  const open = sugg.filter(e => !ms.some(m => e.start < m.end + 1 && e.end > m.start - 1 && (m.tags || []).includes(e.tag)))
+    .filter(e => !filter.size || filter.has(e.tag));
   $('#scount').textContent = `(${open.length})`;
-  $('#sugg').innerHTML = open.map((e, i) => `<div class="m" data-i="${i}"><span style="grid-row:1/3;color:${COLORS[e.tag] || '#888'}">◇</span>
-    <span class="ttl">${esc(e.title)} <span class="tag">${e.tag}</span></span><span class="act"><button class="small" data-acc="${i}">accept</button></span>
+  $('#sugg').innerHTML = open.map((e, i) => `<div class="m" data-i="${i}"><span style="grid-row:1/3;color:${tagColor(e.tag)}">◇</span>
+    <span class="ttl">${esc(e.title)} ${pill(e.tag)}</span><span class="act"><button class="small" data-acc="${i}">accept</button></span>
     <span class="t">${fmt(e.start)}–${fmt(e.end)}</span><span class="why">${esc(e.why)}</span></div>`).join('') || '<div class="empty">' + (series.length ? 'nothing untagged' : 'no blackbox match for this clip') + '</div>';
   document.querySelectorAll('#sugg .m').forEach(el => el.onclick = e => {
     const s = open[+el.dataset.i];
@@ -272,8 +348,8 @@ function drawStrip() {
     s.rows.forEach((r, i) => { if (!r) return; const x = X(s.offset + i * s.step), y = H - r[0] / 100 * H * 0.36; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
   }
   // suggestions (hollow) and moments (solid)
-  for (const e of (window._open || [])) { ctx.strokeStyle = COLORS[e.tag] || '#888'; ctx.lineWidth = devicePixelRatio; ctx.strokeRect(X(e.start), H * 0.38, Math.max(2, X(e.end) - X(e.start)), H * 0.2); }
-  for (const m of S.moments.filter(m => m.video === clip)) { ctx.fillStyle = COLORS[(m.tags || [])[0]] || '#9aa3b2'; ctx.globalAlpha = m.id === cur ? 1 : 0.75;
+  for (const e of (window._open || [])) { ctx.strokeStyle = tagColor(e.tag); ctx.lineWidth = devicePixelRatio; ctx.strokeRect(X(e.start), H * 0.38, Math.max(2, X(e.end) - X(e.start)), H * 0.2); }
+  for (const m of S.moments.filter(m => m.video === clip && passes(m))) { ctx.fillStyle = tagColor((m.tags || [])[0]); ctx.globalAlpha = m.id === cur ? 1 : 0.75;
     ctx.fillRect(X(m.start), H * 0.08, Math.max(3, X(m.end) - X(m.start)), H * 0.26); ctx.globalAlpha = 1; }
   // in/out while editing
   if ($('#editor').classList.contains('open')) { const a = parse($('#edIn').value), b = parse($('#edOut').value);
@@ -290,9 +366,12 @@ function openEditor(m) {
   $('#edId').textContent = m.id || 'new'; $('#edIn').value = fmt(m.start); $('#edOut').value = fmt(m.end);
   $('#edTitle').value = m.title || ''; $('#edNote').value = m.note || ''; $('#edWhy').textContent = m.why || '';
   const tags = new Set(m.tags || []);
-  const all = [...TAGS, ...[...tags].filter(t => !TAGS.includes(t))];
-  $('#edTags').innerHTML = all.map(t => `<span class="chip ${tags.has(t) ? 'on' : ''}" data-t="${t}">${t}</span>`).join('') + ' <input id="edTagFree" placeholder="+tag" style="width:80px">';
-  document.querySelectorAll('.chip').forEach(c => c.onclick = () => c.classList.toggle('on'));
+  const chip = t => `<span class="chip ${tags.has(t) ? 'on' : ''}" data-t="${esc(t)}" style="--c:${tagColor(t)}">${esc(t)}</span>`;
+  let h = '';
+  for (const c of TAGS.categories) { const ts = TAGS.tags.filter(t => t.category === c.name); if (ts.length) h += `<span class="cat">${esc(c.name)}</span>` + ts.map(t => chip(t.name)).join(''); }
+  const loose = [...tags].filter(t => !tagDef(t)); if (loose.length) h += `<span class="cat">other</span>` + loose.map(chip).join('');
+  $('#edTags').innerHTML = h + ' <input id="edTagFree" placeholder="+tag" style="width:80px">';
+  $('#edTags').querySelectorAll('.chip').forEach(c => c.onclick = () => c.classList.toggle('on'));
   $('#edTitle').focus(); drawStrip();
 }
 function closeEditor() { ed = null; $('#editor').classList.remove('open'); drawStrip(); }
@@ -300,7 +379,7 @@ function setIn() { $('#edIn').value = fmt(v.currentTime); drawStrip(); }
 function setOut() { $('#edOut').value = fmt(v.currentTime); drawStrip(); }
 function editMoment(id) { const m = S.moments.find(x => x.id === id); if (m) openEditor({...m}); }
 async function saveMoment() {
-  const tags = [...document.querySelectorAll('.chip.on')].map(c => c.dataset.t);
+  const tags = [...$('#edTags').querySelectorAll('.chip.on')].map(c => c.dataset.t);
   const free = $('#edTagFree').value.trim(); if (free) tags.push(...free.split(/[,\s]+/).filter(Boolean));
   const body = {id: ed.id, video: ed.video || clip, start: parse($('#edIn').value), end: parse($('#edOut').value), title: $('#edTitle').value.trim() || tags[0] || 'moment', tags, note: $('#edNote').value, metrics: ed.metrics};
   if (!(body.end > body.start)) { alert('out must be after in'); return; }

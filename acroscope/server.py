@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import blackbox, events as ev, metrics, sessions, video
-from .config import TAGS, VIDEOS_DIR
+from .config import VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
 _lock = threading.Lock()
@@ -210,8 +210,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
             if parts[:2] == ["api", "store"]:
                 return self._json({"store": repr(sessions.store()), "data": str(VIDEOS_DIR.parent)})
-            if parts[:2] == ["api", "tags"]:
-                return self._json(TAGS)
+            if parts == ["api", "tags"]:
+                return self._json(sessions.store().tags())
+            if parts == ["api", "tag-usage"]:
+                return self._json(sessions.store().tag_usage(q.get("session")))
             if parts[:2] == ["api", "session"] and len(parts) >= 3:
                 name = parts[2]
                 if len(parts) == 3:
@@ -272,6 +274,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(sessions.scan())
             if parts == ["api", "import"]:
                 return self._json(sessions.import_json(self._body().get("session")))
+            if parts == ["api", "tags"]:
+                b = self._body()
+                return self._json(sessions.store().set_tag(b["name"], b["category"], b.get("color")))
+            if parts == ["api", "tag-categories"]:
+                b = self._body()
+                return self._json(sessions.store().set_category(b["name"], b.get("color")))
             if parts[:2] != ["api", "session"] or len(parts) != 4:
                 return self._json({"error": "not found"}, 404)
             name, what, b = parts[2], parts[3], self._body()
@@ -297,6 +305,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "not found"}, 404)
         except FileNotFoundError as e:
             return self._json({"error": str(e)}, 404)
+        except (ValueError, KeyError) as e:
+            return self._json({"error": f"{type(e).__name__}: {e}"}, 400)
         except Exception as e:  # noqa: BLE001
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
@@ -313,9 +323,15 @@ class Handler(BaseHTTPRequestHandler):
                 with _lock:
                     n = sessions.unmatch(parts[2], q["video"], int(q["arm"]) if q.get("arm") else None)
                 return self._json({"removed": n})
+            if parts[:2] == ["api", "tags"] and len(parts) == 3:
+                return self._json({"removed": sessions.store().delete_tag(parts[2])})
+            if parts[:2] == ["api", "tag-categories"] and len(parts) == 3:
+                return self._json({"removed": sessions.store().delete_category(parts[2])})
             return self._json({"error": "not found"}, 404)
         except FileNotFoundError as e:
             return self._json({"error": str(e)}, 404)
+        except ValueError as e:
+            return self._json({"error": str(e)}, 400)
         except Exception as e:  # noqa: BLE001
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 

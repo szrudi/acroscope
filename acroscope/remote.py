@@ -78,6 +78,24 @@ class Remote:
     def purge(self, session, video=None, days=0) -> list[dict]:
         return self._call("POST", self._s(session) + "/purge", {"video": video, "days": days})
 
+    def tags(self) -> dict:
+        return self._call("GET", "/api/tags")
+
+    def set_category(self, name, color=None) -> dict:
+        return self._call("POST", "/api/tag-categories", {"name": name, "color": color})
+
+    def set_tag(self, name, category, color=None) -> dict:
+        return self._call("POST", "/api/tags", {"name": name, "category": category, "color": color})
+
+    def delete_tag(self, name) -> bool:
+        return self._call("DELETE", "/api/tags/" + urllib.parse.quote(name, safe=""))["removed"]
+
+    def delete_category(self, name) -> bool:
+        return self._call("DELETE", "/api/tag-categories/" + urllib.parse.quote(name, safe=""))["removed"]
+
+    def tag_usage(self, session=None) -> dict:
+        return self._call("GET", "/api/tag-usage", session=session)
+
     # the server does these against its own mount of the data dir
     def refresh(self, session: str, probe_videos: bool = True) -> dict:
         return self._call("POST", self._s(session) + "/refresh", {"probe": probe_videos})

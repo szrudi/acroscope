@@ -114,6 +114,40 @@ def cmd_import_json(a):
     out(sessions.import_json(_session(a.session) if a.session else None))
 
 
+def cmd_tags(a):
+    st = sessions.store()
+    t, use = st.tags(), st.tag_usage(_session(a.session) if a.session else None)
+    if a.json:
+        return out({**t, "usage": use})
+    defined = {x["name"] for x in t["tags"]}
+    for c in t["categories"]:
+        print(f"{c['name']}  {c['color']}")
+        for x in t["tags"]:
+            if x["category"] == c["name"]:
+                print(f"  {x['name']:12} {x['color'] or '':8} {use.get(x['name'], 0):3} moment(s)")
+    loose = {k: v for k, v in use.items() if k not in defined}
+    if loose:
+        print("(no category)")
+        for k, v in sorted(loose.items()):
+            print(f"  {k:12} {'':8} {v:3} moment(s)")
+
+
+def cmd_tagdef(a):
+    st = sessions.store()
+    if a.rm:
+        return out({"removed": st.delete_tag(a.name)})
+    if not a.category:
+        sys.exit("tagdef: --category is needed (or --rm)")
+    out(st.set_tag(a.name, a.category, a.color))
+
+
+def cmd_category(a):
+    st = sessions.store()
+    if a.rm:
+        return out({"removed": st.delete_category(a.name)})
+    out(st.set_category(a.name, a.color))
+
+
 def cmd_arms(a):
     idx = blackbox.index_bbl(a.bbl, force=a.force, progress=lambda m: print(m, file=sys.stderr))
     if a.json:
@@ -356,6 +390,13 @@ def main(argv=None):
     p.set_defaults(f=cmd_purge)
     p = sp.add_parser("import-json", help="one-off: import the pre-database videos/<session>/session.json files")
     p.add_argument("session", nargs="?"); p.set_defaults(f=cmd_import_json)
+    p = sp.add_parser("tags", help="the tag vocabulary by category, with how many moments use each tag")
+    p.add_argument("session", nargs="?", help="count in one session only"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_tags)
+    p = sp.add_parser("tagdef", help="define a tag in a category (or move it there); --rm drops the definition")
+    p.add_argument("name"); p.add_argument("--category"); p.add_argument("--color", help="#rrggbb; '' clears it, the category colour is used then")
+    p.add_argument("--rm", action="store_true"); p.set_defaults(f=cmd_tagdef)
+    p = sp.add_parser("category", help="create a tag category (needs --color) or change its colour; --rm drops an empty one")
+    p.add_argument("name"); p.add_argument("--color"); p.add_argument("--rm", action="store_true"); p.set_defaults(f=cmd_category)
     p = sp.add_parser("arms", help="list the arms of a .bbl (decodes every arm into the cache once)")
     p.add_argument("bbl"); p.add_argument("--force", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_arms)
     p = sp.add_parser("decode", help="decode one arm into the cache; --csv dumps it like blackbox_decode")

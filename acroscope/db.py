@@ -32,7 +32,18 @@ CREATE TABLE IF NOT EXISTS moments (
   start REAL NOT NULL, end REAL NOT NULL, title TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '[]',
   note TEXT NOT NULL DEFAULT '', metrics TEXT, created_at TEXT, updated_at TEXT,
   PRIMARY KEY (session, id));
+CREATE TABLE IF NOT EXISTS tag_categories (name TEXT PRIMARY KEY, color TEXT NOT NULL, pos INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS tags (
+  name TEXT PRIMARY KEY, category TEXT NOT NULL REFERENCES tag_categories(name), color TEXT, pos INTEGER NOT NULL);
 """
+
+# The tag vocabulary a new database starts with: categories with a colour, tags with the colour the player used
+# per tag before categories existed (so the strip looks the same). Free-text tags on moments need no definition.
+SEED_CATEGORIES = [("tricks", "#f5a524"), ("milestones", "#5fd68b"), ("poi", "#9aa3b2")]
+SEED_TAGS = [("flip", "tricks", "#f5a524"), ("roll", "tricks", "#ffd166"), ("powerloop", "tricks", "#4cc2ff"),
+             ("split-s", "tricks", "#8ab4ff"), ("dive", "tricks", "#9b7bff"), ("orbit", "tricks", "#5fd68b"),
+             ("milestone", "milestones", None),
+             ("crash", "poi", "#ff6b6b"), ("gyro-kick", "poi", "#ff9f6b"), ("motor-loss", "poi", "#ff6bd6"), ("poi", "poi", None)]
 
 
 def now() -> str:
@@ -48,6 +59,11 @@ class Db:
         self.c.execute("PRAGMA journal_mode=WAL")
         self.c.execute("PRAGMA foreign_keys=ON")
         self.c.executescript(SCHEMA)
+        if not self.c.execute("SELECT 1 FROM tag_categories LIMIT 1").fetchone():
+            for name, color in SEED_CATEGORIES:
+                self.set_category(name, color)
+            for name, cat, color in SEED_TAGS:
+                self.set_tag(name, cat, color)
 
     def __repr__(self):
         return f"sqlite {self.path}"
@@ -210,6 +226,60 @@ class Db:
             out.append({"video": r["file"], "missing_since": r["missing_since"], "matches": n_m, "moments": n_t})
         if out:
             self._touch(session)
+        return out
+
+    # ---- tag vocabulary ---------------------------------------------------------------------------------------
+
+    def tags(self) -> dict:
+        """{categories: [{name, color, pos}], tags: [{name, category, color, pos}]}, both in display order."""
+        return {"categories": [dict(r) for r in self.c.execute("SELECT name, color, pos FROM tag_categories ORDER BY pos")],
+                "tags": [dict(r) for r in self.c.execute("SELECT name, category, color, pos FROM tags ORDER BY pos")]}
+
+    def set_category(self, name: str, color: str | None = None) -> dict:
+        """Create a category (colour required) or change its colour; the position is kept."""
+        row = self.c.execute("SELECT * FROM tag_categories WHERE name = ?", (name,)).fetchone()
+        if row:
+            if color:
+                self.c.execute("UPDATE tag_categories SET color = ? WHERE name = ?", (color, name))
+        else:
+            if not color:
+                raise ValueError(f"category {name}: a colour is needed to create it")
+            pos = self.c.execute("SELECT COALESCE(MAX(pos) + 1, 0) FROM tag_categories").fetchone()[0]
+            self.c.execute("INSERT INTO tag_categories (name, color, pos) VALUES (?, ?, ?)", (name, color, pos))
+        return dict(self.c.execute("SELECT name, color, pos FROM tag_categories WHERE name = ?", (name,)).fetchone())
+
+    def set_tag(self, name: str, category: str, color: str | None = None) -> dict:
+        """Define a tag in a category, or move it there; color None keeps the colour, '' clears it."""
+        if not self.c.execute("SELECT 1 FROM tag_categories WHERE name = ?", (category,)).fetchone():
+            raise ValueError(f"category {category}: no such category")
+        row = self.c.execute("SELECT * FROM tags WHERE name = ?", (name,)).fetchone()
+        if row:
+            self.c.execute("UPDATE tags SET category = ?, color = ? WHERE name = ?",
+                           (category, row["color"] if color is None else (color or None), name))
+        else:
+            pos = self.c.execute("SELECT COALESCE(MAX(pos) + 1, 0) FROM tags").fetchone()[0]
+            self.c.execute("INSERT INTO tags (name, category, color, pos) VALUES (?, ?, ?, ?)", (name, category, color or None, pos))
+        return dict(self.c.execute("SELECT name, category, color, pos FROM tags WHERE name = ?", (name,)).fetchone())
+
+    def delete_tag(self, name: str) -> bool:
+        """Drop the definition; moments keep the tag as free text."""
+        return self.c.execute("DELETE FROM tags WHERE name = ?", (name,)).rowcount > 0
+
+    def delete_category(self, name: str) -> bool:
+        used = [r["name"] for r in self.c.execute("SELECT name FROM tags WHERE category = ?", (name,))]
+        if used:
+            raise ValueError(f"category {name} still has tags: {', '.join(used)}")
+        return self.c.execute("DELETE FROM tag_categories WHERE name = ?", (name,)).rowcount > 0
+
+    def tag_usage(self, session: str | None = None) -> dict:
+        """{tag: number of moments carrying it}, over one session or all."""
+        q, args = "SELECT tags FROM moments", ()
+        if session:
+            q, args = q + " WHERE session = ?", (session,)
+        out: dict[str, int] = {}
+        for r in self.c.execute(q, args):
+            for t in json.loads(r["tags"]):
+                out[t] = out.get(t, 0) + 1
         return out
 
     # ---- import of the old session.json files -----------------------------------------------------------------
