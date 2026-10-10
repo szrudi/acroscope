@@ -181,6 +181,15 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, 403)
         with self.assertRaises(RemoteError):
             r.cli(["frame", "2026-10-07-s", str(outside), "0"])
+        # nor a bare file name that happens to sit in the server's working directory (the image's /app: Dockerfile)
+        here = Path.cwd() / "cli-probe.bbl"
+        here.write_bytes(b"H Product:Blackbox flight data recorder\n")
+        self.addCleanup(here.unlink)
+        out = r.cli(["arms", here.name])
+        self.assertNotEqual(out["code"], 0)
+        self.assertIn("0 blackbox files match", out["stderr"])
+        out = r.cli(["frame", "2026-10-07-s", "README.md", "0"])
+        self.assertIn("no such clip", out["stderr"])
 
     def test_unknown_session_is_404_and_edits_take_names_only(self):
         before = [s["session"] for s in self.r.sessions()]

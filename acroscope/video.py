@@ -7,13 +7,13 @@ import json
 import subprocess
 from pathlib import Path
 
-from .config import H264_ARGS, VIDEOS_DIR, cache
+from .config import H264_ARGS, NAMES_ONLY, VIDEOS_DIR, cache
 
 
 def resolve_video(session: str, file: str) -> Path:
-    """Accept a clip name ('2026-10-07_007.mp4'), its bare number ('007'/'7') or a path."""
+    """Accept a clip name ('2026-10-07_007.mp4'), its bare number ('007'/'7') or a path (not for a client's command)."""
     p = Path(file).expanduser()
-    if p.is_file():
+    if p.is_file() and not NAMES_ONLY:
         return p
     d = VIDEOS_DIR / session
     if (d / file).is_file():

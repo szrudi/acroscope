@@ -18,7 +18,7 @@ import struct
 from bisect import bisect_left
 from pathlib import Path
 
-from .config import BLACKBOX_DIR, cache
+from .config import BLACKBOX_DIR, NAMES_ONLY, cache
 
 logging.getLogger("orangebox").setLevel(logging.ERROR)
 
@@ -30,9 +30,9 @@ INDEX_VERSION = 2
 
 
 def resolve_bbl(name: str) -> Path:
-    """Accept a full path, a file name, or a unique fragment such as '20261007_212530'."""
+    """Accept a full path (not for a client's command), a file name, or a unique fragment such as '20261007_212530'."""
     p = Path(name).expanduser()
-    if p.is_file():
+    if p.is_file() and not NAMES_ONLY:
         return p
     if (BLACKBOX_DIR / name).is_file():
         return BLACKBOX_DIR / name

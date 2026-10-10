@@ -63,7 +63,7 @@ def run_cli(args: list[str]) -> dict:
         raise ValueError(f"not a command a client may run here: {args[:1]}")
     if any("/" in a for a in args[1:]):
         raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
-    env = dict(os.environ, ACROSCOPE_URL="")
+    env = dict(os.environ, ACROSCOPE_URL="", ACROSCOPE_NAMES_ONLY="1")   # and a bare name never means a file in our cwd
     r = subprocess.run([sys.executable, "-m", "acroscope.cli", *args], capture_output=True, text=True, env=env, timeout=1800)
     return {"stdout": r.stdout, "stderr": r.stderr, "code": r.returncode}
 
