@@ -10,6 +10,7 @@ back); purge() is the only thing that removes rows, and it is explicit.
 import json
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -63,10 +64,7 @@ class Db:
     def __init__(self, path: Path | str):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.c = sqlite3.connect(self.path, timeout=10, check_same_thread=False, isolation_level=None)
-        self.c.row_factory = sqlite3.Row
-        self.c.execute("PRAGMA journal_mode=WAL")
-        self.c.execute("PRAGMA foreign_keys=ON")
+        self._local = threading.local()
         self.c.executescript(SCHEMA)
         self._migrate()
         if not self.c.execute("SELECT 1 FROM tag_categories LIMIT 1").fetchone():
@@ -77,6 +75,19 @@ class Db:
 
     def __repr__(self):
         return f"sqlite {self.path}"
+
+    @property
+    def c(self) -> sqlite3.Connection:
+        """A connection per thread. The server answers requests from threads; one sqlite3 connection shared between
+        them fails under load (statement state is per connection) and a BEGIN in one thread swallows the others'
+        writes into its transaction."""
+        c = getattr(self._local, "c", None)
+        if c is None:
+            c = self._local.c = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA foreign_keys=ON")
+        return c
 
     def _migrate(self) -> None:
         """Columns added after a table first shipped (CREATE TABLE IF NOT EXISTS does not add them)."""
