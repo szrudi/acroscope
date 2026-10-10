@@ -135,14 +135,17 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(json.loads(urllib.request.urlopen(self.url + "/api/session/2026-10-07-s/data").read())["moments"], [])
 
     def test_head_sends_no_body(self):
-        import http.client
-        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        c.request("HEAD", "/api/store"); r = c.getresponse(); r.read()
-        self.assertEqual(r.status, 200)
-        c.request("GET", "/api/store"); r = c.getresponse()                   # same keep-alive connection
-        self.assertEqual(r.status, 200)
-        self.assertIn("store", json.loads(r.read()))
-        c.close()
+        # a raw socket: http.client's buffered reader would swallow a stray body and hide the bug
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as c:
+            c.sendall(b"HEAD /api/store HTTP/1.1\r\nHost: x\r\n\r\n")
+            head = b""
+            while b"\r\n\r\n" not in head:
+                head += c.recv(4096)
+            self.assertTrue(head.startswith(b"HTTP/1.1 200"), head[:40])
+            self.assertEqual(head.split(b"\r\n\r\n", 1)[1], b"")
+            c.settimeout(0.5)
+            with self.assertRaises(TimeoutError):                            # nothing more arrives: no body
+                c.recv(4096)
 
     def test_cli_proxy(self):
         r = self.r
