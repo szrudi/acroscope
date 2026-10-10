@@ -24,10 +24,11 @@ from .config import VIDEOS_DIR
 # cell geometry on a 720x480 frame: digit cells d1 d2 : d3 d4 per timer row, 24 px pitch from x 559 in both layouts
 # (glyph surveys of 2026-10-09 and 2026-10-10). `rows` are the y of each timer row top to bottom, `names` what the
 # labels file calls them.
-# A layout: x0 and pitch of the character cells, the y of each timer row, what the labels file calls the rows, the
-# format of each row ("dd:dd" = MM:SS, "dd:dd.d" = MM:SS and tenths; any other character is a cell to skip), the
-# glyph box inside a cell (x, w, y, h) for the font, whether the one timer is the cumulative total, and which
-# template set the font uses (a layout with the same font as another shares its templates).
+# A layout: x0 (one value, or one per row) and pitch of the character cells, the y of each timer row, what the
+# labels file calls the rows, the format of each row ("dd:dd" = MM:SS, "dd:dd.d" = with tenths, "dd:dd.dd" = with
+# hundredths; any other character is a cell to skip), the glyph box inside a cell (x, w, y, h) for the font,
+# whether the one timer is the cumulative total, which row is the arm timer when there are two (arm_row, default
+# the first), and which template set the font uses (a layout with the same font as another shares its templates).
 GLYPH_SMALL = (4, 10, 3, 18)      # the stock font: 8 px wide at x+5..x+13, 16 tall at y+4..y+20
 GLYPH_BOLD = (1, 18, 1, 22)       # the bold font flown since 2026-10-10: 14 px wide at x+3..x+16, 19 tall at y+2..y+20
 LAYOUTS = {
@@ -38,24 +39,34 @@ LAYOUTS = {
     # same OSD one column further right (10-04 clips 005/006, after a settings change); same font, same templates
     "air65f-b": {"x0": 583, "pitch": 24, "rows": [434], "names": ["total"], "formats": ["dd:dd"], "glyph": GLYPH_SMALL,
                  "cumulative": True, "templates": "air65f"},
-    # 2026-10-10: bold font, the arm timer with tenths (MM:SS.T) above the total
+    # 2026-10-10 clip 001: bold font, the arm timer with tenths (MM:SS.T) above the total
     "otto-bold": {"x0": 558, "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd.d", "dd:dd"],
                   "glyph": GLYPH_BOLD, "cumulative": False},
+    # 2026-10-10 from clip 004: the two swapped, the total on top where it was, the arm timer below it further left
+    # with hundredths (MM:SS.hh); same font
+    "otto-bold-swap": {"x0": [558, 486], "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd", "dd:dd.dd"],
+                       "glyph": GLYPH_BOLD, "cumulative": False, "arm_row": 1, "templates": "otto-bold"},
 }
 SHIFTS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]   # the analog picture jitters a pixel or so
-OSD_VERSION = 6     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
+OSD_VERSION = 7     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
 TEMPLATES = Path(__file__).parent / "static" / "osd-templates.json"
 BLANK_STD = 25.0                                   # glyph-box contrast below this = no digit
+
+
+def _x0(layout: str, row: int) -> int:
+    x = LAYOUTS[layout]["x0"]
+    return x[row] if isinstance(x, list) else x
 
 
 def _crop(layout: str) -> tuple[int, int, int, int]:
     """x, y, w, h of the strip holding every timer row of a layout (even height: ffmpeg pads odd crops)."""
     L = LAYOUTS[layout]
     gx, gw, gy, gh = L["glyph"]
-    cells = max(len(f) for f in L["formats"])
+    left = min(_x0(layout, r) for r in range(len(L["formats"])))
+    right = max(_x0(layout, r) + len(f) * L["pitch"] + 2 for r, f in enumerate(L["formats"]))
     h = L["rows"][-1] + gy + gh + 2 - L["rows"][0]
-    w = min(cells * L["pitch"] + 2, 720 - L["x0"])
-    return L["x0"], L["rows"][0], w + w % 2, h + h % 2
+    w = min(right, 720) - left
+    return left, L["rows"][0], w + w % 2, h + h % 2
 
 
 def digit_cols(layout: str, row: int) -> list[int]:
@@ -88,8 +99,8 @@ def _cell(buf: bytes, col: int, row: int, layout: str = "otto", dx: int = 0, dy:
     """Normalised pixel vector of one digit glyph (the layout's glyph box), shifted by (dx, dy); [] when blank."""
     L = LAYOUTS[layout]
     gx, gw, gy, gh = L["glyph"]
-    w = _crop(layout)[2]
-    cx, cy = col * L["pitch"] + gx + dx, (L["rows"][row] - L["rows"][0]) + gy + dy
+    left, _, w, _ = _crop(layout)
+    cx, cy = (_x0(layout, row) - left) + col * L["pitch"] + gx + dx, (L["rows"][row] - L["rows"][0]) + gy + dy
     if cx < 0 or cx + gw > w:
         return []
     v = [float(buf[(cy + j) * w + cx + i]) for j in range(gh) for i in range(gw)]
@@ -139,12 +150,16 @@ def _value(digits: list) -> float | None:
     if int(sec[0]) > 5:                   # MM:SS, so the tens of seconds is 0-5
         return None
     v = int(m) * 60 + int(sec)
-    return v + int(digits[4]) / 10 if len(digits) > 4 else v
+    if len(digits) > 4:
+        v += int(digits[4]) / 10
+    if len(digits) > 5:
+        v += int(digits[5]) / 100
+    return v
 
 
 def read_frame(buf: bytes, templates: dict, layout: str = "otto") -> tuple[float | None, float | None, float]:
-    """(top seconds, bottom seconds, min confidence) from one crop; None when a timer is not readable. With the
-    single cumulative timer, `top` is always None and `bottom` carries the total."""
+    """(arm timer seconds, total seconds, min confidence) from one crop; None when a timer is not readable. With
+    the single cumulative timer the arm timer is always None. Which row is which is the layout's `arm_row`."""
     out = []
     conf = 1.0
     for row in range(len(LAYOUTS[layout]["formats"])):
@@ -157,7 +172,8 @@ def read_frame(buf: bytes, templates: dict, layout: str = "otto") -> tuple[float
         out.append(_value(digits))
     if LAYOUTS[layout]["cumulative"]:
         return None, out[0], conf
-    return out[0], out[1], conf
+    a = LAYOUTS[layout].get("arm_row", 0)
+    return out[a], out[1 - a], conf
 
 
 def detect_layout(path: Path, fps: float = 0.5) -> str:
