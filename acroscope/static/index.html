@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>acroscope</title>
+<link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/static/brand/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
 <style>
   :root { --bg:#14161a; --panel:#1c1f25; --line:#2b3039; --fg:#e6e8ec; --dim:#9aa3b2; --acc:#f5a524; --acc2:#4cc2ff; --bad:#ff6b6b; --ok:#5fd68b; }
   * { box-sizing:border-box }
@@ -87,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1>acroscope</h1>
+  <h1><img src="/static/brand/icon.svg" alt="" style="height:22px;vertical-align:-5px;margin-right:6px" onerror="this.remove()">acroscope</h1>
   <select id="session"></select>
   <button class="small" id="renameSession" title="rename this session (YYYY-MM-DD-name); the date is the first ten characters">✎</button>
   <span id="status" style="color:var(--dim)"></span>

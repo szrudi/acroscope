@@ -233,8 +233,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not parts:
                 return self._file(STATIC / "index.html", "text/html; charset=utf-8")
-            if parts[0] == "static" and len(parts) == 2:
-                return self._file(STATIC / parts[1])
+            if parts[0] == "static" and 2 <= len(parts) <= 3:          # static/<file> or static/brand/<file>
+                p = STATIC.joinpath(*parts[1:]).resolve()
+                if not p.is_relative_to(STATIC.resolve()):
+                    return self._json({"error": "not found"}, 404)
+                return self._file(p, cache="max-age=3600")
             if parts[0] == "video" and len(parts) == 3:
                 return self._file(video.playable(VIDEOS_DIR / parts[1] / parts[2]), "video/mp4", "max-age=3600")
             if parts[0] == "frame" and len(parts) == 4:
