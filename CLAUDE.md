@@ -49,8 +49,10 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - Backlog: GitHub issues on `szrudi/acroscope`. The flight-analysis session files them; this session implements.
 
 ## Conventions
-- Commit as you go with full messages (the trail of how a conclusion was reached is the record); don't squash. Rudi
-  reviews; never self-merge anything in the homelab repo.
+- Features and anything Rudi should see before it goes live go on a branch (`feat/...`) with a **draft PR** (since
+  2026-10-11; #12 was the first); small fixes and docs may go to main. Commit as you go with full messages (the
+  trail of how a conclusion was reached is the record); don't squash. Rudi reviews and merges; never self-merge
+  anything, here or in the homelab repo. Komodo can deploy the stack from a branch to try a PR.
 - `.venv/bin/python -m unittest discover tests` before committing: the database, the API against a server child,
   ingest end to end on a synthetic batch, the aligner on made-up data, and the real-data pins (10-07 schammer by
   hand in `video-blackbox-index.md`; the #4 truths on 10-10 001) through the server. A pin of new behaviour is red
