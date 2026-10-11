@@ -77,6 +77,17 @@ class AlignerTest(unittest.TestCase):
         self.assertEqual(osd.arm_window("2026-10-04_001", others), (80, None))
         self.assertEqual(osd.arm_window("x", []), (None, None))
 
+    def test_stats_values(self):
+        # (digit, score) per cell; the % glyph and a frame without the STATS screen score low (survey of #9)
+        self.assertEqual(osd.stats_value([("1", .8), ("0", .87), ("0", .88)], "pct"), 100)
+        self.assertEqual(osd.stats_value([("5", .84), ("5", .84), ("2", .29)], "pct"), 55)
+        self.assertEqual(osd.stats_value([("6", .93), ("6", .93), ("2", .47)], "pct"), 66)
+        self.assertEqual(osd.stats_value([("4", .9), ("2", .4), ("2", .3)], "pct"), 4)
+        self.assertIsNone(osd.stats_value([("4", .32), (None, 0), (None, 0)], "pct"))
+        self.assertEqual(osd.stats_value([("0", .8), ("2", .91), ("1", .73), ("9", .79)], "mmss"), 139)
+        self.assertIsNone(osd.stats_value([("3", .26), ("2", .29), ("2", .28), (None, 0)], "mmss"))
+        self.assertIsNone(osd.stats_value([("0", .8), ("2", .91), ("7", .73), ("9", .79)], "mmss"))     # 02:79
+
 
 if __name__ == "__main__":
     unittest.main()

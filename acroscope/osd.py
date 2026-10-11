@@ -31,14 +31,21 @@ from .config import VIDEOS_DIR
 # the first), and which template set the font uses (a layout with the same font as another shares its templates).
 GLYPH_SMALL = (4, 10, 3, 18)      # the stock font: 8 px wide at x+5..x+13, 16 tall at y+4..y+20
 GLYPH_BOLD = (1, 18, 1, 22)       # the bold font flown since 2026-10-10: 14 px wide at x+3..x+16, 19 tall at y+2..y+20
+# The STATS screen Betaflight shows after a disarm, on the same 24 x 36 px grid: the value column starts at x 535,
+# TOTAL ARM (the armed time on the pack since boot, MM:SS) on the row at y 146, BLACKBOX (how full the flash is, in
+# %) on the row at y 326 (survey of 2026-10-11 on 10-02 007/010 and 10-07 007/011, the stock font; #9). Betaflight
+# centres the list, so the rows move with the number of stats on: from 10-02 011 MAX CURRENT and USED MAH are off
+# and the two rows sit at y 182 and 290. A layout carries every geometry seen; the one that reads wins. The
+# bold-font layouts have not been surveyed.
+STATS_SMALL = [{"x0": 535, "total_arm": 146, "blackbox": 326}, {"x0": 535, "total_arm": 182, "blackbox": 290}]
 LAYOUTS = {
     "otto": {"x0": 559, "pitch": 24, "rows": [362, 398], "names": ["top", "bottom"], "formats": ["dd:dd", "dd:dd"],
-             "glyph": GLYPH_SMALL, "cumulative": False},
+             "glyph": GLYPH_SMALL, "cumulative": False, "stats": STATS_SMALL},
     "air65f": {"x0": 559, "pitch": 24, "rows": [434], "names": ["total"], "formats": ["dd:dd"], "glyph": GLYPH_SMALL,
-               "cumulative": True},
+               "cumulative": True, "stats": STATS_SMALL},
     # same OSD one column further right (10-04 clips 005/006, after a settings change); same font, same templates
     "air65f-b": {"x0": 583, "pitch": 24, "rows": [434], "names": ["total"], "formats": ["dd:dd"], "glyph": GLYPH_SMALL,
-                 "cumulative": True, "templates": "air65f"},
+                 "cumulative": True, "templates": "air65f", "stats": STATS_SMALL},
     # 2026-10-10 clip 001: bold font, the arm timer with tenths (MM:SS.T) above the total
     "otto-bold": {"x0": 558, "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd.d", "dd:dd"],
                   "glyph": GLYPH_BOLD, "cumulative": False},
@@ -64,6 +71,8 @@ MAX_CLOCK = 0.01
 OSD_VERSION = 8     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
 TEMPLATES = Path(__file__).parent / "static" / "osd-templates.json"
 BLANK_STD = 25.0                                   # glyph-box contrast below this = no digit
+STATS_SCORE = 0.6     # a STATS digit correlates 0.73-0.97 with its template; the % glyph and a frame without the
+                      # STATS screen 0.25-0.5
 
 
 def _x0(layout: str, row: int) -> int:
@@ -111,10 +120,15 @@ def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None 
 def _cell(buf: bytes, col: int, row: int, layout: str = "otto", dx: int = 0, dy: int = 0) -> list[float]:
     """Normalised pixel vector of one digit glyph (the layout's glyph box), shifted by (dx, dy); [] when blank."""
     L = LAYOUTS[layout]
-    gx, gw, gy, gh = L["glyph"]
     left, _, w, _ = _crop(layout)
-    cx, cy = (_x0(layout, row) - left) + col * L["pitch"] + gx + dx, (L["rows"][row] - L["rows"][0]) + gy + dy
-    if cx < 0 or cx + gw > w:
+    return _glyph(buf, w, (_x0(layout, row) - left) + col * L["pitch"] + dx, (L["rows"][row] - L["rows"][0]) + dy, L["glyph"])
+
+
+def _glyph(buf: bytes, w: int, x: int, y: int, glyph: tuple) -> list[float]:
+    """Normalised pixel vector of the glyph box of the cell at (x, y) in a gray image `w` wide; [] when blank."""
+    gx, gw, gy, gh = glyph
+    cx, cy = x + gx, y + gy
+    if cx < 0 or cx + gw > w or (cy + gh) * w > len(buf):
         return []
     v = [float(buf[(cy + j) * w + cx + i]) for j in range(gh) for i in range(gw)]
     m = sum(v) / len(v)
@@ -153,6 +167,74 @@ def _classify(buf: bytes, col: int, row: int, layout: str, templates: dict) -> t
     scores = sorted(((s, d) for d, s in best.items()), reverse=True)
     top, second = scores[0], scores[1] if len(scores) > 1 else (0.0, "")
     return top[1], top[0] - second[0]
+
+
+def _score_at(buf: bytes, w: int, x: int, y: int, glyph: tuple, templates: dict) -> tuple[str | None, float]:
+    """(digit, correlation) of the cell at (x, y), the best over the SHIFTS; (None, 0) when blank."""
+    best = (None, 0.0)
+    for dx, dy in SHIFTS:
+        feat = _glyph(buf, w, x + dx, y + dy, glyph)
+        for d, t in (templates.items() if feat else ()):
+            sc = sum(a * b for a, b in zip(feat, t)) / len(feat)
+            if sc > best[1]:
+                best = (d, sc)
+    return best
+
+
+def stats_value(cells: list[tuple[str | None, float]], kind: str) -> float | None:
+    """A STATS value from its cells' (digit, score): "mmss" = the four digits of MM:SS (seconds), "pct" = up to
+    three digits followed by the % glyph (which scores low). None when it does not read as one."""
+    ok = [d is not None and sc >= STATS_SCORE for d, sc in cells]
+    if kind == "mmss":
+        if not all(ok) or int(cells[0][0]) > 5 or int(cells[2][0]) > 5:     # MM:SS
+            return None
+        return int(cells[0][0] + cells[1][0]) * 60 + int(cells[2][0] + cells[3][0])
+    n = ok.index(False) if False in ok else len(ok)
+    if n == 0:
+        return None
+    v = int("".join(d for d, _ in cells[:n]))
+    return v if v <= 100 else None
+
+
+def read_stats_frame(buf: bytes, layout: str, templates: dict, w: int = 720) -> dict:
+    """{total_arm, blackbox} off a full 720x480 gray frame, from the first of the layout's STATS geometries that
+    reads both; both None when the frame shows no STATS screen."""
+    g = LAYOUTS[layout]["glyph"]
+    for S in LAYOUTS[layout].get("stats", []):
+        ta = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["total_arm"], g, templates) for c in (0, 1, 3, 4)], "mmss")
+        bb = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["blackbox"], g, templates) for c in (0, 1, 2)], "pct") if ta is not None else None
+        if ta is not None and bb is not None:
+            return {"total_arm": ta, "blackbox": bb}
+    return {"total_arm": None, "blackbox": None}
+
+
+def _gray_frame(path: Path, t: float) -> bytes:
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{max(t, 0):.3f}", "-i", str(path), "-frames:v", "1",
+           "-vf", "scale=720:480", "-pix_fmt", "gray", "-f", "rawvideo", "-"]
+    return subprocess.run(cmd, capture_output=True).stdout
+
+
+def read_stats(path: Path, runs: list[dict], layout: str) -> list[dict]:
+    """The STATS screen after each run's disarm: [{total_arm, blackbox}] per run (None where not read). Sampled at
+    1-4 s after the run's last reading (the screen stays up until the sticks move); the most common full reading
+    wins. Cached per clip and run end."""
+    if not LAYOUTS[layout].get("stats"):
+        return [{} for _ in runs]
+    st = path.stat()
+    cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.stats.v{OSD_VERSION}.json")
+    cache = json.loads(cp.read_text()) if cp.exists() else {}
+    tpl = _load_templates(layout)
+    out = []
+    for v in runs:
+        key = f"{layout}@{v['end']}"
+        if key not in cache:
+            reads = [read_stats_frame(_gray_frame(path, v["end"] + dt), layout, tpl) for dt in (1.0, 2.0, 3.0, 4.0)]
+            full = [(r["total_arm"], r["blackbox"]) for r in reads if r["total_arm"] is not None and r["blackbox"] is not None]
+            ta, bb = max(full, key=full.count) if full else (None, None)
+            cache[key] = {"total_arm": ta, "blackbox": bb}
+        out.append(cache[key])
+    cp.write_text(json.dumps(cache))
+    return out
 
 
 def _value(digits: list) -> float | None:
@@ -319,6 +401,12 @@ def _elapsed(v: dict, l: dict) -> float | None:
     return None
 
 
+def _may(v: dict, l: dict) -> bool:
+    """Whether run v may be log arm l at all: not after the flash filled (no_log), and the run at which it filled
+    only the log's cut-off last arm (only_arm)."""
+    return not v.get("no_log") and v.get("only_arm", l["index"]) == l["index"]
+
+
 def align(video_arms: list[dict], log_arms: list[dict], tol: float = 2.0, w_total: float = 0.3) -> list[tuple[int, int]]:
     """Order-preserving alignment of detected arms to log arms. Cost of a pair = |length difference| +
     w_total * |OSD total-before - log cumulative length in the boot| (when both known); skipping either side costs tol.
@@ -343,7 +431,7 @@ def align(video_arms: list[dict], log_arms: list[dict], tol: float = 2.0, w_tota
                     d = abs(v["length"] - l["length"])
                     if v.get("total_before") is not None and l.get("cum_before") is not None:
                         d += w_total * abs(v["total_before"] - l["cum_before"])
-                if d <= 2 * tol and c + d < cost[i + 1][j + 1]:
+                if d <= 2 * tol and _may(v, l) and c + d < cost[i + 1][j + 1]:
                     cost[i + 1][j + 1], back[i + 1][j + 1] = c + d, ("m", i, j)
             if i < n and c + tol < cost[i + 1][j]:
                 cost[i + 1][j], back[i + 1][j] = c + tol, ("v", i, j)
@@ -428,7 +516,7 @@ def place_by_boot(video_arms: list[dict], log_arms: list[dict], pairs: list[tupl
     for vi, v in enumerate(video_arms):
         if vi in used_v or v.get("partial_start"):
             continue
-        hits = [li for li, l in enumerate(log_arms) if li not in used_l and l.get("boot") in fits
+        hits = [li for li, l in enumerate(log_arms) if li not in used_l and l.get("boot") in fits and _may(v, l)
                 and abs(v["start"] - _at(fits[l["boot"]], l["uptime_start"])) <= tol and v["length"] <= l["length"] + tol]
         if len(hits) == 1:
             out.append((vi, hits[0]))
@@ -486,6 +574,32 @@ def arm_window(key: str, others: list[tuple[str, int]]) -> tuple[int | None, int
     return lo, hi
 
 
+def flash_full(rt: dict, runs: list[dict], path: Path, name: str) -> dict | None:
+    """The first run whose STATS screen shows BLACKBOX 100 %: {clip, run, at} (at = the run's start), or None."""
+    for k, st in enumerate(read_stats(path, runs, rt["layout"])):
+        if st.get("blackbox") == 100:
+            return {"clip": name, "run": k, "at": runs[k]["start"], "total_arm": st.get("total_arm")}
+    return None
+
+
+def _full_before(s: dict, name: str, after: str | None, fps: float) -> dict | None:
+    """The first clip of the session between `after` (the last clip holding arms of the log) and this one whose
+    STATS screen shows the flash full. Their readings are cached from earlier runs, mostly."""
+    for v in s["videos"]:
+        key = v.get("name") or v["file"]
+        if key >= name or (after is not None and key <= after) or not v.get("duration"):
+            continue
+        try:
+            path = sessions.clip_path(s["session"], v["file"])
+            rt = read_timers(path, fps)
+            f = flash_full(rt, video_arms(rt, fps), path, key)
+        except Exception:  # noqa: BLE001  (a clip gone or unreadable says nothing)
+            continue
+        if f:
+            return f
+    return None
+
+
 def _log_matches(session: dict, video: str, pending: list[dict]) -> dict[str, list[tuple[str, int]]]:
     """{bbl: [(clip name, arm)]} of every match in every session except this clip's own, plus the proposals of
     clips earlier in this run (pending: [{session, video, name, bbl, arm}]). A log can be attached to several
@@ -521,12 +635,31 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
     # after this one bound its arms (#9: duration-only matches on the cumulative timer went anywhere in the log)
     others = _log_matches(s, path.name, pending or [])
     taken = {(b, a) for b, ms in others.items() for _, a in ms}
-    windows = {}
+    windows, fulls = {}, {}
+    full_here = None
     # a clip comes from one flash dump, so align against each log separately and keep the best alignment
     best = None
     for b in s["blackbox"]:
         idx = blackbox.index_bbl(b)
         lo, hi = windows[idx["file"]] = arm_window(name, others.get(idx["file"], []))
+        # a log whose last arm is cut off ended with the flash full (#9): once a STATS screen shows BLACKBOX 100 %,
+        # no later run is in it, and the run at which it shows may only be that last arm
+        vs = varms
+        if idx["arms"] and idx["arms"][-1].get("truncated"):
+            last = idx["arms"][-1]["index"]
+            before = max((k for k, a in others.get(idx["file"], []) if k < name), default=None)
+            f = _full_before(s, name, before, fps)
+            if f is None:
+                if full_here is None:
+                    full_here = flash_full(rt, varms, path, name) or {}
+                f = full_here or None
+            if f:
+                fulls[idx["file"]] = f
+                if f["clip"] != name:
+                    vs = [dict(v, no_log=True) for v in varms]
+                else:
+                    vs = [dict(v, no_log=True) if v["start"] > f["at"] else dict(v, only_arm=last) if k == f["run"] else v
+                          for k, v in enumerate(varms)]
         boot_of = {i: k for k, bt in enumerate(idx.get("boots", [])) for i in bt["arms"]}
         cum, logs = {}, []
         for a in idx["arms"]:
@@ -538,14 +671,15 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
                                  "boot": k, "uptime_start": a.get("uptime_start")})
                 if k is not None:
                     cum[k] = cum.get(k, 0.0) + a["length"]
-        pairs = consistent_pairs(varms, logs, align(varms, logs))
-        pairs = in_order(varms, logs, place_by_boot(varms, logs, pairs))
+        pairs = consistent_pairs(vs, logs, align(vs, logs))
+        pairs = in_order(vs, logs, place_by_boot(vs, logs, pairs))
         # ties (a run the clip starts inside fits an arm of several logs) go to the log the session already uses
         in_use = sum(1 for m in s["matches"] if m["bbl"] == idx["file"])
         score = (len(pairs), -round(sum(abs(varms[vi]["length"] - logs[li]["length"]) for vi, li in pairs), 1), in_use)
         if best is None or score > best[0]:
-            best = (score, pairs, logs)
-    _, pairs, logs = best if best else ((0, 0), [], [])
+            best = (score, pairs, logs, idx["file"])
+    _, pairs, logs, bbl = best if best else ((0, 0), [], [], None)
+    full = fulls.get(bbl)
     fits = fit_boots(varms, logs, pairs)
     duration = next((v.get("duration") for v in s["videos"] if v["file"] == path.name), None)
     matches = []
@@ -562,6 +696,8 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
         l = logs[li]
         if any((t < start) != (i < l["index"]) for t, i in real):     # out of order with what was read
             continue
+        if full and (full["clip"] != name or start > full["at"]):     # placed after the flash filled
+            continue
         f = fits[l["boot"]]
         matches.append({"video": path.name, "bbl": l["bbl"], "arm": l["index"], "offset": start, "video_start": start,
                         "video_length": None, "log_length": l["length"], "derived": True,
@@ -574,9 +710,8 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
             if overwrite or (m["bbl"], m["arm"]) not in have:
                 sessions.set_match(session, m["video"], m["bbl"], m["arm"], m["offset"], m["note"])
                 m["written"] = True
-    bbl = logs[0]["bbl"] if logs else None
     return {"clip": path.name, "name": name, "layout": rt["layout"], "readings": len(rows), "boot_fits": fits,
-            "bbl": bbl, "arm_window": windows.get(bbl, (None, None)),
+            "bbl": bbl, "arm_window": windows.get(bbl, (None, None)), "flash_full": full,
             "readable": sum(1 for r in rows if (r["top"] if not LAYOUTS[rt["layout"]]["cumulative"] else r["bottom"]) is not None),
             "video_arms": varms, "matches": matches, "unmatched_video_arms": unmatched}
 

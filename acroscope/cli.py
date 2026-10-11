@@ -404,8 +404,10 @@ def cmd_osd(a):
     rows, cum = rt["rows"], osd.LAYOUTS[rt["layout"]]["cumulative"]
     ok = [r for r in rows if (r["bottom"] if cum else r["top"]) is not None]
     print(f"layout {rt['layout']}: {len(rows)} frames, {len(ok)} with a readable {'total' if cum else 'arm'} timer")
-    for v in osd.video_arms(rt, a.fps):
-        print(f"  arm run: video {fmt_time(v['start'])} - {fmt_time(v['end'])}  {v['length']:5.1f} s  (timer {v['timer_max']} s, total before {v['total_before']}, {v['readings']} readings)")
+    runs = osd.video_arms(rt, a.fps)
+    for v, st in zip(runs, osd.read_stats(sessions.clip_path(s, a.video), runs, rt["layout"])):
+        stats = "" if st.get("total_arm") is None else f"; STATS after: total arm {fmt_time(st['total_arm'])}, blackbox {st['blackbox']} %"
+        print(f"  arm run: video {fmt_time(v['start'])} - {fmt_time(v['end'])}  {v['length']:5.1f} s  (timer {v['timer_max']} s, total before {v['total_before']}, {v['readings']} readings{stats})")
 
 
 def cmd_automatch(a):
@@ -424,6 +426,10 @@ def cmd_automatch(a):
         if a.json:
             continue
         print(f"{r['clip']}: {r['readable']}/{r['readings']} frames readable, {len(r['video_arms'])} arm runs, {len(r['matches'])} matched" + (" (written)" if a.write else ""))
+        f = r.get("flash_full")
+        if f:
+            print(f"   flash full: STATS shows BLACKBOX 100 % after the run at {fmt_time(f['at'])} in {f['clip']}; "
+                  + ("nothing in this clip is in the log" if f["clip"] != r["name"] else "that run can only be the log's cut-off last arm, nothing after it is in the log"))
         lo, hi = r.get("arm_window") or (None, None)
         if lo is not None or hi is not None:
             print("   other clips leave " + " and ".join(x for x in (f"arms after {lo}" if lo is not None else "", f"arms before {hi}" if hi is not None else "") if x))
