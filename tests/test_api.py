@@ -188,6 +188,70 @@ class ApiTest(unittest.TestCase):
             with self.assertRaises(TimeoutError):                            # nothing more arrives: no body
                 c.recv(4096)
 
+    def test_merge_a_cut_short_import(self):
+        # #16: an import cut short came in as <date>-unsorted (two clips and the log), the restart under the right
+        # name (one clip). Renaming onto the existing name refuses; merging takes clips, log, matches, moments, note.
+        r = self.r
+        root = Path(self.tmp.name)
+        for sess, clips in (("2026-10-11-unsorted", ["2026-10-11_001.mp4", "2026-10-11_002.mp4"]), ("2026-10-11-bea", ["2026-10-11_005.mp4"])):
+            (root / "data" / "videos" / sess).mkdir()
+            for c in clips:
+                (root / "data" / "videos" / sess / c).write_bytes(b"")
+            r.refresh(sess, probe_videos=False)
+        (root / "data" / "blackbox" / "BTFL_x.bbl").write_bytes(b"")
+        r.attach("2026-10-11-unsorted", "BTFL_x.bbl")
+        r.set_match("2026-10-11-unsorted", "2026-10-11_001.mp4", "BTFL_x.bbl", 1, 2.5)
+        r.tag("2026-10-11-unsorted", "2026-10-11_002.mp4", 1, 2, "t", ["poi"])
+        r.set_note("2026-10-11-unsorted", "cut short")
+        with self.assertRaisesRegex(RemoteError, "exists"):
+            r.rename_session("2026-10-11-unsorted", "2026-10-11-bea")
+        s = r.merge_sessions("2026-10-11-unsorted", "2026-10-11-bea")
+        self.assertEqual(sorted(v["file"] for v in s["videos"]), ["2026-10-11_001.mp4", "2026-10-11_002.mp4", "2026-10-11_005.mp4"])
+        self.assertEqual(s["blackbox"], ["BTFL_x.bbl"])
+        self.assertEqual([(m["video"], m["arm"]) for m in s["matches"]], [("2026-10-11_001.mp4", 1)])
+        self.assertEqual(len(s["moments"]), 1)
+        self.assertIn("cut short", s["note"])
+        self.assertFalse(r.exists("2026-10-11-unsorted"))
+        self.assertFalse((root / "data" / "videos" / "2026-10-11-unsorted").exists())
+
+    def test_delete_a_clip(self):
+        # a no-signal clip goes: the file (and its original) into trash/<today>/<session>/, its rows out; a refresh
+        # does not bring it back
+        r = self.r
+        root = Path(self.tmp.name)
+        S = "2026-10-12-del"
+        (root / "data" / "videos" / S).mkdir()
+        for c in ("2026-10-12_001.mp4", "2026-10-12_002.mp4"):
+            (root / "data" / "videos" / S / c).write_bytes(b"x")
+        r.refresh(S, probe_videos=False)
+        r.set_match(S, "2026-10-12_002.mp4", "x.bbl", 1, 0.5)
+        r.tag(S, "2026-10-12_002.mp4", 1, 2, "static", [])
+        d = r.delete_clip(S, "002")
+        self.assertEqual((d["video"], d["matches"], d["moments"]), ("2026-10-12_002.mp4", 1, 1))
+        self.assertFalse((root / "data" / "videos" / S / "2026-10-12_002.mp4").exists())
+        self.assertTrue((root / "data" / d["trash"]).is_file())
+        self.assertRegex(d["trash"], rf"^trash/\d{{4}}-\d{{2}}-\d{{2}}/{S}/2026-10-12_002.mp4$")
+        s = r.refresh(S, probe_videos=False)
+        self.assertEqual([v["file"] for v in s["videos"]], ["2026-10-12_001.mp4"])
+        self.assertEqual((s["matches"], s["moments"]), ([], []))
+        with self.assertRaises(RemoteError):
+            r.delete_clip(S, "002")                                  # gone already
+
+    def test_no_session_from_nothing(self):
+        # a session that is neither in the database nor on disk is not created by a refresh or a page asking for it:
+        # a probe still running for a session merged or renamed away meanwhile brought it back empty (#16)
+        r = self.r
+        with self.assertRaises(RemoteError):
+            r.refresh("2026-10-20-nothing", probe_videos=False)
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(self.url + "/api/session/2026-10-20-nothing")
+        self.assertEqual(e.exception.code, 404)
+        self.assertNotIn("2026-10-20-nothing", [s["session"] for s in r.sessions()])
+        # a folder not registered yet is registered, as before
+        (Path(self.tmp.name) / "data" / "videos" / "2026-10-20-new").mkdir()
+        urllib.request.urlopen(self.url + "/api/session/2026-10-20-new").read()
+        self.assertTrue(r.exists("2026-10-20-new"))
+
     def test_cli_proxy(self):
         r = self.r
         out = r.cli(["tags"])

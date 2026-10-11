@@ -38,7 +38,7 @@
   .batch { padding:8px 12px; border-bottom:1px solid var(--line); font-size:12px }
   .batch .id { font-weight:600 } .batch .st { color:var(--dim) } .batch .st.failed { color:var(--bad) } .batch .st.done { color:var(--ok) }
   .batch .err { color:var(--bad); white-space:pre-wrap } .batch .pg { height:4px; background:#0f1115; border-radius:2px; margin-top:4px } .batch .pg i { display:block; height:4px; background:var(--acc2); border-radius:2px }
-  .clip .mv { float:right; opacity:0; font-size:11px } .clip:hover .mv { opacity:.8 }
+  .clip .mv { float:right; opacity:0; font-size:11px } .clip .mv + .mv { margin-right:4px } .clip:hover .mv { opacity:.8 }
   header button.small { padding:2px 6px }
   .right { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; overflow:hidden }
   .clip { padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; display:grid; grid-template-columns:1fr auto; gap:2px 8px }
@@ -51,6 +51,7 @@
   video { width:100%; max-height:62vh; background:#000; border-radius:6px; outline:none }
   #strip { width:100%; height:54px; display:block; cursor:pointer; border-radius:4px; background:#0f1115 }
   .readout { display:flex; gap:18px; color:var(--dim); font-variant-numeric:tabular-nums; font-size:13px; min-height:20px }
+  body.phone .readout:empty { display:none }   /* until the video reports a time: no empty row (and its gaps) under the controls; the desktop keeps the row so nothing jumps */
   .readout b { color:var(--fg); font-weight:500 }
   .editor { display:none; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--panel); gap:8px; flex-direction:column }
   .editor.open { display:flex }
@@ -94,13 +95,16 @@
   .mtabs { border-top:1px solid var(--line); background:var(--panel); flex:none }
   .mtabs span { flex:1; text-align:center; padding:10px 0; font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); cursor:pointer; user-select:none }
   .mtabs span.on { color:var(--fg); box-shadow:inset 0 -2px 0 var(--acc) }
+  #ptr { position:fixed; left:0; right:0; top:0; z-index:6; text-align:center; pointer-events:none; color:var(--dim); font-size:12px; padding:6px 0; background:var(--panel); border-bottom:1px solid var(--line); transform:translateY(-100%); transition:transform .15s }
+  #ptr.on { transform:none } #ptr.go { color:var(--acc) }
   #askbox { display:none; position:fixed; left:0; right:0; bottom:0; padding:12px; background:var(--panel); border-top:1px solid var(--line); z-index:5; gap:8px; flex-wrap:wrap; align-items:center }
   #askbox.open { display:flex } #askbox input { flex:1; min-width:160px; font-size:16px } #askbox .l { width:100%; color:var(--dim); font-size:12px }
   /* phone: the video pinned at the top, one pane at a time under a tab bar; set by JS on the viewport, not just width */
-  body.phone { overflow:hidden; width:100vw; max-width:100vw; position:fixed; inset:0; height:100dvh }   /* the page never scrolls; the panes do */
+  body.phone { overflow:hidden; width:100vw; max-width:100vw; position:fixed; inset:0; height:auto }   /* the page never scrolls; the panes do. inset:0 alone sizes it to what is visible (the browser's bar, the installed app's system bars); 100dvh ran under the installed app's navigation bar and hid the tab bar */
   body.phone.hide-head header { display:none }   /* scrolled down in a pane: the header goes; scrolling up brings it back */
   body.phone .mtabs { padding-bottom:env(safe-area-inset-bottom) }
-  body.phone main { display:flex; flex-direction:column; min-height:0; min-width:0; max-width:100vw; overflow-x:hidden }
+  body.phone main { display:flex; flex-direction:column; min-height:0; min-width:0; max-width:100vw; overflow-x:hidden; grid-row:2 }   /* row 2 also with the header hidden: in row 1 (auto) a short pane left the tab bar mid-screen */
+  body.phone .mtabs { margin-top:auto }   /* the tab bar at the bottom however little the pane holds */
   body.phone main > *, body.phone .center > * { min-width:0; max-width:100% }
   body.phone #strip { width:100% }
   body.phone .center { flex:none; padding:6px 8px; gap:6px; overflow:visible; order:0 } body.phone video { max-height:38vh }
@@ -127,10 +131,11 @@
 </style>
 </head>
 <body>
+<div id="ptr">↓ pull to refresh</div>
 <header>
   <h1><img src="/static/brand/icon.svg" alt="" style="height:22px;vertical-align:-5px;margin-right:6px" onerror="this.remove()">acroscope</h1>
   <select id="session"></select>
-  <button class="small" id="renameSession" title="rename this session (YYYY-MM-DD-name); the date is the first ten characters">✎</button>
+  <button class="small" id="renameSession" title="rename this session (YYYY-MM-DD-name; the date is the first ten characters), or merge it into another by giving that one's name">✎</button>
   <span id="status" style="color:var(--dim)"></span>
   <span class="keys"><kbd>space</kbd> play <kbd>←</kbd><kbd>→</kbd> 2 s <kbd>,</kbd><kbd>.</kbd> frame <kbd>i</kbd><kbd>o</kbd> in/out <kbd>t</kbd> tag <kbd>n</kbd><kbd>p</kbd> next/prev <kbd>l</kbd> loop</span>
 </header>
@@ -265,19 +270,31 @@ function renderClips() {
     const n = S.moments.filter(m => m.video === x.file).length;
     const arms = ms.length ? ms.map(m => `<b>arm ${m.arm}</b> +${m.offset}s`).join(', ') : 'no log';
     const warn = x.missing_since ? ` <span class="warn">file missing since ${x.missing_since.slice(0, 10)}</span>` : (x.codec === 'hevc' && !canHevc) ? ' <span class="warn">H.265: this browser may not play it</span>' : '';
-    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${esc(x.file)}" title="${esc(x.name || x.file)}"><span class="n">${esc(clipNum(x.file))}<button class="small mv" data-mv="${esc(x.file)}" title="move this clip to another session">⇄</button></span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${esc(x.note)}</span>` : ''}</div>`;
+    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${esc(x.file)}" title="${esc(x.name || x.file)}"><span class="n">${esc(clipNum(x.file))}<button class="small mv" data-mv="${esc(x.file)}" title="move this clip to another session">⇄</button><button class="small mv" data-rm="${esc(x.file)}" title="delete this clip (into trash/ on the server for 7 days)">🗑</button></span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${esc(x.note)}</span>` : ''}</div>`;
   }).join('') || '<div class="empty">no clips</div>';
-  document.querySelectorAll('.clip').forEach(el => el.onclick = e => { if (e.target.dataset.mv) return moveClip(e.target.dataset.mv); loadClip(el.dataset.f); });
+  document.querySelectorAll('.clip').forEach(el => el.onclick = e => { if (e.target.dataset.mv) return moveClip(e.target.dataset.mv); if (e.target.dataset.rm) return deleteClip(e.target.dataset.rm); loadClip(el.dataset.f); });
   renderLogs();
 }
 
-// ---- editing sessions: rename (the date is the name's first ten characters), move a clip; both save at once
+// ---- editing sessions: rename (the date is the name's first ten characters), merge into another, move a clip;
+// all save at once. A rename onto an existing name offers the merge (#16: an import cut short leaves the first half
+// as <date>-unsorted next to the session the rest went to): clips, logs, matches, moments and the note move over,
+// and this session goes.
 async function renameSession() {
-  const name = await ask('session name (YYYY-MM-DD or YYYY-MM-DD-name)', S.session);
+  const name = await ask('session name (YYYY-MM-DD or YYYY-MM-DD-name; an existing session\'s name merges this one into it)', S.session);
   if (!name || name === S.session) return;
   const r = await api(`/api/session/${encodeURIComponent(S.session)}/rename`, {method: 'POST', body: JSON.stringify({name})});
+  if (r.error && / exists$/.test(r.error)) return mergeSession(name);
   if (r.error) { alert(r.error); return; }
   await init(); $('#session').value = name; await loadSession(name, clip);
+}
+async function mergeSession(into) {
+  const n = S.videos.length, logs = (S.blackbox || []).length;
+  if (!confirm(`${into} exists. Merge ${S.session} into it?\n\nIts ${n} clip${n === 1 ? '' : 's'}${logs ? ` and ${logs} log${logs === 1 ? '' : 's'}` : ''}, with their matches, moments and the note, go to ${into}, and ${S.session} is removed.`)) return;
+  const r = await api(`/api/session/${encodeURIComponent(S.session)}/merge`, {method: 'POST', body: JSON.stringify({into})});
+  if (r.error) { alert(r.error); return; }
+  flash(`merged into ${into}`);
+  await init(); $('#session').value = into; await loadSession(into, clip);
 }
 async function moveClip(file) {
   const others = [...$('#session').options].map(o => o.value).filter(n => n !== S.session);
@@ -286,6 +303,17 @@ async function moveClip(file) {
   const r = await api(`/api/session/${encodeURIComponent(S.session)}/move`, {method: 'POST', body: JSON.stringify({video: file, to})});
   if (r.error) { alert(r.error); return; }
   flash(`${clipName(file)} moved to ${to}`);
+  await init(); $('#session').value = S.session; await loadSession(S.session, clip === file ? null : clip);
+}
+// a clip that is not worth keeping (a no-signal recording): the server moves the file into trash/<date>/ for 7 days
+// (housekeeping empties it after that; until then the file can go back by hand) and drops its matches and moments
+async function deleteClip(file) {
+  const n = S.moments.filter(m => m.video === file).length, a = S.matches.filter(m => m.video === file).length;
+  const what = [n && `${n} moment${n === 1 ? '' : 's'}`, a && `${a} match${a === 1 ? '' : 'es'}`].filter(Boolean).join(' and ');
+  if (!confirm(`Delete ${clipName(file)}?${what ? `\n\nIts ${what} go with it.` : ''}\n\nThe file waits in trash/ on the server for 7 days.`)) return;
+  const r = await api(`/api/session/${encodeURIComponent(S.session)}/clip?video=${encodeURIComponent(file)}`, {method: 'DELETE'});
+  if (r.error) { alert(r.error); return; }
+  flash(`${clipName(file)} deleted`);
   await init(); $('#session').value = S.session; await loadSession(S.session, clip === file ? null : clip);
 }
 $('#renameSession').onclick = renameSession;
@@ -596,6 +624,40 @@ setPhone();
     const dy = e.touches[0].clientY - y0;
     if (dy < -30) { hide(); fired = true; } else if (dy > 30) { show(); fired = true; }
   }, {passive: true});
+}
+
+// pull to refresh on the phone: the page never scrolls (body.phone is fixed, only the panes do), so the browser's own
+// pull-down never fires, and the installed app has no reload button. With the header showing, a pull down of
+// PTR_FRAC of the screen height on the header, the video area or a pane scrolled to its top reloads; the address bar is a link to what is
+// on screen (setUrl), so the reload comes back to the same clip and spot. Not on the strip, the video, a field or
+// the editor: those drags are theirs.
+{
+  const PTR_FRAC = 0.22, ptr = $('#ptr');   // of the screen height: 204 px on Rudi's Pixel (412 x 927); 90 and 150 fired by accident
+  let y0 = null, x0 = 0, go = false;
+  const scroller = el => { for (; el && el !== document.body; el = el.parentElement) { const o = getComputedStyle(el).overflowY; if ((o === 'auto' || o === 'scroll') && el.scrollHeight > el.clientHeight) return el; } return null; };
+  const reset = () => { y0 = null; go = false; ptr.classList.remove('on', 'go'); ptr.textContent = '↓ pull to refresh'; };
+  document.addEventListener('touchstart', e => {
+    reset();
+    if (!phoneQuery.matches || document.body.classList.contains('hide-head') || e.touches.length > 1) return;
+    if (e.target.closest('#strip, video, input, textarea, select, #editor, #askbox')) return;
+    const sc = scroller(e.target);
+    if (sc && sc.scrollTop > 0) return;
+    y0 = e.touches[0].clientY; x0 = e.touches[0].clientX;
+  }, {passive: true});
+  document.addEventListener('touchmove', e => {
+    if (y0 === null) return;
+    const dy = e.touches[0].clientY - y0, dx = Math.abs(e.touches[0].clientX - x0);
+    const sc = scroller(e.target);
+    if (dy < 0 || dx > Math.max(dy, 10) || (sc && sc.scrollTop > 0)) return reset();   // up, sideways or scrolling: not a pull
+    if (dy < 10) return;
+    ptr.classList.add('on');
+    go = dy >= PTR_FRAC * innerHeight;
+    ptr.classList.toggle('go', go);
+    ptr.textContent = go ? '↻ release to refresh' : '↓ pull to refresh';
+  }, {passive: true});
+  const end = () => { if (go) { ptr.textContent = 'refreshing…'; v.pause(); setUrl(); location.reload(); } else reset(); };
+  document.addEventListener('touchend', end, {passive: true});
+  document.addEventListener('touchcancel', reset, {passive: true});
 }
 
 // ---- a question at the bottom of the screen instead of prompt(): resolves to the text, or null

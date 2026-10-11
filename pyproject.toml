@@ -9,6 +9,10 @@ description = "FPV trick-learning tool: find, measure and tag tricks and crashes
 requires-python = ">=3.11"
 dependencies = ["orangebox>=0.5.0"]
 
+[project.optional-dependencies]
+# the player's end-to-end tests (tests/test_player.py) in a headless browser; scripts/browser-setup.sh installs it
+e2e = ["playwright"]
+
 [project.scripts]
 acroscope = "acroscope.cli:main"
 

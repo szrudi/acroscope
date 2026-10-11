@@ -36,6 +36,7 @@ INBOX_DIR = DATA_DIR / "inbox"
 ORIGINALS_DIR = DATA_DIR / "originals"
 STATE_DIR = DATA_DIR / "state"
 ORIGINAL_DAYS = 7          # an original is kept this long after its compressed clip verified
+TRASH_DAYS = 7             # a deleted clip waits this long in trash/<date>/ (sessions.delete_clip)
 RATE = 2                   # no-signal analysis samples per second
 THRESHOLD = 35             # luma range (16x12 frame, 10th-90th percentile) below this = no signal
 MIN_GAP = 5.0              # only cut no-signal runs at least this long (brief breakups mid-flight are kept)
@@ -392,6 +393,23 @@ def cleanup_originals(log=print) -> list[str]:
         db.set_video_fields(session, file, original=None, original_until=None)
         gone.append(original)
         log(f"original removed: {original}")
+    return gone
+
+
+def cleanup_trash(root: Path | None = None, today: str | None = None, days: int = TRASH_DAYS, log=print) -> list[str]:
+    """Delete the trash/<date>/ folders older than `days` (what sessions.delete_clip put there). Returns the dates."""
+    root = root or DATA_DIR / "trash"
+    today_d = datetime.fromisoformat(today).date() if today else now().date()
+    gone = []
+    for d in sorted(root.iterdir()) if root.is_dir() else []:
+        try:
+            day = datetime.fromisoformat(d.name).date()
+        except ValueError:
+            continue                                   # not one of ours
+        if d.is_dir() and (today_d - day).days > days:
+            shutil.rmtree(d)
+            gone.append(d.name)
+            log(f"trash emptied: {d.name}")
     return gone
 
 

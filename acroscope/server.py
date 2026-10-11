@@ -461,6 +461,9 @@ class Handler(BaseHTTPRequestHandler):
                 with _lock:
                     ok = sessions.untag(parts[2], parts[4])
                 return self._json({"removed": ok})
+            if parts[:2] == ["api", "session"] and len(parts) == 4 and parts[3] == "clip":
+                with _lock:
+                    return self._json(sessions.delete_clip(parts[2], q["video"]))
             if parts[:2] == ["api", "session"] and len(parts) == 4 and parts[3] == "match":
                 with _lock:
                     n = sessions.unmatch(parts[2], q["video"], int(q["arm"]) if q.get("arm") else None)
