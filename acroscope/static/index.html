@@ -99,7 +99,7 @@
   #askbox { display:none; position:fixed; left:0; right:0; bottom:0; padding:12px; background:var(--panel); border-top:1px solid var(--line); z-index:5; gap:8px; flex-wrap:wrap; align-items:center }
   #askbox.open { display:flex } #askbox input { flex:1; min-width:160px; font-size:16px } #askbox .l { width:100%; color:var(--dim); font-size:12px }
   /* phone: the video pinned at the top, one pane at a time under a tab bar; set by JS on the viewport, not just width */
-  body.phone { overflow:hidden; width:100vw; max-width:100vw; position:fixed; inset:0; height:100dvh }   /* the page never scrolls; the panes do */
+  body.phone { overflow:hidden; width:100vw; max-width:100vw; position:fixed; inset:0; height:auto }   /* the page never scrolls; the panes do. inset:0 alone sizes it to what is visible (the browser's bar, the installed app's system bars); 100dvh ran under the installed app's navigation bar and hid the tab bar */
   body.phone.hide-head header { display:none }   /* scrolled down in a pane: the header goes; scrolling up brings it back */
   body.phone .mtabs { padding-bottom:env(safe-area-inset-bottom) }
   body.phone main { display:flex; flex-direction:column; min-height:0; min-width:0; max-width:100vw; overflow-x:hidden; grid-row:2 }   /* row 2 also with the header hidden: in row 1 (auto) a short pane left the tab bar mid-screen */
@@ -626,11 +626,11 @@ setPhone();
 
 // pull to refresh on the phone: the page never scrolls (body.phone is fixed, only the panes do), so the browser's own
 // pull-down never fires, and the installed app has no reload button. With the header showing, a pull down of
-// PTR_PX on the header, the video area or a pane scrolled to its top reloads; the address bar is a link to what is
+// PTR_PX (150 px: 90 fired by accident) on the header, the video area or a pane scrolled to its top reloads; the address bar is a link to what is
 // on screen (setUrl), so the reload comes back to the same clip and spot. Not on the strip, the video, a field or
 // the editor: those drags are theirs.
 {
-  const PTR_PX = 90, ptr = $('#ptr');
+  const PTR_PX = 150, ptr = $('#ptr');
   let y0 = null, x0 = 0, go = false;
   const scroller = el => { for (; el && el !== document.body; el = el.parentElement) { const o = getComputedStyle(el).overflowY; if ((o === 'auto' || o === 'scroll') && el.scrollHeight > el.clientHeight) return el; } return null; };
   const reset = () => { y0 = null; go = false; ptr.classList.remove('on', 'go'); ptr.textContent = '↓ pull to refresh'; };
