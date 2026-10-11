@@ -142,6 +142,8 @@ def cmd_session(a):
         r = sessions.move_clip(s, a.arg, a.to)
     elif a.action == "merge":
         r = sessions.merge_sessions(s, a.arg)
+    elif a.action == "delete":
+        return out(sessions.delete_clip(s, a.arg))
     out({"session": r["session"], "videos": len(r["videos"]), "matches": len(r["matches"]), "moments": len(r["moments"])})
 
 
@@ -176,6 +178,7 @@ def cmd_housekeeping(a):
     if sessions.remote():
         sys.exit("housekeeping runs on the server")
     out({"originals_removed": ingest.cleanup_originals(log=lambda m: print(m, file=sys.stderr)),
+         "trash_emptied": ingest.cleanup_trash(log=lambda m: print(m, file=sys.stderr)),
          "backup": str(ingest.backup_db() or "")})
 
 
@@ -504,8 +507,8 @@ def main(argv=None):
     p.set_defaults(f=cmd_purge)
     p = sp.add_parser("import-json", help="one-off: import the pre-database videos/<session>/session.json files")
     p.add_argument("session", nargs="?"); p.set_defaults(f=cmd_import_json)
-    p = sp.add_parser("session", help="edit a session: rename <new>, date <YYYY-MM-DD>, move <clip> <to-session>, merge <into-session>")
-    p.add_argument("action", choices=["rename", "date", "move", "merge"]); p.add_argument("session"); p.add_argument("arg")
+    p = sp.add_parser("session", help="edit a session: rename <new>, date <YYYY-MM-DD>, move <clip> <to-session>, merge <into-session>, delete <clip> (into trash/ for 7 days)")
+    p.add_argument("action", choices=["rename", "date", "move", "merge", "delete"]); p.add_argument("session"); p.add_argument("arg")
     p.add_argument("to", nargs="?", help="for move: the session the clip goes to"); p.set_defaults(f=cmd_session)
     p = sp.add_parser("inbox", help="the batches in inbox/ and their status"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_inbox)
     p = sp.add_parser("ingest", help="consume inbox batches now (all pending ones, or the named ones); the server does this on its own")

@@ -39,6 +39,17 @@ class _Scratch(unittest.TestCase):
 
 
 class IngestTest(_Scratch):
+    def test_trash_emptied_after_its_days(self):
+        # a deleted clip waits in trash/<date>/<session>/ for TRASH_DAYS, then housekeeping removes the day's folder
+        t = self.data / "trash"
+        for day in ("2026-10-01", "2026-10-05", "2026-10-11"):
+            (t / day / "2026-10-11-x").mkdir(parents=True)
+            (t / day / "2026-10-11-x" / "c1.mp4").write_bytes(b"x")
+        (t / "not-a-date").mkdir()
+        gone = ingest.cleanup_trash(root=t, today="2026-10-11", days=7)
+        self.assertEqual(gone, ["2026-10-01"])
+        self.assertEqual(sorted(p.name for p in t.iterdir()), ["2026-10-05", "2026-10-11", "not-a-date"])
+
     def test_keep_segments(self):
         sig, noise = [60] * 20, [15] * 20
         self.assertEqual(ingest.keep_segments(noise + sig + noise, 30), [(9.0, 21.0)])      # static at both ends trimmed, padded

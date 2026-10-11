@@ -332,6 +332,30 @@ def move_clip(session: str, vid: str, to: str) -> dict:
     return load(to)
 
 
+def delete_clip(session: str, vid: str) -> dict:
+    """A clip goes (a no-signal recording, a test): its file and its original into trash/<today>/<session>/, where
+    housekeeping empties a day's folder after TRASH_DAYS (until then: move the file back and refresh), and its row
+    with its matches and moments out of the database. {video, trash, matches, moments}."""
+    if remote():
+        return store().delete_clip(session, vid)
+    file = resolve_clip(session, vid)
+    v = next((x for x in load(session)["videos"] if x["file"] == file), None)
+    if v is None:
+        raise ValueError(f"{session}: no clip {vid}")
+    trash = DATA_DIR / "trash" / now()[:10] / session
+    dst = None
+    for src in [VIDEOS_DIR / session / file] + ([DATA_DIR / v["original"]] if v.get("original") else []):
+        if src.is_file():
+            t = trash / ("originals" if src.parent.parent.name == "originals" else "") / src.name
+            if t.exists():
+                raise ValueError(f"{t} exists")
+            t.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(t)
+            dst = dst or t
+    out = store().delete_clip(session, file)
+    return {**out, "trash": str(dst.relative_to(DATA_DIR)) if dst else None}
+
+
 def merge_sessions(session: str, into: str) -> dict:
     """Every clip and log of `session` goes to `into`; the emptied session is removed."""
     if remote():

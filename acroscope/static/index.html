@@ -38,7 +38,7 @@
   .batch { padding:8px 12px; border-bottom:1px solid var(--line); font-size:12px }
   .batch .id { font-weight:600 } .batch .st { color:var(--dim) } .batch .st.failed { color:var(--bad) } .batch .st.done { color:var(--ok) }
   .batch .err { color:var(--bad); white-space:pre-wrap } .batch .pg { height:4px; background:#0f1115; border-radius:2px; margin-top:4px } .batch .pg i { display:block; height:4px; background:var(--acc2); border-radius:2px }
-  .clip .mv { float:right; opacity:0; font-size:11px } .clip:hover .mv { opacity:.8 }
+  .clip .mv { float:right; opacity:0; font-size:11px } .clip .mv + .mv { margin-right:4px } .clip:hover .mv { opacity:.8 }
   header button.small { padding:2px 6px }
   .right { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; overflow:hidden }
   .clip { padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; display:grid; grid-template-columns:1fr auto; gap:2px 8px }
@@ -267,9 +267,9 @@ function renderClips() {
     const n = S.moments.filter(m => m.video === x.file).length;
     const arms = ms.length ? ms.map(m => `<b>arm ${m.arm}</b> +${m.offset}s`).join(', ') : 'no log';
     const warn = x.missing_since ? ` <span class="warn">file missing since ${x.missing_since.slice(0, 10)}</span>` : (x.codec === 'hevc' && !canHevc) ? ' <span class="warn">H.265: this browser may not play it</span>' : '';
-    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${x.file}" title="${esc(x.name || x.file)}"><span class="n">${esc(clipNum(x.file))}<button class="small mv" data-mv="${x.file}" title="move this clip to another session">⇄</button></span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${x.note}</span>` : ''}</div>`;
+    return `<div class="clip ${clip === x.file ? 'on' : ''} ${x.missing_since ? 'gone' : ''}" data-f="${x.file}" title="${esc(x.name || x.file)}"><span class="n">${esc(clipNum(x.file))}<button class="small mv" data-mv="${x.file}" title="move this clip to another session">⇄</button><button class="small mv" data-rm="${x.file}" title="delete this clip (into trash/ on the server for 7 days)">🗑</button></span><span class="d">${x.duration ? fmt(x.duration) : '?'}${n ? ` <span class="cnt">●${n}</span>` : ''}</span><span class="arms">${arms}${warn}</span>${x.note ? `<span class="arms">${x.note}</span>` : ''}</div>`;
   }).join('') || '<div class="empty">no clips</div>';
-  document.querySelectorAll('.clip').forEach(el => el.onclick = e => { if (e.target.dataset.mv) return moveClip(e.target.dataset.mv); loadClip(el.dataset.f); });
+  document.querySelectorAll('.clip').forEach(el => el.onclick = e => { if (e.target.dataset.mv) return moveClip(e.target.dataset.mv); if (e.target.dataset.rm) return deleteClip(e.target.dataset.rm); loadClip(el.dataset.f); });
   renderLogs();
 }
 
@@ -300,6 +300,17 @@ async function moveClip(file) {
   const r = await api(`/api/session/${encodeURIComponent(S.session)}/move`, {method: 'POST', body: JSON.stringify({video: file, to})});
   if (r.error) { alert(r.error); return; }
   flash(`${clipName(file)} moved to ${to}`);
+  await init(); $('#session').value = S.session; await loadSession(S.session, clip === file ? null : clip);
+}
+// a clip that is not worth keeping (a no-signal recording): the server moves the file into trash/<date>/ for 7 days
+// (housekeeping empties it after that; until then the file can go back by hand) and drops its matches and moments
+async function deleteClip(file) {
+  const n = S.moments.filter(m => m.video === file).length, a = S.matches.filter(m => m.video === file).length;
+  const what = [n && `${n} moment${n === 1 ? '' : 's'}`, a && `${a} match${a === 1 ? '' : 'es'}`].filter(Boolean).join(' and ');
+  if (!confirm(`Delete ${clipName(file)}?${what ? `\n\nIts ${what} go with it.` : ''}\n\nThe file waits in trash/ on the server for 7 days.`)) return;
+  const r = await api(`/api/session/${encodeURIComponent(S.session)}/clip?video=${encodeURIComponent(file)}`, {method: 'DELETE'});
+  if (r.error) { alert(r.error); return; }
+  flash(`${clipName(file)} deleted`);
   await init(); $('#session').value = S.session; await loadSession(S.session, clip === file ? null : clip);
 }
 $('#renameSession').onclick = renameSession;

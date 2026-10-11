@@ -88,6 +88,9 @@ class Remote:
     def move_clip(self, session, video, to) -> dict:
         return self._call("POST", self._s(session) + "/move", {"video": video, "to": to})
 
+    def delete_clip(self, session, video) -> dict:
+        return self._call("DELETE", self._s(session) + "/clip", video=video)
+
     def merge_sessions(self, session, into) -> dict:
         return self._call("POST", self._s(session) + "/merge", {"into": into})
 

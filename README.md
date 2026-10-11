@@ -90,11 +90,13 @@ acroscope purge <session> [clip] [--days N --yes]   remove clips marked missing,
 acroscope note <session> "<text>" [--clip NNN]   session or clip note
 acroscope attach|detach <session> <bbl>          a blackbox file dated another day
 acroscope import-json [session]                  one-off: the pre-database session.json files
-acroscope session rename|date|move|merge ...     rename a session (the date is its first ten characters), change its date,
-                                                 move a clip to another session, merge one session into another
+acroscope session rename|date|move|merge|delete  rename a session (the date is its first ten characters), change its date,
+                                                 move a clip to another session, merge one session into another, delete
+                                                 a clip (the file into trash/<date>/ for 7 days, its rows gone)
 acroscope inbox                                  the batches in inbox/ and their status
 acroscope ingest [batch...]                      consume batches now (the server does it on its own)
-acroscope housekeeping                           originals past retention go; the database is backed up into state/
+acroscope housekeeping                           originals past retention go, trash/ days older than 7 go; the database
+                                                 is backed up into state/
 acroscope arms <bbl>                             list the arms (decodes the whole file into the cache once, ~30 s)
 acroscope decode <bbl> <arm> [--csv]             cache one arm; --csv dumps it like blackbox_decode for the old scripts
 acroscope match <session> <video> <bbl> <arm> <offset>   record a video <-> arm match
@@ -134,6 +136,7 @@ POST /api/session/<s>/refresh           {probe?}      walks the folder, returns 
 POST /api/session/<s>/purge             {video?, days?}
 POST /api/session/<s>/rename            {name}        POST /api/session/<s>/date   {date}
 POST /api/session/<s>/move              {video, to}   POST /api/session/<s>/merge  {into}
+DELETE /api/session/<s>/clip?video=     the clip into trash/<date>/<s>/, its matches and moments gone
 GET  /api/inbox                         batches and their status    POST /api/inbox/<batch>/retry
 POST /api/scan   POST /api/import       GET /api/store
 ```

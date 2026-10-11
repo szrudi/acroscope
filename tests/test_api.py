@@ -131,6 +131,29 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(r.exists("2026-10-11-unsorted"))
         self.assertFalse((root / "data" / "videos" / "2026-10-11-unsorted").exists())
 
+    def test_delete_a_clip(self):
+        # a no-signal clip goes: the file (and its original) into trash/<today>/<session>/, its rows out; a refresh
+        # does not bring it back
+        r = self.r
+        root = Path(self.tmp.name)
+        S = "2026-10-12-del"
+        (root / "data" / "videos" / S).mkdir()
+        for c in ("2026-10-12_001.mp4", "2026-10-12_002.mp4"):
+            (root / "data" / "videos" / S / c).write_bytes(b"x")
+        r.refresh(S, probe_videos=False)
+        r.set_match(S, "2026-10-12_002.mp4", "x.bbl", 1, 0.5)
+        r.tag(S, "2026-10-12_002.mp4", 1, 2, "static", [])
+        d = r.delete_clip(S, "002")
+        self.assertEqual((d["video"], d["matches"], d["moments"]), ("2026-10-12_002.mp4", 1, 1))
+        self.assertFalse((root / "data" / "videos" / S / "2026-10-12_002.mp4").exists())
+        self.assertTrue((root / "data" / d["trash"]).is_file())
+        self.assertRegex(d["trash"], rf"^trash/\d{{4}}-\d{{2}}-\d{{2}}/{S}/2026-10-12_002.mp4$")
+        s = r.refresh(S, probe_videos=False)
+        self.assertEqual([v["file"] for v in s["videos"]], ["2026-10-12_001.mp4"])
+        self.assertEqual((s["matches"], s["moments"]), ([], []))
+        with self.assertRaises(RemoteError):
+            r.delete_clip(S, "002")                                  # gone already
+
     def test_cli_proxy(self):
         r = self.r
         out = r.cli(["tags"])
