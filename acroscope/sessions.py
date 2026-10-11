@@ -214,8 +214,10 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
                 except subprocess.CalledProcessError:   # still syncing / half-written: try again next refresh
                     print(f"{f}: ffprobe failed (still syncing?), skipped", file=sys.stderr)
                     continue
-                db.upsert_video(session, f, info["duration"], info["codec"])
-    if not s["blackbox"]:
+                # an update, not an upsert: a merge or a move may have taken the clip (and the session) while ffprobe
+                # ran, and the result must not make either again (#16)
+                db.set_video_fields(session, f, duration=info["duration"], codec=info["codec"])
+    if not s["blackbox"] and db.exists(session):
         db.set_blackbox(session, [b.name for b in blackbox.all_bbls() if blackbox.bbl_date(b) == session[:10] and b.stat().st_size])
     return db.load(session)
 

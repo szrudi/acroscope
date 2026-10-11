@@ -141,6 +141,24 @@ class EditGuardsTest(_Scratch):
         self.assertFalse(sessions.store().exists(A))
         self.assertFalse((sessions.VIDEOS_DIR / A).exists())
 
+    def test_a_probe_running_through_a_merge_does_not_bring_the_session_back(self):
+        # #16: the player opens a session whose clips have no duration yet, which starts a background refresh that
+        # probes them; the merge lands while ffprobe runs. The probe's results must not make the merged-away session
+        # (or a row of the clip that left it) again. Flaky in test_player before (2 runs in 8): here the merge
+        # happens inside the probe, every time
+        A, B = "2026-10-09-a", "2026-10-09-b"
+        self.session_with_clip(A, "2026-10-09_001.mp4")
+        self.session_with_clip(B, "2026-10-09_002.mp4")
+
+        def probe_while_merging(path):
+            sessions.merge_sessions(A, B)
+            return {"duration": 12.5, "codec": "h264"}
+        with mock.patch.object(video, "probe", probe_while_merging):
+            sessions.refresh(A)
+        self.assertFalse(sessions.store().exists(A))
+        self.assertEqual(sessions.store().c.execute("SELECT count(*) FROM videos WHERE session = ?", (A,)).fetchone()[0], 0)
+        self.assertEqual(sorted(v["file"] for v in sessions.load(B)["videos"]), ["2026-10-09_001.mp4", "2026-10-09_002.mp4"])
+
     def test_merge_checks_every_clip_before_moving_one(self):
         # a merge that would stop at clip 2 must not have moved clip 1 already: nothing moves, and the error names
         # every clash. Clashes: the clip's file in the target folder, its original in the target's originals/,
