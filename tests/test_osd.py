@@ -76,6 +76,9 @@ class AlignerTest(unittest.TestCase):
         self.assertEqual(osd.arm_window("2026-10-01_001", others), (None, 58))
         self.assertEqual(osd.arm_window("2026-10-04_001", others), (80, None))
         self.assertEqual(osd.arm_window("x", []), (None, None))
+        # a clip without a readable name (its id) has no place in time, and neither has a match in one
+        self.assertEqual(osd.arm_window("c1a2b3.mp4", others), (None, None))
+        self.assertEqual(osd.arm_window("2026-10-02_009", others + [("c1a2b3.mp4", 77)]), (75, 80))
 
     def test_stats_values(self):
         # (digit, score) per cell; the % glyph and a frame without the STATS screen score low (survey of #9)

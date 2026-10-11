@@ -15,6 +15,7 @@ static stretches cobra-compress.py cuts out.
 """
 import json
 import math
+import re
 import subprocess
 from pathlib import Path
 
@@ -138,6 +139,12 @@ def _glyph(buf: bytes, w: int, x: int, y: int, glyph: tuple) -> list[float]:
     return [(a - m) / sd for a in v]
 
 
+def _templates_stamp() -> str:
+    """Size and mtime of the templates file: new templates (osd-learn) mean new readings, in every cache keyed on it."""
+    tst = TEMPLATES.stat() if TEMPLATES.exists() else None
+    return f"{tst.st_size}-{int(tst.st_mtime)}" if tst else "none"
+
+
 def _template_key(layout: str) -> str:
     return LAYOUTS[layout].get("templates", layout)
 
@@ -221,7 +228,7 @@ def read_stats(path: Path, runs: list[dict], layout: str) -> list[dict]:
     if not LAYOUTS[layout].get("stats"):
         return [{} for _ in runs]
     st = path.stat()
-    cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.stats.v{OSD_VERSION}.json")
+    cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.stats.v{OSD_VERSION}-{_templates_stamp()}.json")
     cache = json.loads(cp.read_text()) if cp.exists() else {}
     tpl = _load_templates(layout)
     out = []
@@ -295,9 +302,7 @@ def detect_layout(path: Path, fps: float = 0.5) -> str:
 def read_timers(path: Path, fps: float = 2.0, layout: str | None = None) -> dict:
     """Read the timers through the clip: {layout, rows: [{t, top, bottom, conf}]} (cached per clip)."""
     st = path.stat()
-    tst = TEMPLATES.stat() if TEMPLATES.exists() else None     # new templates (osd-learn) mean new readings
-    tkey = f"{tst.st_size}-{int(tst.st_mtime)}" if tst else "none"
-    cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.{fps:g}.v{OSD_VERSION}-{tkey}.json")
+    cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.{fps:g}.v{OSD_VERSION}-{_templates_stamp()}.json")
     if cp.exists():
         return json.loads(cp.read_text())
     layout = layout or detect_layout(path)
@@ -565,12 +570,22 @@ def in_order(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[int
     return sorted(out)
 
 
-def arm_window(key: str, others: list[tuple[str, int]]) -> tuple[int | None, int | None]:
+def clip_order(name: str | None) -> str | None:
+    """A clip's place in time: its readable name `<date>_NNN` sorts chronologically as a string. Anything else (a
+    clip without a name falls back to its file name, an id) has no known place: None, and the order rules skip it."""
+    return name if name and re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d+", name) else None
+
+
+def arm_window(key: str | None, others: list[tuple[str, int]]) -> tuple[int | None, int | None]:
     """Clips are chronological (their readable names sort by date and number) and so are a log's arms: a clip's
     arms come after every arm matched to an earlier clip and before every arm matched to a later one. `others`:
-    (clip name, arm) of the log's matches in the other clips. (lo, hi): the arms must lie strictly between."""
-    lo = max((a for k, a in others if k < key), default=None)
-    hi = min((a for k, a in others if k > key), default=None)
+    (clip name, arm) of the log's matches in the other clips. (lo, hi): the arms must lie strictly between. A clip
+    or a match without a place in time (clip_order) bounds nothing."""
+    key = clip_order(key)
+    if key is None:
+        return None, None
+    lo = max((a for k, a in others if clip_order(k) and k < key), default=None)
+    hi = min((a for k, a in others if clip_order(k) and k > key), default=None)
     return lo, hi
 
 
@@ -585,9 +600,11 @@ def flash_full(rt: dict, runs: list[dict], path: Path, name: str) -> dict | None
 def _full_before(s: dict, name: str, after: str | None, fps: float) -> dict | None:
     """The first clip of the session between `after` (the last clip holding arms of the log) and this one whose
     STATS screen shows the flash full. Their readings are cached from earlier runs, mostly."""
+    if clip_order(name) is None:
+        return None
     for v in s["videos"]:
-        key = v.get("name") or v["file"]
-        if key >= name or (after is not None and key <= after) or not v.get("duration"):
+        key = clip_order(v.get("name"))
+        if key is None or key >= name or (after is not None and key <= after) or not v.get("duration"):
             continue
         try:
             path = sessions.clip_path(s["session"], v["file"])
@@ -647,7 +664,7 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
         vs = varms
         if idx["arms"] and idx["arms"][-1].get("truncated"):
             last = idx["arms"][-1]["index"]
-            before = max((k for k, a in others.get(idx["file"], []) if k < name), default=None)
+            before = max((k for k, a in others.get(idx["file"], []) if clip_order(k) and clip_order(name) and k < name), default=None)
             f = _full_before(s, name, before, fps)
             if f is None:
                 if full_here is None:
