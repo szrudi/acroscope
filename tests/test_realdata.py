@@ -93,6 +93,14 @@ class RealDataTest(unittest.TestCase):
         # arm 16 (2.1 s, 30 s further on in the boot than the stray run) must not be taken
         self.assertEqual(sorted(logs[li]["index"] for _, li in pairs), [14, 15, 17])
 
+    @unittest.skipUnless(REMOTE, "automatch through the server")
+    def test_automatch_clip_008_derives_nothing_from_a_line_no_clock_explains(self):
+        """#9: the 008 runs give boot 7 a line at -9 % (no clock does that); arm 16 was derived from it. The
+        three read arms stay, nothing is derived."""
+        res = cli_json("automatch", "10-07", "008", "--json")
+        self.assertEqual(sorted(m["arm"] for m in res["matches"]), [14, 15, 17])
+        self.assertTrue(all(f.get("rejected") for f in res["boot_fits"].values() if abs(f["a"] - 1) > osd.MAX_CLOCK))
+
 
 @unittest.skipUnless(REMOTE, "the 10-10 clips live on the server only")
 class TenTenTest(unittest.TestCase):

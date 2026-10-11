@@ -58,6 +58,9 @@ SHIFTS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]   # the analog pic
 # tenths timer), and consistent with the +0.2 s calibrated earlier on whole-second timers (where the floor of the
 # seconds adds +0.5 on average: 0.5 - 0.25 = 0.25).
 OSD_LAG = 0.25
+# The two clocks (DVR and FC) differ by a few tenths of a percent (#4: 0.3 %). A boot's line beyond this is pairs
+# that are not one boot in one clip (duration-only matches on the cumulative timer, #9), not a clock.
+MAX_CLOCK = 0.01
 OSD_VERSION = 8     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
 TEMPLATES = Path(__file__).parent / "static" / "osd-templates.json"
 BLANK_STD = 25.0                                   # glyph-box contrast below this = no digit
@@ -384,7 +387,9 @@ def fit_boots(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[in
     """Per boot, video time as a line in the FC uptime: video = a * uptime + b, from the pairs. The two clocks
     differ by a few tenths of a percent (#4: about 0.3 % on the Cobra SD against this FC), half a second over a
     four-minute clip, so one offset per boot is not enough. Least squares when three or more pairs span a minute;
-    the median offset with a = 1 otherwise. {boot: {a, b, n}}."""
+    the median offset with a = 1 otherwise. {boot: {a, b, n}}, with rejected=True when no clock explains the pairs
+    (a line beyond MAX_CLOCK, or offsets further apart than the timer jitter and MAX_CLOCK allow): such a fit
+    places and derives nothing."""
     pts: dict = {}
     for vi, li in pairs:
         l = log_arms[li]
@@ -398,9 +403,13 @@ def fit_boots(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[in
             sxx = sum((x - mx) ** 2 for x in xs)
             a = sum((x - mx) * (y - my) for x, y in xy) / sxx
             out[b] = {"a": round(a, 5), "b": round(my - a * mx, 3), "n": len(xy)}
+            if abs(a - 1) > MAX_CLOCK:
+                out[b]["rejected"] = True
         else:
             offs = sorted(y - x for x, y in xy)
             out[b] = {"a": 1.0, "b": round(offs[len(offs) // 2], 3), "n": len(xy)}
+            if offs[-1] - offs[0] > 2.0 + MAX_CLOCK * (max(xs) - min(xs)):     # whole-second timers jitter by a second
+                out[b]["rejected"] = True
     return out
 
 
@@ -413,7 +422,7 @@ def place_by_boot(video_arms: list[dict], log_arms: list[dict], pairs: list[tupl
     place in the video. An unmatched run whose start sits within `tol` of exactly one unmatched arm's place is that
     arm, however long the run reads: a run's length is only what the timer showed, and the end of an arm is often
     unreadable (a crash, a broken-up picture, the STATS screen)."""
-    fits = fit_boots(video_arms, log_arms, pairs)
+    fits = {b: f for b, f in fit_boots(video_arms, log_arms, pairs).items() if not f.get("rejected")}
     used_v, used_l = {vi for vi, _ in pairs}, {li for _, li in pairs}
     out = list(pairs)
     for vi, v in enumerate(video_arms):
@@ -437,7 +446,7 @@ def derive_unread(log_arms: list[dict], pairs: list[tuple[int, int]], fits: dict
         if li in used_l or l.get("boot") not in fits or l.get("uptime_start") is None:
             continue
         f = fits[l["boot"]]
-        if f["n"] < 2:
+        if f["n"] < 2 or f.get("rejected"):
             continue
         start = _at(f, l["uptime_start"])
         if start < -0.5 or (duration is not None and start + l["length"] > duration + 0.5):
@@ -446,33 +455,91 @@ def derive_unread(log_arms: list[dict], pairs: list[tuple[int, int]], fits: dict
     return out
 
 
-def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, overwrite: bool = False) -> dict:
+def in_order(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The pairs that keep a clip's arms in the log's order: a clip is one stretch of time, so a later run is a
+    later arm. The alignment preserves order, but placing by a boot's line and partial runs need not. Keeps the
+    order-preserving subset with the most readings (a longest increasing subsequence, weighted)."""
+    ps = sorted(pairs, key=lambda p: (video_arms[p[0]]["start"], p[1]))
+    best, prev = [], []
+    for k, (vi, li) in enumerate(ps):
+        w = video_arms[vi].get("readings", 1)
+        cands = [(best[j], j) for j in range(k) if log_arms[ps[j][1]]["index"] < log_arms[li]["index"]]
+        b, j = max(cands, default=(0, None))
+        best.append(b + w)
+        prev.append(j)
+    if not ps:
+        return []
+    k = max(range(len(ps)), key=lambda i: best[i])
+    out = []
+    while k is not None:
+        out.append(ps[k])
+        k = prev[k]
+    return sorted(out)
+
+
+def arm_window(key: str, others: list[tuple[str, int]]) -> tuple[int | None, int | None]:
+    """Clips are chronological (their readable names sort by date and number) and so are a log's arms: a clip's
+    arms come after every arm matched to an earlier clip and before every arm matched to a later one. `others`:
+    (clip name, arm) of the log's matches in the other clips. (lo, hi): the arms must lie strictly between."""
+    lo = max((a for k, a in others if k < key), default=None)
+    hi = min((a for k, a in others if k > key), default=None)
+    return lo, hi
+
+
+def _log_matches(session: dict, video: str, pending: list[dict]) -> dict[str, list[tuple[str, int]]]:
+    """{bbl: [(clip name, arm)]} of every match in every session except this clip's own, plus the proposals of
+    clips earlier in this run (pending: [{session, video, name, bbl, arm}]). A log can be attached to several
+    sessions (one flash dump over several days), so an arm taken in another session is taken here too."""
+    out: dict[str, list[tuple[str, int]]] = {}
+    for row in sessions.all_sessions():
+        if not row.get("matches"):
+            continue
+        s = session if row["session"] == session["session"] else sessions.load(row["session"])
+        names = {v["file"]: v.get("name") or v["file"] for v in s["videos"]}
+        for m in s["matches"]:
+            if s["session"] == session["session"] and m["video"] == video:
+                continue
+            out.setdefault(m["bbl"], []).append((names.get(m["video"], m["video"]), m["arm"]))
+    for m in pending:
+        if not (m["session"] == session["session"] and m["video"] == video):
+            out.setdefault(m["bbl"], []).append((m["name"], m["arm"]))
+    return out
+
+
+def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, overwrite: bool = False,
+              pending: list[dict] | None = None) -> dict:
     """Propose (and with write=True record) matches for one clip from its OSD timers and the session's logs.
-    Existing matches of the clip are kept unless overwrite=True (a hand-refined offset beats an OSD one)."""
+    Existing matches of the clip are kept unless overwrite=True (a hand-refined offset beats an OSD one).
+    `pending`: proposals of clips before this one in the same run (not written), taken like written ones."""
     s = sessions.load(session)
     path = sessions.clip_path(session, clip)
+    name = next((v.get("name") or v["file"] for v in s["videos"] if v["file"] == path.name), path.name)
     rt = read_timers(path, fps)
     rows = rt["rows"]
     varms = video_arms(rt, fps)
-    # arms already matched to another clip of the session are taken: an arm is in one clip
-    taken = {(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] != path.name}
+    # arms matched to another clip (of any session) are taken: an arm is in one clip; and the clips before and
+    # after this one bound its arms (#9: duration-only matches on the cumulative timer went anywhere in the log)
+    others = _log_matches(s, path.name, pending or [])
+    taken = {(b, a) for b, ms in others.items() for _, a in ms}
+    windows = {}
     # a clip comes from one flash dump, so align against each log separately and keep the best alignment
     best = None
     for b in s["blackbox"]:
         idx = blackbox.index_bbl(b)
+        lo, hi = windows[idx["file"]] = arm_window(name, others.get(idx["file"], []))
         boot_of = {i: k for k, bt in enumerate(idx.get("boots", [])) for i in bt["arms"]}
         cum, logs = {}, []
         for a in idx["arms"]:
             if a.get("frames") and a.get("motors_spun", True):
                 k = boot_of.get(a["index"])
-                if (idx["file"], a["index"]) not in taken:
+                if (idx["file"], a["index"]) not in taken and (lo is None or a["index"] > lo) and (hi is None or a["index"] < hi):
                     logs.append({"bbl": idx["file"], "index": a["index"], "length": a["length"], "vbat_start": a["vbat_start"],
                                  "cum_before": round(cum.get(k, 0.0), 1) if k is not None else None,
                                  "boot": k, "uptime_start": a.get("uptime_start")})
                 if k is not None:
                     cum[k] = cum.get(k, 0.0) + a["length"]
         pairs = consistent_pairs(varms, logs, align(varms, logs))
-        pairs = place_by_boot(varms, logs, pairs)
+        pairs = in_order(varms, logs, place_by_boot(varms, logs, pairs))
         # ties (a run the clip starts inside fits an arm of several logs) go to the log the session already uses
         in_use = sum(1 for m in s["matches"] if m["bbl"] == idx["file"])
         score = (len(pairs), -round(sum(abs(varms[vi]["length"] - logs[li]["length"]) for vi, li in pairs), 1), in_use)
@@ -490,8 +557,11 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
                         "video_start": v["start"], "video_length": v["length"], "log_length": l["length"],
                         "note": f"osd automatch: timer run {v['length']} s vs log {l['length']} s, total before {v['total_before']} vs {l['cum_before']} ({v['readings']} readings)"
                                 + ("" if abs(v["length"] - l["length"]) <= 2 else "; placed by the boot's offset, the run reads shorter than the arm")})
+    real = [(varms[vi]["start"], logs[li]["index"]) for vi, li in pairs]
     for li, start in derive_unread(logs, pairs, fits, duration):
         l = logs[li]
+        if any((t < start) != (i < l["index"]) for t, i in real):     # out of order with what was read
+            continue
         f = fits[l["boot"]]
         matches.append({"video": path.name, "bbl": l["bbl"], "arm": l["index"], "offset": start, "video_start": start,
                         "video_length": None, "log_length": l["length"], "derived": True,
@@ -504,7 +574,9 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
             if overwrite or (m["bbl"], m["arm"]) not in have:
                 sessions.set_match(session, m["video"], m["bbl"], m["arm"], m["offset"], m["note"])
                 m["written"] = True
-    return {"clip": path.name, "layout": rt["layout"], "readings": len(rows), "boot_fits": fits,
+    bbl = logs[0]["bbl"] if logs else None
+    return {"clip": path.name, "name": name, "layout": rt["layout"], "readings": len(rows), "boot_fits": fits,
+            "bbl": bbl, "arm_window": windows.get(bbl, (None, None)),
             "readable": sum(1 for r in rows if (r["top"] if not LAYOUTS[rt["layout"]]["cumulative"] else r["bottom"]) is not None),
             "video_arms": varms, "matches": matches, "unmatched_video_arms": unmatched}
 

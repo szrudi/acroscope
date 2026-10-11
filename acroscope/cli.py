@@ -409,23 +409,31 @@ def cmd_osd(a):
 
 def cmd_automatch(a):
     s = _session(a.session)
-    clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]
-    results = []
+    clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]     # in name order: chronological
+    results, pending = [], []
     for c in clips:
         try:
-            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite)
+            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending)
         except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
             print(f"{c}: {type(e).__name__}: {e}", file=sys.stderr)
             continue
         results.append(r)
+        if not a.write:            # the next clips see these as taken, as they would once written
+            pending += [{"session": s, "video": r["clip"], "name": r["name"], "bbl": m["bbl"], "arm": m["arm"]} for m in r["matches"]]
         if a.json:
             continue
         print(f"{r['clip']}: {r['readable']}/{r['readings']} frames readable, {len(r['video_arms'])} arm runs, {len(r['matches'])} matched" + (" (written)" if a.write else ""))
+        lo, hi = r.get("arm_window") or (None, None)
+        if lo is not None or hi is not None:
+            print("   other clips leave " + " and ".join(x for x in (f"arms after {lo}" if lo is not None else "", f"arms before {hi}" if hi is not None else "") if x))
         for m in r["matches"]:
             how = f"video run {m['video_length']:5.1f} s vs log {m['log_length']:5.1f} s" if not m.get("derived") else f"derived from the boot's fit, log {m['log_length']:5.1f} s"
             print(f"   arm {m['arm']:2} @ +{m['offset']:7.2f}  {how}" + ("" if not a.write else ("  written" if m.get("written") else "  kept existing")))
         for b, f in sorted(r.get("boot_fits", {}).items()):
-            if f["a"] != 1.0:
+            if f.get("rejected"):
+                print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms) explains no clock (beyond {100 * osd.MAX_CLOCK:g} %"
+                      " or offsets apart: a cut in the clip, or a wrong pair): nothing placed or derived from it, check its matches by hand")
+            elif f["a"] != 1.0:
                 print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms; {100 * (f['a'] - 1):+.2f} % clock difference)")
         for v in r["unmatched_video_arms"]:
             print(f"   unmatched run at {fmt_time(v['start'])}: {v['length']} s")

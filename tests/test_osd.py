@@ -43,6 +43,40 @@ class AlignerTest(unittest.TestCase):
         pairs = osd.place_by_boot(runs, logs, [(0, 0), (1, 1), (2, 2), (3, 3)])
         self.assertIn((4, 4), pairs)
 
+    def test_fit_beyond_one_percent_is_rejected(self):
+        # three runs of one boot that no clock explains (-9 %): the line is not used to place or derive arms (#9)
+        logs = logs_of([(1, 20, 10), (2, 50, 2), (3, 100, 20), (4, 200, 8)])
+        runs = [{"start": round(0.91 * logs[i]["uptime_start"] + 10, 2), "length": logs[i]["length"], "readings": 10} for i in (0, 2, 3)]
+        pairs = [(0, 0), (1, 2), (2, 3)]
+        fits = osd.fit_boots(runs, logs, pairs)
+        self.assertTrue(fits[0]["rejected"])
+        self.assertEqual(osd.derive_unread(logs, pairs, fits, duration=300.0), [])
+        # two pairs whose offsets disagree by more than the timer jitter: no median offset to trust either
+        two = [{"start": 30.0, "length": 10, "readings": 10}, {"start": 50.0, "length": 20, "readings": 10}]
+        self.assertTrue(osd.fit_boots(two, logs, [(0, 0), (1, 2)])[0]["rejected"])
+        # a real 0.3 % passes
+        ok = [{"start": round(0.997 * l["uptime_start"] + 10, 2), "length": l["length"], "readings": 10} for l in logs]
+        self.assertNotIn("rejected", osd.fit_boots(ok, logs, [(i, i) for i in range(4)])[0])
+
+    def test_in_order_drops_a_pair_out_of_time_order(self):
+        # arms 61-64 in order and arm 53 between 62 and 63: a clip's arms come in log order (#9, 10-02 002)
+        logs = [{"index": i, "length": 10} for i in (53, 61, 62, 63, 64)]
+        runs = [{"start": t, "length": 10, "readings": 8} for t in (10, 30, 50, 70, 90)]
+        pairs = [(0, 1), (1, 2), (2, 0), (3, 3), (4, 4)]
+        self.assertEqual(osd.in_order(runs, logs, pairs), [(0, 1), (1, 2), (3, 3), (4, 4)])
+        # of two that cross, the one with more readings stays
+        runs[2]["readings"] = 50
+        self.assertEqual(osd.in_order(runs, logs, [(1, 2), (2, 0)]), [(2, 0)])
+
+    def test_arm_window_from_the_other_clips(self):
+        # clips are chronological: a clip's arms come after the previous clip's and before the next one's
+        others = [("2026-10-02_001", 58), ("2026-10-02_002", 61), ("2026-10-02_002", 74), ("2026-10-02_003", 75),
+                  ("2026-10-03_001", 80)]
+        self.assertEqual(osd.arm_window("2026-10-02_009", others), (75, 80))
+        self.assertEqual(osd.arm_window("2026-10-01_001", others), (None, 58))
+        self.assertEqual(osd.arm_window("2026-10-04_001", others), (80, None))
+        self.assertEqual(osd.arm_window("x", []), (None, None))
+
 
 if __name__ == "__main__":
     unittest.main()

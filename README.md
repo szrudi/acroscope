@@ -49,7 +49,8 @@ A CLI on another machine does not open the database: set `ACROSCOPE_URL=http://<
 `~/.config/acroscope/url`) and it uses the server's API for everything in the database, and the commands that need
 the clips, the logs or the cache (`arms`, `decode`, `metrics`, `events`, `frame`, `sheet`, `osd`, `automatch`,
 `match`, `attach`, `detach`, `tag`, `sessions`, `inbox`) run on the server; frames and sheets come back as files
-into the local cache. Nothing on that machine needs the data dir. The pre-database `videos/<session>/session.json` files are imported once by
+into the local cache; such a command runs as a job on the server that the client polls (`POST /api/cli` with
+`async`, `GET /api/cli/<job>`), so a long one (automatch over a whole session) hits no read timeout. Nothing on that machine needs the data dir. The pre-database `videos/<session>/session.json` files are imported once by
 `acroscope import-json` (a server with an empty database does it at start) and not read afterwards.
 
 The cache (`ACROSCOPE_CACHE`, default `~/.cache/acroscope`) holds decoded arms (`arms/<bbl>/arm-NN.bin` plus
@@ -145,6 +146,14 @@ starts in video time, and aligns them to the log's arms by length and by the tot
 cumulative length. Offsets come out within about half a second, and the method carries across the static stretches
 `cobra-compress.py` cuts out. Arms shorter than about 2 s and arms whose timer never shows up readable stay
 unmatched, as do clips without the OSD.
+
+What a clip may match is bounded by the other clips: an arm matched to another clip (in any session the log is
+attached to) is taken, and clips are chronological, so a clip's arms lie after the arms of the clips named before it
+and before those of the clips named after it (a run over a whole session carries its proposals from clip to clip
+without `--write`). Within a clip the matches keep the log's order. A boot's line (video = a · uptime + b) that
+needs more than 1 % clock difference, or two offsets further apart than the timer jitter, explains no clock: it
+places and derives nothing, and the output says to check that boot's matches by hand. These matter most on the
+cumulative-timer OSD, where a run's length is nearly all there is to go on.
 
 By hand, when needed: `acroscope arms <bbl>` lists the arms and the **boots** (power cycles; the log's time field is
 the FC uptime, so one offset covers every arm of a boot). Read one frame per boot with `acroscope frame ... --osd`,
