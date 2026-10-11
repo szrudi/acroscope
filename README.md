@@ -155,6 +155,13 @@ needs more than 1 % clock difference, or two offsets further apart than the time
 places and derives nothing, and the output says to check that boot's matches by hand. These matter most on the
 cumulative-timer OSD, where a run's length is nearly all there is to go on.
 
+A log that ended with the flash full (its last arm is cut off, `truncated` in `arms --json`) ends where the footage
+says so: after each run the reader looks at the STATS screen Betaflight shows on disarm (TOTAL ARM, the armed time
+on the pack, and BLACKBOX, how full the flash is). From the first run whose STATS shows BLACKBOX 100 %, in this clip
+or an earlier one of the session after the log's last matched clip, nothing is in that log, and that run itself can
+only be the cut-off last arm. `acroscope osd` lists the STATS reading after each run. The STATS geometry is per
+layout (the rows move with the number of stats on); the bold-font layouts have none yet.
+
 By hand, when needed: `acroscope arms <bbl>` lists the arms and the **boots** (power cycles; the log's time field is
 the FC uptime, so one offset covers every arm of a boot). Read one frame per boot with `acroscope frame ... --osd`,
 record `acroscope match <session> <clip> <bbl> <arm> <offset> --boot`, and refine on a sharp event: an impact in
