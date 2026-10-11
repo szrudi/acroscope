@@ -243,8 +243,9 @@ def cmd_decode(a):
 
 
 def cmd_match(a):
-    s = sessions.set_match(_session(a.session), a.video, a.bbl, a.arm, a.offset, a.note or "", boot=a.boot)
-    out([m for m in s["matches"] if m["video"] == sessions.resolve_clip(s["session"], a.video)])
+    session = _session(a.session)
+    vid = sessions.set_match(session, a.video, a.bbl, a.arm, a.offset, a.note or "", boot=a.boot)[0]["video"]
+    out([m for m in sessions.load(session)["matches"] if m["video"] == vid])
 
 
 def cmd_unmatch(a):

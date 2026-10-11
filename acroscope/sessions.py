@@ -218,9 +218,10 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
 
 # ---- writing ------------------------------------------------------------------------------------------------------
 
-def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: str = "", boot: bool = False) -> dict:
+def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: str = "", boot: bool = False) -> list[dict]:
     """Record video <-> arm with `offset` (video = arm time + offset). With boot=True, also record every other arm
-    of the same power cycle, their offsets derived from the FC uptime (video = uptime + boot offset)."""
+    of the same power cycle, their offsets derived from the FC uptime (video = uptime + boot offset). Returns the
+    matches written, as the store gives them back (the named arm first)."""
     vid = resolve_clip(session, vid)
     if boot and remote():
         raise ValueError("match --boot reads the log: run it where the data is (unset ACROSCOPE_URL)")
@@ -251,9 +252,8 @@ def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: s
                 if i != arm and dur and (off > dur or off + meta[i]["length"] < 0):
                     continue
                 new.append((i, off, note if i == arm else f"derived from arm {arm} via uptime (boot {b['first']}-{b['last']}" + (f", clock {100 * (a - 1):+.2f} %)" if a != 1.0 else ")")))
-    for i, off, n in new:
-        store().set_match(session, vid, bbl_name, i, off, n)
-    return load(session)
+    new.sort(key=lambda r: r[0] != arm)
+    return [store().set_match(session, vid, bbl_name, i, off, n) for i, off, n in new]
 
 
 def unmatch(session: str, vid: str, arm: int | None = None) -> int:

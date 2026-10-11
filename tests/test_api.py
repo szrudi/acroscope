@@ -77,7 +77,8 @@ class ApiTest(unittest.TestCase):
         self.assertEqual([v["file"] for v in s["videos"]], ["2026-10-07_001.mp4"])
         m = r.tag("2026-10-07-s", "2026-10-07_001.mp4", 1, 2, "t", ["flip"], "n", {"k": 1})
         self.assertEqual(m["id"], "m01")
-        r.set_match("2026-10-07-s", "2026-10-07_001.mp4", "x.bbl", 2, 3.5, "note")
+        self.assertEqual(r.set_match("2026-10-07-s", "2026-10-07_001.mp4", "x.bbl", 2, 3.5, "note"),   # the match, as Db gives it
+                         {"video": "2026-10-07_001.mp4", "bbl": "x.bbl", "arm": 2, "offset": 3.5, "note": "note"})
         r.set_note("2026-10-07-s", "session note")
         r.set_note("2026-10-07-s", "clip note", "2026-10-07_001.mp4")
         d = r.load("2026-10-07-s")
