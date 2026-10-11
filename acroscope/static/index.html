@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>acroscope</title>
+<meta name="theme-color" content="#14161a">
+<link rel="manifest" href="/static/manifest.webmanifest">
 <link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="/static/brand/favicon-32.png" sizes="32x32">
 <link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
@@ -85,7 +87,34 @@
   .empty { padding:12px; color:var(--dim) }
   .why { grid-column:2/4; color:var(--dim); font-size:12px }
   @media (max-width: 1400px) { header .keys { display:none } }
-  @media (max-width: 1000px) { main { grid-template-columns:1fr } aside, .right { border:0; border-top:1px solid var(--line) } .right { min-height:auto; overflow:visible } .list { max-height:40vh } video { max-height:45vh } }
+  /* on-screen controls (phones have no keys) and the phone tab bar: hidden on the desktop layout */
+  .mctl, .mtabs { display:none }
+  .mctl { gap:6px; justify-content:space-between } .mctl button { flex:1; padding:9px 0; font-size:14px }
+  .mctl button.on { background:var(--acc); color:#1a1200; border-color:var(--acc) }
+  .mtabs { border-top:1px solid var(--line); background:var(--panel); flex:none }
+  .mtabs span { flex:1; text-align:center; padding:10px 0; font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); cursor:pointer; user-select:none }
+  .mtabs span.on { color:var(--fg); box-shadow:inset 0 -2px 0 var(--acc) }
+  #askbox { display:none; position:fixed; left:0; right:0; bottom:0; padding:12px; background:var(--panel); border-top:1px solid var(--line); z-index:5; gap:8px; flex-wrap:wrap; align-items:center }
+  #askbox.open { display:flex } #askbox input { flex:1; min-width:160px; font-size:16px } #askbox .l { width:100%; color:var(--dim); font-size:12px }
+  /* phone: the video pinned at the top, one pane at a time under a tab bar; set by JS on the viewport, not just width */
+  body.phone main { display:flex; flex-direction:column; min-height:0 }
+  body.phone .center { flex:none; padding:6px 8px; gap:6px; overflow:visible } body.phone video { max-height:38vh }
+  body.phone .mctl { display:flex } body.phone .mtabs { display:flex }
+  body.phone aside, body.phone .right { display:none; border:0; flex:1; min-height:0; overflow:hidden }
+  body.phone aside .tabs, body.phone .right h2 { display:none }
+  body.phone[data-tab=clips] aside, body.phone[data-tab=logs] aside, body.phone[data-tab=inbox] aside { display:flex }
+  body.phone[data-tab=moments] .right, body.phone[data-tab=sugg] .right { display:flex }
+  body.phone .pane { display:none } body.phone[data-tab=moments] #paneMoments, body.phone[data-tab=sugg] #paneSugg { display:flex; flex:1 }
+  body.phone .pane .list { display:block }
+  body.phone header { height:auto; min-height:44px; flex-wrap:wrap; padding:6px 10px; gap:8px } body.phone header select { flex:1; min-width:0; font-size:16px }
+  body.phone header #status { width:100%; font-size:12px } body.phone .readout { font-size:12px; gap:10px; flex-wrap:wrap }
+  body.phone .snote { display:none } body.phone #editor { position:fixed; left:0; right:0; bottom:46px; max-height:60vh; overflow:auto; z-index:4; border-radius:8px 8px 0 0 }
+  @media (pointer: coarse) {
+    .clip { padding:12px 14px } .m { padding:10px 12px } .arm { padding:7px 12px 7px 18px; font-size:13px }
+    button.small { padding:6px 10px; font-size:13px } .chip { padding:6px 12px; font-size:13px } .tagbar { gap:6px 8px }
+    input, textarea, select { font-size:16px }   /* 16 px: iOS does not zoom in on focus */
+    .clip .mv { opacity:.8 }
+  }
 </style>
 </head>
 <body>
@@ -107,6 +136,11 @@
     <video id="v" controls preload="metadata"></video>
     <canvas id="strip" height="54"></canvas>
     <div class="tagbar" id="tagbar"></div>
+    <div class="mctl">
+      <button data-act="prev" title="previous moment">◀◀</button><button data-act="in" title="set the in point here">in</button>
+      <button data-act="out" title="set the out point here">out</button><button data-act="tag" title="tag from in to out">tag</button>
+      <button data-act="next" title="next moment">▶▶</button><button data-act="loop" id="loopBtn" title="loop the current moment">loop</button>
+    </div>
     <div class="readout" id="readout"></div>
     <div class="snote" id="snote"></div>
     <div class="editor" id="editor">
@@ -133,7 +167,9 @@
       <div class="list" id="sugg"></div>
     </div>
   </div>
+  <div class="mtabs" id="mtabs"><span data-mtab="clips">clips</span><span data-mtab="moments">moments</span><span data-mtab="sugg">suggested</span><span data-mtab="logs">logs</span><span data-mtab="inbox">inbox</span></div>
 </main>
+<div id="askbox"><span class="l" id="askLabel"></span><input id="askInput"><button class="primary" id="askOk">ok</button><button id="askCancel">cancel</button></div>
 <script>
 const $ = s => document.querySelector(s);
 const v = $('#v'), strip = $('#strip'), ctx = strip.getContext('2d');
@@ -227,7 +263,7 @@ function renderClips() {
 
 // ---- editing sessions: rename (the date is the name's first ten characters), move a clip; both save at once
 async function renameSession() {
-  const name = prompt('session name (YYYY-MM-DD or YYYY-MM-DD-name)', S.session);
+  const name = await ask('session name (YYYY-MM-DD or YYYY-MM-DD-name)', S.session);
   if (!name || name === S.session) return;
   const r = await api(`/api/session/${encodeURIComponent(S.session)}/rename`, {method: 'POST', body: JSON.stringify({name})});
   if (r.error) { alert(r.error); return; }
@@ -235,7 +271,7 @@ async function renameSession() {
 }
 async function moveClip(file) {
   const others = [...$('#session').options].map(o => o.value).filter(n => n !== S.session);
-  const to = prompt(`move ${clipName(file)} to session (existing: ${others.slice(0, 6).join(', ')}${others.length > 6 ? ', …' : ''}; or a new YYYY-MM-DD-name)`, S.session);
+  const to = await ask(`move ${clipName(file)} to session (existing: ${others.slice(0, 6).join(', ')}${others.length > 6 ? ', …' : ''}; or a new YYYY-MM-DD-name)`, S.session);
   if (!to || to === S.session) return;
   const r = await api(`/api/session/${encodeURIComponent(S.session)}/move`, {method: 'POST', body: JSON.stringify({video: file, to})});
   if (r.error) { alert(r.error); return; }
@@ -510,6 +546,46 @@ document.querySelectorAll('.pane').forEach(p => {
 
 // ---- keys
 let inT = null, outT = null;
+function markIn() { inT = v.currentTime; if (ed) setIn(); flash('in ' + fmt(inT)); }
+function markOut() { outT = v.currentTime; if (ed) setOut(); flash('out ' + fmt(outT)); }
+function tagNow() { if (!clip) return; const a = inT ?? Math.max(0, v.currentTime - 3), b = outT ?? v.currentTime + 3; openEditor({video: clip, start: Math.min(a, b), end: Math.max(a, b), tags: []}); inT = outT = null; }
+function toggleLoop() { loopM = loopM ? null : cur; $('#loopBtn').classList.toggle('on', !!loopM); readout(); }
+// the on-screen controls do what the keys do
+document.querySelectorAll('.mctl button').forEach(b => b.onclick = () => {
+  const a = b.dataset.act;
+  if (a === 'prev') step(-1); else if (a === 'next') step(1); else if (a === 'in') markIn(); else if (a === 'out') markOut();
+  else if (a === 'tag') tagNow(); else if (a === 'loop') toggleLoop();
+});
+
+// ---- the phone layout: one pane at a time under the video, chosen from the tab bar at the bottom
+const phoneQuery = matchMedia('(max-width: 1000px)');
+function setPhone() {
+  document.body.classList.toggle('phone', phoneQuery.matches);
+  if (phoneQuery.matches && !document.body.dataset.tab) showMTab(localStorage.getItem('acro.mtab') || 'moments');
+}
+function showMTab(t) {
+  document.body.dataset.tab = t;
+  document.querySelectorAll('#mtabs span').forEach(x => x.classList.toggle('on', x.dataset.mtab === t));
+  // the desktop panes inside aside are shown by the aside tabs; on the phone the body's tab drives them
+  for (const p of ['clips', 'logs', 'inbox']) $('#' + p).style.display = (phoneQuery.matches ? t === p : $('#' + p).style.display !== 'none') ? '' : 'none';
+  if (t === 'inbox') renderInbox();
+  localStorage.setItem('acro.mtab', t);
+}
+document.querySelectorAll('#mtabs span').forEach(x => x.onclick = () => showMTab(x.dataset.mtab));
+phoneQuery.addEventListener('change', setPhone);
+setPhone();
+
+// ---- a question at the bottom of the screen instead of prompt(): resolves to the text, or null
+function ask(label, value) {
+  return new Promise(res => {
+    const box = $('#askbox'), inp = $('#askInput');
+    $('#askLabel').textContent = label; inp.value = value || ''; box.classList.add('open'); inp.focus(); inp.select();
+    const done = v => { box.classList.remove('open'); $('#askOk').onclick = $('#askCancel').onclick = inp.onkeydown = null; res(v); };
+    $('#askOk').onclick = () => done(inp.value.trim());
+    $('#askCancel').onclick = () => done(null);
+    inp.onkeydown = e => { if (e.key === 'Enter') done(inp.value.trim()); if (e.key === 'Escape') done(null); e.stopPropagation(); };
+  });
+}
 document.addEventListener('keydown', e => {
   if (e.target.matches('input, textarea, select')) { if (e.key === 'Escape') { e.target.blur(); } if (e.key === 'Enter' && e.target.id === 'edTitle') saveMoment(); return; }
   const k = e.key; let h = true;
@@ -518,11 +594,11 @@ document.addEventListener('keydown', e => {
   else if (k === 'ArrowRight') v.currentTime += e.shiftKey ? 10 : 2;
   else if (k === ',') { v.pause(); v.currentTime -= 1 / 60; }
   else if (k === '.') { v.pause(); v.currentTime += 1 / 60; }
-  else if (k === 'i') { inT = v.currentTime; if (ed) setIn(); flash('in ' + fmt(inT)); }
-  else if (k === 'o') { outT = v.currentTime; if (ed) setOut(); flash('out ' + fmt(outT)); }
-  else if (k === 't') { if (!clip) return; const a = inT ?? Math.max(0, v.currentTime - 3), b = outT ?? v.currentTime + 3; openEditor({video: clip, start: Math.min(a, b), end: Math.max(a, b), tags: []}); inT = outT = null; }
+  else if (k === 'i') markIn();
+  else if (k === 'o') markOut();
+  else if (k === 't') tagNow();
   else if (k === 'n') step(1); else if (k === 'p') step(-1);
-  else if (k === 'l') { loopM = loopM ? null : cur; readout(); }
+  else if (k === 'l') toggleLoop();
   else if (k === 'Escape') closeEditor();
   else h = false;
   if (h) { e.preventDefault(); e.stopPropagation(); }
