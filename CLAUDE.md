@@ -49,6 +49,10 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - Backlog: GitHub issues on `szrudi/acroscope`. The flight-analysis session files them; this session implements.
 
 ## Conventions
+- **Several sessions share this checkout** (on 2026-10-11 two dev sessions were editing it at once, one on #9 and
+  one on #11). Never switch branches in `~/repos/acroscope` itself and never `git add -A`: do branch work in a
+  worktree (`git worktree add <scratchpad>/wt-<name> <branch>`, remove it when pushed), stage explicit paths,
+  and when `git status` shows files you did not touch, leave them alone; they are another session's.
 - Features and anything Rudi should see before it goes live go on a branch (`feat/...`) with a **draft PR** (since
   2026-10-11; #12 was the first); small fixes and docs may go to main. Commit as you go with full messages (the
   trail of how a conclusion was reached is the record); don't squash. Rudi reviews and merges; never self-merge
