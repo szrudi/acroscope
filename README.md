@@ -47,9 +47,12 @@ start, every 5 minutes, and on `refresh`): new session folders and clips are reg
 is marked `missing_since` and keeps its matches and moments until an explicit `purge`. A folder that cannot be
 listed, or lists no clip at all, marks nothing, so an unmounted or half-synced Drive never looks like a deletion.
 
-A CLI on another machine does not open the database: set `ACROSCOPE_URL=http://<server>:8070` and it uses the
-server's API for everything in the database, while metrics, events and frames still run locally against that
-machine's own mount of the data dir. The pre-database `videos/<session>/session.json` files are imported once by
+A CLI on another machine does not open the database: set `ACROSCOPE_URL=http://<server>:8070` (or put it in
+`~/.config/acroscope/url`) and it uses the server's API for everything in the database, and the commands that need
+the clips, the logs or the cache (`arms`, `decode`, `metrics`, `events`, `frame`, `sheet`, `osd`, `automatch`,
+`match`, `attach`, `detach`, `tag`, `sessions`, `inbox`) run on the server; frames and sheets come back as files
+into the local cache; such a command runs as a job on the server that the client polls (`POST /api/cli` with
+`async`, `GET /api/cli/<job>`), so a long one (automatch over a whole session) hits no read timeout. Nothing on that machine needs the data dir. The pre-database `videos/<session>/session.json` files are imported once by
 `acroscope import-json` (a server with an empty database does it at start) and not read afterwards.
 
 The cache (`ACROSCOPE_CACHE`, default `~/.cache/acroscope`) holds decoded arms (`arms/<bbl>/arm-NN.bin` plus
@@ -57,9 +60,6 @@ The cache (`ACROSCOPE_CACHE`, default `~/.cache/acroscope`) holds decoded arms (
 
 `video time = arm time + offset`. The clips have static cut out, so an offset only holds within one arm; a clip can
 have several matches.
-
-The mark and the wordmark live in `acroscope/static/brand/` (`BRAND.md` there has the concept, the palette and how
-to regenerate the PNGs; `scripts/brand.py` generates the geometry).
 
 ## Install
 
@@ -149,6 +149,21 @@ cumulative length. Offsets come out within about half a second, and the method c
 `cobra-compress.py` cuts out. Arms shorter than about 2 s and arms whose timer never shows up readable stay
 unmatched, as do clips without the OSD.
 
+What a clip may match is bounded by the other clips: an arm matched to another clip (in any session the log is
+attached to) is taken, and clips are chronological, so a clip's arms lie after the arms of the clips named before it
+and before those of the clips named after it (a run over a whole session carries its proposals from clip to clip
+without `--write`). Within a clip the matches keep the log's order. A boot's line (video = a · uptime + b) that
+needs more than 1 % clock difference, or two offsets further apart than the timer jitter, explains no clock: it
+places and derives nothing, and the output says to check that boot's matches by hand. These matter most on the
+cumulative-timer OSD, where a run's length is nearly all there is to go on.
+
+A log that ended with the flash full (its last arm is cut off, `truncated` in `arms --json`) ends where the footage
+says so: after each run the reader looks at the STATS screen Betaflight shows on disarm (TOTAL ARM, the armed time
+on the pack, and BLACKBOX, how full the flash is). From the first run whose STATS shows BLACKBOX 100 %, in this clip
+or an earlier one of the session after the log's last matched clip, nothing is in that log, and that run itself can
+only be the cut-off last arm. `acroscope osd` lists the STATS reading after each run. The STATS geometry is per
+layout (the rows move with the number of stats on); the bold-font layouts have none yet.
+
 By hand, when needed: `acroscope arms <bbl>` lists the arms and the **boots** (power cycles; the log's time field is
 the FC uptime, so one offset covers every arm of a boot). Read one frame per boot with `acroscope frame ... --osd`,
 record `acroscope match <session> <clip> <bbl> <arm> <offset> --boot`, and refine on a sharp event: an impact in
@@ -178,3 +193,9 @@ Every `metrics` result carries a `conventions` block with these facts, so they n
 0.01 V; `accSmooth` /2048 = g; `imuQuaternion` /32767. Roll + = right, pitch + = nose down, yaw + = nose right; a
 back flip or a powerloop integrates to a negative pitch angle. The firmware's `flightModeFlags` labels are wrong
 (shows ANGLE while the OSD shows AIR).
+
+## Brand
+
+The mark (a powerloop seen through a scope), the wordmark, the favicon, the app icon and the banner above live in
+`acroscope/static/brand/`. `BRAND.md` there has the concept, the palette, usage notes and the commands that
+regenerate the PNGs; `scripts/brand.py` generates the geometry.

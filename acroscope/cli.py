@@ -224,7 +224,8 @@ def cmd_arms(a):
     print(f"{idx['file']}  ({len(idx['arms'])} arms)")
     for r in idx["arms"]:
         flags = ("" if r["motors_spun"] else " motors-off") + ("" if r["complete"] else " cut-off") + (" TRUNCATED" if r["truncated"] else "")
-        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  uptime {r.get('uptime_start', 0):7.1f}-{r.get('uptime_end', 0):7.1f}  {r['vbat_start']:.2f}→{r['vbat_end']:.2f} V (min {r['vbat_min']:.2f})  disarm {r['disarm_reason']}{flags}")
+        v = {k: "-" if r.get(k) is None else f"{r[k]:.2f}" for k in ("vbat_start", "vbat_end", "vbat_min")}   # an arm can log no vbat
+        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  uptime {r.get('uptime_start') or 0:7.1f}-{r.get('uptime_end') or 0:7.1f}  {v['vbat_start']}→{v['vbat_end']} V (min {v['vbat_min']})  disarm {r['disarm_reason']}{flags}")
     for b in idx.get("boots", []):
         print(f"  boot: arms {b['first']}-{b['last']} ({len(b['arms'])} arms, uptime {b['uptime_start']:.1f}-{b['uptime_end']:.1f} s, {b['length']:.0f} s span): one offset covers them all (`match --boot`)")
 
@@ -407,24 +408,48 @@ def cmd_osd(a):
     rows, cum = rt["rows"], osd.LAYOUTS[rt["layout"]]["cumulative"]
     ok = [r for r in rows if (r["bottom"] if cum else r["top"]) is not None]
     print(f"layout {rt['layout']}: {len(rows)} frames, {len(ok)} with a readable {'total' if cum else 'arm'} timer")
-    for v in osd.video_arms(rt, a.fps):
-        print(f"  arm run: video {fmt_time(v['start'])} - {fmt_time(v['end'])}  {v['length']:5.1f} s  (timer {v['timer_max']} s, total before {v['total_before']}, {v['readings']} readings)")
+    runs = osd.video_arms(rt, a.fps)
+    for v, st in zip(runs, osd.read_stats(sessions.clip_path(s, a.video), runs, rt["layout"])):
+        stats = "" if st.get("total_arm") is None else f"; STATS after: total arm {fmt_time(st['total_arm'])}, blackbox {st['blackbox']} %"
+        print(f"  arm run: video {fmt_time(v['start'])} - {fmt_time(v['end'])}  {v['length']:5.1f} s  (timer {v['timer_max']} s, total before {v['total_before']}, {v['readings']} readings{stats})")
 
 
 def cmd_automatch(a):
     s = _session(a.session)
-    clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]
+    clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]     # in name order: chronological
+    results, pending = [], []
     for c in clips:
         try:
-            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite)
+            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending)
         except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
             print(f"{c}: {type(e).__name__}: {e}", file=sys.stderr)
             continue
+        results.append(r)
+        if not a.write:            # the next clips see these as taken, as they would once written
+            pending += [{"session": s, "video": r["clip"], "name": r["name"], "bbl": m["bbl"], "arm": m["arm"]} for m in r["matches"]]
+        if a.json:
+            continue
         print(f"{r['clip']}: {r['readable']}/{r['readings']} frames readable, {len(r['video_arms'])} arm runs, {len(r['matches'])} matched" + (" (written)" if a.write else ""))
+        f = r.get("flash_full")
+        if f:
+            print(f"   flash full: STATS shows BLACKBOX 100 % after the run at {fmt_time(f['at'])} in {f['clip']}; "
+                  + ("nothing in this clip is in the log" if f["clip"] != r["name"] else "that run can only be the log's cut-off last arm, nothing after it is in the log"))
+        lo, hi = r.get("arm_window") or (None, None)
+        if lo is not None or hi is not None:
+            print("   other clips leave " + " and ".join(x for x in (f"arms after {lo}" if lo is not None else "", f"arms before {hi}" if hi is not None else "") if x))
         for m in r["matches"]:
-            print(f"   arm {m['arm']:2} @ +{m['offset']:7.2f}  video run {m['video_length']:5.1f} s vs log {m['log_length']:5.1f} s" + ("" if not a.write else ("  written" if m.get("written") else "  kept existing")))
+            how = f"video run {m['video_length']:5.1f} s vs log {m['log_length']:5.1f} s" if not m.get("derived") else f"derived from the boot's fit, log {m['log_length']:5.1f} s"
+            print(f"   arm {m['arm']:2} @ +{m['offset']:7.2f}  {how}" + ("" if not a.write else ("  written" if m.get("written") else "  kept existing")))
+        for b, f in sorted(r.get("boot_fits", {}).items()):
+            if f.get("rejected"):
+                print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms) explains no clock (beyond {100 * osd.MAX_CLOCK:g} %"
+                      " or offsets apart: a cut in the clip, or a wrong pair): nothing placed or derived from it, check its matches by hand")
+            elif f["a"] != 1.0:
+                print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms; {100 * (f['a'] - 1):+.2f} % clock difference)")
         for v in r["unmatched_video_arms"]:
             print(f"   unmatched run at {fmt_time(v['start'])}: {v['length']} s")
+    if a.json:
+        out(results[0] if len(results) == 1 else results)
 
 
 def cmd_osd_learn(a):
@@ -439,7 +464,7 @@ def cmd_serve(a):
 
 # with ACROSCOPE_URL set these run on the server (they need the clips, the logs or the cache); frames and sheets
 # come back as files into the local cache under the same relative path
-PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach"}
+PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach", "tag"}
 
 
 def _proxy(argv: list[str]) -> None:
@@ -540,7 +565,7 @@ def main(argv=None):
     p.add_argument("session"); p.add_argument("video"); p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_osd)
     p = sp.add_parser("automatch", help="match clips to arms from the OSD timers (proposes; --write records)")
     p.add_argument("session"); p.add_argument("videos", nargs="*"); p.add_argument("--write", action="store_true"); p.add_argument("--overwrite", action="store_true", help="replace existing matches of the clip too")
-    p.add_argument("--fps", type=float, default=2.0); p.set_defaults(f=cmd_automatch)
+    p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_automatch)
     p = sp.add_parser("osd-learn", help="rebuild the OSD digit templates from a labels file")
     p.add_argument("labels", nargs="?", default="scripts/osd-labels.json"); p.set_defaults(f=cmd_osd_learn)
     p = sp.add_parser("serve", help="run the player (http)"); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8070)

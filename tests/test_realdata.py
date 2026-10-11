@@ -77,7 +77,9 @@ class RealDataTest(unittest.TestCase):
             runs = osd.video_arms(cli_json("osd", "10-07", "008", "--json"))
             idx = cli_json("arms", BBL, "--json")
         real = [r for r in runs if r["length"] >= 2]
-        self.assertEqual([round(r["start"], 1) for r in real], [4.7, 20.2, 64.2])
+        for got, want in zip([r["start"] for r in real], [4.75, 20.25, 64.25]):     # ±0.1: the bias is 0.25, not 0.2, since #4
+            self.assertAlmostEqual(got, want, delta=0.1)
+        self.assertEqual(len(real), 3)
         self.assertEqual([r["timer_max"] for r in real], [12, 7, 24])
         boot_of = {i: k for k, bt in enumerate(idx["boots"]) for i in bt["arms"]}
         cum, logs = {}, []
@@ -90,6 +92,30 @@ class RealDataTest(unittest.TestCase):
         pairs = osd.consistent_pairs(runs, logs, osd.align(runs, logs))
         # arm 16 (2.1 s, 30 s further on in the boot than the stray run) must not be taken
         self.assertEqual(sorted(logs[li]["index"] for _, li in pairs), [14, 15, 17])
+
+    @unittest.skipUnless(REMOTE, "automatch through the server")
+    def test_automatch_clip_008_derives_nothing_from_a_line_no_clock_explains(self):
+        """#9: the 008 runs give boot 7 a line at -9 % (no clock does that); arm 16 was derived from it. The
+        three read arms stay, nothing is derived."""
+        res = cli_json("automatch", "10-07", "008", "--json")
+        self.assertEqual(sorted(m["arm"] for m in res["matches"]), [14, 15, 17])
+        self.assertTrue(all(f.get("rejected") for f in res["boot_fits"].values() if abs(f["a"] - 1) > osd.MAX_CLOCK))
+
+
+@unittest.skipUnless(REMOTE, "the 10-10 clips live on the server only")
+class TenTenTest(unittest.TestCase):
+    """automatch against the frame-by-frame truths of szrudi/acroscope#4 on 2026-10-10 001: arm 1 at 7.95 (yaw snap
+    and nose-down hit), arm 9 at 150.35 (a right roll); and the clock difference the boot fit measures."""
+    def test_clip_001_offsets_and_fit(self):
+        r = sessions.store().cli(["automatch", "2026-10-10", "001", "--json"])
+        self.assertEqual(r["code"], 0, r["stderr"])
+        res = json.loads(r["stdout"])
+        by = {m["arm"]: m["offset"] for m in res["matches"]}
+        self.assertAlmostEqual(by[1], 7.95, delta=0.15)
+        self.assertAlmostEqual(by[9], 150.35, delta=0.15)
+        self.assertTrue({3, 7, 8, 14} <= set(by), sorted(by))                   # the short arms, derived from the fit
+        fit = list(res["boot_fits"].values())[0]
+        self.assertAlmostEqual(fit["a"], 0.997, delta=0.001)
 
 
 if __name__ == "__main__":

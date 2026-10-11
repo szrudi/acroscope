@@ -15,6 +15,7 @@ static stretches cobra-compress.py cuts out.
 """
 import json
 import math
+import re
 import subprocess
 from pathlib import Path
 
@@ -31,14 +32,21 @@ from .config import VIDEOS_DIR
 # the first), and which template set the font uses (a layout with the same font as another shares its templates).
 GLYPH_SMALL = (4, 10, 3, 18)      # the stock font: 8 px wide at x+5..x+13, 16 tall at y+4..y+20
 GLYPH_BOLD = (1, 18, 1, 22)       # the bold font flown since 2026-10-10: 14 px wide at x+3..x+16, 19 tall at y+2..y+20
+# The STATS screen Betaflight shows after a disarm, on the same 24 x 36 px grid: the value column starts at x 535,
+# TOTAL ARM (the armed time on the pack since boot, MM:SS) on the row at y 146, BLACKBOX (how full the flash is, in
+# %) on the row at y 326 (survey of 2026-10-11 on 10-02 007/010 and 10-07 007/011, the stock font; #9). Betaflight
+# centres the list, so the rows move with the number of stats on: from 10-02 011 MAX CURRENT and USED MAH are off
+# and the two rows sit at y 182 and 290. A layout carries every geometry seen; the one that reads wins. The
+# bold-font layouts have not been surveyed.
+STATS_SMALL = [{"x0": 535, "total_arm": 146, "blackbox": 326}, {"x0": 535, "total_arm": 182, "blackbox": 290}]
 LAYOUTS = {
     "otto": {"x0": 559, "pitch": 24, "rows": [362, 398], "names": ["top", "bottom"], "formats": ["dd:dd", "dd:dd"],
-             "glyph": GLYPH_SMALL, "cumulative": False},
+             "glyph": GLYPH_SMALL, "cumulative": False, "stats": STATS_SMALL},
     "air65f": {"x0": 559, "pitch": 24, "rows": [434], "names": ["total"], "formats": ["dd:dd"], "glyph": GLYPH_SMALL,
-               "cumulative": True},
+               "cumulative": True, "stats": STATS_SMALL},
     # same OSD one column further right (10-04 clips 005/006, after a settings change); same font, same templates
     "air65f-b": {"x0": 583, "pitch": 24, "rows": [434], "names": ["total"], "formats": ["dd:dd"], "glyph": GLYPH_SMALL,
-                 "cumulative": True, "templates": "air65f"},
+                 "cumulative": True, "templates": "air65f", "stats": STATS_SMALL},
     # 2026-10-10 clip 001: bold font, the arm timer with tenths (MM:SS.T) above the total
     "otto-bold": {"x0": 558, "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd.d", "dd:dd"],
                   "glyph": GLYPH_BOLD, "cumulative": False},
@@ -53,9 +61,19 @@ LAYOUTS = {
                      "glyph": GLYPH_BOLD, "cumulative": False, "arm_row": 1, "templates": "otto-bold"},
 }
 SHIFTS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]   # the analog picture jitters a pixel or so
+# The OSD shows a timer value about this long after the log reached it (OSD refresh, the analog link, the DVR):
+# measured on 10-10 001 frame by frame against a yaw snap and a roll (#4, automatch 0.17-0.27 s late with the
+# tenths timer), and consistent with the +0.2 s calibrated earlier on whole-second timers (where the floor of the
+# seconds adds +0.5 on average: 0.5 - 0.25 = 0.25).
+OSD_LAG = 0.25
+# The two clocks (DVR and FC) differ by a few tenths of a percent (#4: 0.3 %). A boot's line beyond this is pairs
+# that are not one boot in one clip (duration-only matches on the cumulative timer, #9), not a clock.
+MAX_CLOCK = 0.01
 OSD_VERSION = 8     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
 TEMPLATES = Path(__file__).parent / "static" / "osd-templates.json"
 BLANK_STD = 25.0                                   # glyph-box contrast below this = no digit
+STATS_SCORE = 0.6     # a STATS digit correlates 0.73-0.97 with its template; the % glyph and a frame without the
+                      # STATS screen 0.25-0.5
 
 
 def _x0(layout: str, row: int) -> int:
@@ -103,10 +121,15 @@ def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None 
 def _cell(buf: bytes, col: int, row: int, layout: str = "otto", dx: int = 0, dy: int = 0) -> list[float]:
     """Normalised pixel vector of one digit glyph (the layout's glyph box), shifted by (dx, dy); [] when blank."""
     L = LAYOUTS[layout]
-    gx, gw, gy, gh = L["glyph"]
     left, _, w, _ = _crop(layout)
-    cx, cy = (_x0(layout, row) - left) + col * L["pitch"] + gx + dx, (L["rows"][row] - L["rows"][0]) + gy + dy
-    if cx < 0 or cx + gw > w:
+    return _glyph(buf, w, (_x0(layout, row) - left) + col * L["pitch"] + dx, (L["rows"][row] - L["rows"][0]) + dy, L["glyph"])
+
+
+def _glyph(buf: bytes, w: int, x: int, y: int, glyph: tuple) -> list[float]:
+    """Normalised pixel vector of the glyph box of the cell at (x, y) in a gray image `w` wide; [] when blank."""
+    gx, gw, gy, gh = glyph
+    cx, cy = x + gx, y + gy
+    if cx < 0 or cx + gw > w or (cy + gh) * w > len(buf):
         return []
     v = [float(buf[(cy + j) * w + cx + i]) for j in range(gh) for i in range(gw)]
     m = sum(v) / len(v)
@@ -114,6 +137,12 @@ def _cell(buf: bytes, col: int, row: int, layout: str = "otto", dx: int = 0, dy:
     if sd < BLANK_STD:
         return []
     return [(a - m) / sd for a in v]
+
+
+def _templates_stamp() -> str:
+    """Size and mtime of the templates file: new templates (osd-learn) mean new readings, in every cache keyed on it."""
+    tst = TEMPLATES.stat() if TEMPLATES.exists() else None
+    return f"{tst.st_size}-{int(tst.st_mtime)}" if tst else "none"
 
 
 def _template_key(layout: str) -> str:
@@ -145,6 +174,74 @@ def _classify(buf: bytes, col: int, row: int, layout: str, templates: dict) -> t
     scores = sorted(((s, d) for d, s in best.items()), reverse=True)
     top, second = scores[0], scores[1] if len(scores) > 1 else (0.0, "")
     return top[1], top[0] - second[0]
+
+
+def _score_at(buf: bytes, w: int, x: int, y: int, glyph: tuple, templates: dict) -> tuple[str | None, float]:
+    """(digit, correlation) of the cell at (x, y), the best over the SHIFTS; (None, 0) when blank."""
+    best = (None, 0.0)
+    for dx, dy in SHIFTS:
+        feat = _glyph(buf, w, x + dx, y + dy, glyph)
+        for d, t in (templates.items() if feat else ()):
+            sc = sum(a * b for a, b in zip(feat, t)) / len(feat)
+            if sc > best[1]:
+                best = (d, sc)
+    return best
+
+
+def stats_value(cells: list[tuple[str | None, float]], kind: str) -> float | None:
+    """A STATS value from its cells' (digit, score): "mmss" = the four digits of MM:SS (seconds), "pct" = up to
+    three digits followed by the % glyph (which scores low). None when it does not read as one."""
+    ok = [d is not None and sc >= STATS_SCORE for d, sc in cells]
+    if kind == "mmss":
+        if not all(ok) or int(cells[0][0]) > 5 or int(cells[2][0]) > 5:     # MM:SS
+            return None
+        return int(cells[0][0] + cells[1][0]) * 60 + int(cells[2][0] + cells[3][0])
+    n = ok.index(False) if False in ok else len(ok)
+    if n == 0:
+        return None
+    v = int("".join(d for d, _ in cells[:n]))
+    return v if v <= 100 else None
+
+
+def read_stats_frame(buf: bytes, layout: str, templates: dict, w: int = 720) -> dict:
+    """{total_arm, blackbox} off a full 720x480 gray frame, from the first of the layout's STATS geometries that
+    reads both; both None when the frame shows no STATS screen."""
+    g = LAYOUTS[layout]["glyph"]
+    for S in LAYOUTS[layout].get("stats", []):
+        ta = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["total_arm"], g, templates) for c in (0, 1, 3, 4)], "mmss")
+        bb = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["blackbox"], g, templates) for c in (0, 1, 2)], "pct") if ta is not None else None
+        if ta is not None and bb is not None:
+            return {"total_arm": ta, "blackbox": bb}
+    return {"total_arm": None, "blackbox": None}
+
+
+def _gray_frame(path: Path, t: float) -> bytes:
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{max(t, 0):.3f}", "-i", str(path), "-frames:v", "1",
+           "-vf", "scale=720:480", "-pix_fmt", "gray", "-f", "rawvideo", "-"]
+    return subprocess.run(cmd, capture_output=True).stdout
+
+
+def read_stats(path: Path, runs: list[dict], layout: str) -> list[dict]:
+    """The STATS screen after each run's disarm: [{total_arm, blackbox}] per run (None where not read). Sampled at
+    1-4 s after the run's last reading (the screen stays up until the sticks move); the most common full reading
+    wins. Cached per clip and run end."""
+    if not LAYOUTS[layout].get("stats"):
+        return [{} for _ in runs]
+    st = path.stat()
+    cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.stats.v{OSD_VERSION}-{_templates_stamp()}.json")
+    cache = json.loads(cp.read_text()) if cp.exists() else {}
+    tpl = _load_templates(layout)
+    out = []
+    for v in runs:
+        key = f"{layout}@{v['end']}"
+        if key not in cache:
+            reads = [read_stats_frame(_gray_frame(path, v["end"] + dt), layout, tpl) for dt in (1.0, 2.0, 3.0, 4.0)]
+            full = [(r["total_arm"], r["blackbox"]) for r in reads if r["total_arm"] is not None and r["blackbox"] is not None]
+            ta, bb = max(full, key=full.count) if full else (None, None)
+            cache[key] = {"total_arm": ta, "blackbox": bb}
+        out.append(cache[key])
+    cp.write_text(json.dumps(cache))
+    return out
 
 
 def _value(digits: list) -> float | None:
@@ -205,9 +302,7 @@ def detect_layout(path: Path, fps: float = 0.5) -> str:
 def read_timers(path: Path, fps: float = 2.0, layout: str | None = None) -> dict:
     """Read the timers through the clip: {layout, rows: [{t, top, bottom, conf}]} (cached per clip)."""
     st = path.stat()
-    tst = TEMPLATES.stat() if TEMPLATES.exists() else None     # new templates (osd-learn) mean new readings
-    tkey = f"{tst.st_size}-{int(tst.st_mtime)}" if tst else "none"
-    cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.{fps:g}.v{OSD_VERSION}-{tkey}.json")
+    cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.{fps:g}.v{OSD_VERSION}-{_templates_stamp()}.json")
     if cp.exists():
         return json.loads(cp.read_text())
     layout = layout or detect_layout(path)
@@ -264,10 +359,10 @@ def arms_from_timers(rows: list[dict], fps: float = 2.0, min_readings: int = 3) 
         if len(c) < min_readings or (max(vs) == min(vs) and c[-1][1] - c[0][1] > 1.2):
             continue
         keys = sorted(p[0] for p in c)
-        # the timer shows floor(seconds): the implied start sits ~0.2 s early (calibrated on 10-09 008 against
-        # impact-refined offsets); with tenths on the timer the bias is a tenth of that
+        # the timer shows the floor of its last digit (half a unit early on average), and the picture shows it
+        # OSD_LAG after the log did
         tenths = any(p[2] != int(p[2]) for p in c)
-        start = keys[len(keys) // 2] + (0.02 if tenths else 0.2)
+        start = keys[len(keys) // 2] + (0.05 if tenths else 0.5) - OSD_LAG
         vmax = max(vs)
         tb = [p[3] - p[2] for p in c if p[3] is not None]
         arms.append({"start": round(start, 2), "end": round(c[-1][1], 2), "length": round(vmax + (0.05 if tenths else 0.5), 2), "timer_max": vmax,
@@ -290,7 +385,7 @@ def arms_from_cumulative(rows: list[dict], min_readings: int = 3) -> list[dict]:
         keys = sorted(p[0] for p in c)
         key = keys[len(keys) // 2]
         t0 = min(p[1] for p in c)
-        arms.append({"start": round(key + v0 + 0.2, 2), "end": round(max(p[1] for p in c), 2), "length": round(v1 - v0 + 0.5, 2),
+        arms.append({"start": round(key + v0 + 0.5 - OSD_LAG, 2), "end": round(max(p[1] for p in c), 2), "length": round(v1 - v0 + 0.5, 2),
                      "timer_max": v1 - v0, "total_before": v0, "readings": len(c),
                      # the clip starts inside this arm: its length is only what the clip shows, the start is unknown
                      "partial_start": t0 < 1.5})
@@ -309,6 +404,12 @@ def _elapsed(v: dict, l: dict) -> float | None:
     if v.get("partial_start") and v.get("total_before") is not None and l.get("cum_before") is not None:
         return v["total_before"] - l["cum_before"]
     return None
+
+
+def _may(v: dict, l: dict) -> bool:
+    """Whether run v may be log arm l at all: not after the flash filled (no_log), and the run at which it filled
+    only the log's cut-off last arm (only_arm)."""
+    return not v.get("no_log") and v.get("only_arm", l["index"]) == l["index"]
 
 
 def align(video_arms: list[dict], log_arms: list[dict], tol: float = 2.0, w_total: float = 0.3) -> list[tuple[int, int]]:
@@ -335,7 +436,7 @@ def align(video_arms: list[dict], log_arms: list[dict], tol: float = 2.0, w_tota
                     d = abs(v["length"] - l["length"])
                     if v.get("total_before") is not None and l.get("cum_before") is not None:
                         d += w_total * abs(v["total_before"] - l["cum_before"])
-                if d <= 2 * tol and c + d < cost[i + 1][j + 1]:
+                if d <= 2 * tol and _may(v, l) and c + d < cost[i + 1][j + 1]:
                     cost[i + 1][j + 1], back[i + 1][j + 1] = c + d, ("m", i, j)
             if i < n and c + tol < cost[i + 1][j]:
                 cost[i + 1][j], back[i + 1][j] = c + tol, ("v", i, j)
@@ -375,24 +476,53 @@ def consistent_pairs(video_arms: list[dict], log_arms: list[dict], pairs: list[t
     return kept
 
 
-def place_by_boot(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[int, int]], tol: float = 2.0) -> list[tuple[int, int]]:
-    """Second pass: the pairs give each boot's offset (median of video start - uptime start), which puts every
-    other arm of the boot at a known place in the video. An unmatched run whose start sits within `tol` of exactly
-    one unmatched arm's place is that arm, however long the run reads: a run's length is only what the timer
-    showed, and the end of an arm is often unreadable (a crash, a broken-up picture, the STATS screen)."""
-    offs: dict = {}
+def fit_boots(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[int, int]]) -> dict:
+    """Per boot, video time as a line in the FC uptime: video = a * uptime + b, from the pairs. The two clocks
+    differ by a few tenths of a percent (#4: about 0.3 % on the Cobra SD against this FC), half a second over a
+    four-minute clip, so one offset per boot is not enough. Least squares when three or more pairs span a minute;
+    the median offset with a = 1 otherwise. {boot: {a, b, n}}, with rejected=True when no clock explains the pairs
+    (a line beyond MAX_CLOCK, or offsets further apart than the timer jitter and MAX_CLOCK allow): such a fit
+    places and derives nothing."""
+    pts: dict = {}
     for vi, li in pairs:
         l = log_arms[li]
         if l.get("boot") is not None and l.get("uptime_start") is not None:
-            offs.setdefault(l["boot"], []).append(video_arms[vi]["start"] - l["uptime_start"])
-    boot_off = {b: sorted(o)[len(o) // 2] for b, o in offs.items()}
+            pts.setdefault(l["boot"], []).append((l["uptime_start"], video_arms[vi]["start"]))
+    out = {}
+    for b, xy in pts.items():
+        xs, ys = [x for x, _ in xy], [y for _, y in xy]
+        if len(xy) >= 3 and max(xs) - min(xs) >= 60:
+            mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+            sxx = sum((x - mx) ** 2 for x in xs)
+            a = sum((x - mx) * (y - my) for x, y in xy) / sxx
+            out[b] = {"a": round(a, 5), "b": round(my - a * mx, 3), "n": len(xy)}
+            if abs(a - 1) > MAX_CLOCK:
+                out[b]["rejected"] = True
+        else:
+            offs = sorted(y - x for x, y in xy)
+            out[b] = {"a": 1.0, "b": round(offs[len(offs) // 2], 3), "n": len(xy)}
+            if offs[-1] - offs[0] > 2.0 + MAX_CLOCK * (max(xs) - min(xs)):     # whole-second timers jitter by a second
+                out[b]["rejected"] = True
+    return out
+
+
+def _at(fit: dict, uptime: float) -> float:
+    return fit["a"] * uptime + fit["b"]
+
+
+def place_by_boot(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[int, int]], tol: float = 2.0) -> list[tuple[int, int]]:
+    """Second pass: the pairs give each boot's line (fit_boots), which puts every other arm of the boot at a known
+    place in the video. An unmatched run whose start sits within `tol` of exactly one unmatched arm's place is that
+    arm, however long the run reads: a run's length is only what the timer showed, and the end of an arm is often
+    unreadable (a crash, a broken-up picture, the STATS screen)."""
+    fits = {b: f for b, f in fit_boots(video_arms, log_arms, pairs).items() if not f.get("rejected")}
     used_v, used_l = {vi for vi, _ in pairs}, {li for _, li in pairs}
     out = list(pairs)
     for vi, v in enumerate(video_arms):
         if vi in used_v or v.get("partial_start"):
             continue
-        hits = [li for li, l in enumerate(log_arms) if li not in used_l and l.get("boot") in boot_off
-                and abs(v["start"] - (boot_off[l["boot"]] + l["uptime_start"])) <= tol and v["length"] <= l["length"] + tol]
+        hits = [li for li, l in enumerate(log_arms) if li not in used_l and l.get("boot") in fits and _may(v, l)
+                and abs(v["start"] - _at(fits[l["boot"]], l["uptime_start"])) <= tol and v["length"] <= l["length"] + tol]
         if len(hits) == 1:
             out.append((vi, hits[0]))
             used_v.add(vi); used_l.add(hits[0])
@@ -400,39 +530,175 @@ def place_by_boot(video_arms: list[dict], log_arms: list[dict], pairs: list[tupl
     return out
 
 
-def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, overwrite: bool = False) -> dict:
+def derive_unread(log_arms: list[dict], pairs: list[tuple[int, int]], fits: dict, duration: float | None) -> list[tuple[int, float]]:
+    """Arms of a fitted boot that no run was read for (too short for the reader, or unreadable), placed by the
+    boot's line when they fall inside the clip: [(log index, video start)]. Marked as derived in the match note."""
+    used_l = {li for _, li in pairs}
+    out = []
+    for li, l in enumerate(log_arms):
+        if li in used_l or l.get("boot") not in fits or l.get("uptime_start") is None:
+            continue
+        f = fits[l["boot"]]
+        if f["n"] < 2 or f.get("rejected"):
+            continue
+        start = _at(f, l["uptime_start"])
+        if start < -0.5 or (duration is not None and start + l["length"] > duration + 0.5):
+            continue
+        out.append((li, round(start, 2)))
+    return out
+
+
+def in_order(video_arms: list[dict], log_arms: list[dict], pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The pairs that keep a clip's arms in the log's order: a clip is one stretch of time, so a later run is a
+    later arm. The alignment preserves order, but placing by a boot's line and partial runs need not. Keeps the
+    order-preserving subset with the most readings (a longest increasing subsequence, weighted)."""
+    ps = sorted(pairs, key=lambda p: (video_arms[p[0]]["start"], p[1]))
+    best, prev = [], []
+    for k, (vi, li) in enumerate(ps):
+        w = video_arms[vi].get("readings", 1)
+        cands = [(best[j], j) for j in range(k) if log_arms[ps[j][1]]["index"] < log_arms[li]["index"]]
+        b, j = max(cands, default=(0, None))
+        best.append(b + w)
+        prev.append(j)
+    if not ps:
+        return []
+    k = max(range(len(ps)), key=lambda i: best[i])
+    out = []
+    while k is not None:
+        out.append(ps[k])
+        k = prev[k]
+    return sorted(out)
+
+
+def clip_order(name: str | None) -> str | None:
+    """A clip's place in time: its readable name `<date>_NNN` sorts chronologically as a string. Anything else (a
+    clip without a name falls back to its file name, an id) has no known place: None, and the order rules skip it."""
+    return name if name and re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d+", name) else None
+
+
+def arm_window(key: str | None, others: list[tuple[str, int]]) -> tuple[int | None, int | None]:
+    """Clips are chronological (their readable names sort by date and number) and so are a log's arms: a clip's
+    arms come after every arm matched to an earlier clip and before every arm matched to a later one. `others`:
+    (clip name, arm) of the log's matches in the other clips. (lo, hi): the arms must lie strictly between. A clip
+    or a match without a place in time (clip_order) bounds nothing."""
+    key = clip_order(key)
+    if key is None:
+        return None, None
+    lo = max((a for k, a in others if clip_order(k) and k < key), default=None)
+    hi = min((a for k, a in others if clip_order(k) and k > key), default=None)
+    return lo, hi
+
+
+def full_point(s: dict, name: str, after: str | None, fps: float, here: tuple) -> dict | None:
+    """Where a log that ended with the flash full ends: the first run, in the session's clips after `after` (the last
+    clip holding arms of the log) up to this one (`here` = (read_timers result, runs, path)), whose STATS screen
+    shows BLACKBOX 100 %. {clip, run, at, total_arm} (at = the run's start), or None.
+
+    A 100 % only counts when it is this fill: after a clip holding arms of the log, or after a reading below 100 %.
+    A flash is erased between fills (10-07: 001 shows the previous fill at 100 %, the erase is in 003, this log
+    starts after it), and an erase leaves no trace in the footage the reader sees."""
+    if clip_order(name) is None:
+        return None
+    clips = [(clip_order(v.get("name")), v) for v in s["videos"] if v.get("duration")]
+    clips = sorted((k, v) for k, v in clips if k is not None and k < name and (after is None or k > after))
+    seen_below = after is not None
+    for key, v in clips + [(name, None)]:
+        try:
+            if v is None:
+                rt, runs, path = here
+            else:
+                path = sessions.clip_path(s["session"], v["file"])
+                rt = read_timers(path, fps)
+                runs = video_arms(rt, fps)
+            stats = read_stats(path, runs, rt["layout"])
+        except Exception:  # noqa: BLE001  (a clip gone or unreadable says nothing)
+            continue
+        for k, st in enumerate(stats):
+            bb = st.get("blackbox")
+            if bb is not None and bb < 100:
+                seen_below = True
+            elif bb == 100 and seen_below:
+                return {"clip": key, "run": k, "at": runs[k]["start"], "total_arm": st.get("total_arm")}
+    return None
+
+
+def _log_matches(session: dict, video: str, pending: list[dict]) -> dict[str, list[tuple[str, int]]]:
+    """{bbl: [(clip name, arm)]} of every match in every session except this clip's own, plus the proposals of
+    clips earlier in this run (pending: [{session, video, name, bbl, arm}]). A log can be attached to several
+    sessions (one flash dump over several days), so an arm taken in another session is taken here too."""
+    out: dict[str, list[tuple[str, int]]] = {}
+    for row in sessions.all_sessions():
+        if not row.get("matches"):
+            continue
+        s = session if row["session"] == session["session"] else sessions.load(row["session"])
+        names = {v["file"]: v.get("name") or v["file"] for v in s["videos"]}
+        for m in s["matches"]:
+            if s["session"] == session["session"] and m["video"] == video:
+                continue
+            out.setdefault(m["bbl"], []).append((names.get(m["video"], m["video"]), m["arm"]))
+    for m in pending:
+        if not (m["session"] == session["session"] and m["video"] == video):
+            out.setdefault(m["bbl"], []).append((m["name"], m["arm"]))
+    return out
+
+
+def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, overwrite: bool = False,
+              pending: list[dict] | None = None) -> dict:
     """Propose (and with write=True record) matches for one clip from its OSD timers and the session's logs.
-    Existing matches of the clip are kept unless overwrite=True (a hand-refined offset beats an OSD one)."""
+    Existing matches of the clip are kept unless overwrite=True (a hand-refined offset beats an OSD one).
+    `pending`: proposals of clips before this one in the same run (not written), taken like written ones."""
     s = sessions.load(session)
     path = sessions.clip_path(session, clip)
+    name = next((v.get("name") or v["file"] for v in s["videos"] if v["file"] == path.name), path.name)
     rt = read_timers(path, fps)
     rows = rt["rows"]
     varms = video_arms(rt, fps)
-    # arms already matched to another clip of the session are taken: an arm is in one clip
-    taken = {(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] != path.name}
+    # arms matched to another clip (of any session) are taken: an arm is in one clip; and the clips before and
+    # after this one bound its arms (#9: duration-only matches on the cumulative timer went anywhere in the log)
+    others = _log_matches(s, path.name, pending or [])
+    taken = {(b, a) for b, ms in others.items() for _, a in ms}
+    windows, fulls = {}, {}
     # a clip comes from one flash dump, so align against each log separately and keep the best alignment
     best = None
     for b in s["blackbox"]:
         idx = blackbox.index_bbl(b)
+        lo, hi = windows[idx["file"]] = arm_window(name, others.get(idx["file"], []))
+        # a log whose last arm is cut off ended with the flash full (#9): once a STATS screen shows BLACKBOX 100 %,
+        # no later run is in it, and the run at which it shows may only be that last arm
+        vs = varms
+        if idx["arms"] and idx["arms"][-1].get("truncated"):
+            last = idx["arms"][-1]["index"]
+            before = max((k for k, a in others.get(idx["file"], []) if clip_order(k) and clip_order(name) and k < name), default=None)
+            f = full_point(s, name, before, fps, (rt, varms, path))
+            if f:
+                fulls[idx["file"]] = f
+                if f["clip"] != name:
+                    vs = [dict(v, no_log=True) for v in varms]
+                else:
+                    vs = [dict(v, no_log=True) if v["start"] > f["at"] else dict(v, only_arm=last) if k == f["run"] else v
+                          for k, v in enumerate(varms)]
         boot_of = {i: k for k, bt in enumerate(idx.get("boots", [])) for i in bt["arms"]}
         cum, logs = {}, []
         for a in idx["arms"]:
             if a.get("frames") and a.get("motors_spun", True):
                 k = boot_of.get(a["index"])
-                if (idx["file"], a["index"]) not in taken:
+                if (idx["file"], a["index"]) not in taken and (lo is None or a["index"] > lo) and (hi is None or a["index"] < hi):
                     logs.append({"bbl": idx["file"], "index": a["index"], "length": a["length"], "vbat_start": a["vbat_start"],
                                  "cum_before": round(cum.get(k, 0.0), 1) if k is not None else None,
                                  "boot": k, "uptime_start": a.get("uptime_start")})
                 if k is not None:
                     cum[k] = cum.get(k, 0.0) + a["length"]
-        pairs = consistent_pairs(varms, logs, align(varms, logs))
-        pairs = place_by_boot(varms, logs, pairs)
+        pairs = consistent_pairs(vs, logs, align(vs, logs))
+        pairs = in_order(vs, logs, place_by_boot(vs, logs, pairs))
         # ties (a run the clip starts inside fits an arm of several logs) go to the log the session already uses
         in_use = sum(1 for m in s["matches"] if m["bbl"] == idx["file"])
         score = (len(pairs), -round(sum(abs(varms[vi]["length"] - logs[li]["length"]) for vi, li in pairs), 1), in_use)
         if best is None or score > best[0]:
-            best = (score, pairs, logs)
-    _, pairs, logs = best if best else ((0, 0), [], [])
+            best = (score, pairs, logs, idx["file"])
+    _, pairs, logs, bbl = best if best else ((0, 0), [], [], None)
+    full = fulls.get(bbl)
+    fits = fit_boots(varms, logs, pairs)
+    duration = next((v.get("duration") for v in s["videos"] if v["file"] == path.name), None)
     matches = []
     for vi, li in pairs:
         v, l = varms[vi], logs[li]
@@ -442,6 +708,18 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
                         "video_start": v["start"], "video_length": v["length"], "log_length": l["length"],
                         "note": f"osd automatch: timer run {v['length']} s vs log {l['length']} s, total before {v['total_before']} vs {l['cum_before']} ({v['readings']} readings)"
                                 + ("" if abs(v["length"] - l["length"]) <= 2 else "; placed by the boot's offset, the run reads shorter than the arm")})
+    real = [(varms[vi]["start"], logs[li]["index"]) for vi, li in pairs]
+    for li, start in derive_unread(logs, pairs, fits, duration):
+        l = logs[li]
+        if any((t < start) != (i < l["index"]) for t, i in real):     # out of order with what was read
+            continue
+        if full and (full["clip"] != name or start > full["at"]):     # placed after the flash filled
+            continue
+        f = fits[l["boot"]]
+        matches.append({"video": path.name, "bbl": l["bbl"], "arm": l["index"], "offset": start, "video_start": start,
+                        "video_length": None, "log_length": l["length"], "derived": True,
+                        "note": f"derived from the boot's fit (video = {f['a']:.5f} x uptime + {f['b']:.2f}, {f['n']} arms read), the arm's timer was not read"})
+    matches.sort(key=lambda m: m["offset"])
     unmatched = [v for k, v in enumerate(varms) if k not in {vi for vi, _ in pairs}]
     if write:
         have = {(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] == path.name}
@@ -449,7 +727,8 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
             if overwrite or (m["bbl"], m["arm"]) not in have:
                 sessions.set_match(session, m["video"], m["bbl"], m["arm"], m["offset"], m["note"])
                 m["written"] = True
-    return {"clip": path.name, "layout": rt["layout"], "readings": len(rows),
+    return {"clip": path.name, "name": name, "layout": rt["layout"], "readings": len(rows), "boot_fits": fits,
+            "bbl": bbl, "arm_window": windows.get(bbl, (None, None)), "flash_full": full,
             "readable": sum(1 for r in rows if (r["top"] if not LAYOUTS[rt["layout"]]["cumulative"] else r["bottom"]) is not None),
             "video_arms": varms, "matches": matches, "unmatched_video_arms": unmatched}
 

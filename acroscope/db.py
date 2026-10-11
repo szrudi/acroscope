@@ -97,6 +97,19 @@ class Db:
                 self.c.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
         if "result" not in {r["name"] for r in self.c.execute("PRAGMA table_info(batches)")}:
             self.c.execute("ALTER TABLE batches ADD COLUMN result TEXT")
+        self._backfill_batch_results()
+
+    def _backfill_batch_results(self) -> None:
+        """A done batch from before results were recorded: its clips from batch_clips, its logs those attached to
+        its session whose download stamp (YYYYmmdd_HHMMSS in the file name) is the batch's own stamp."""
+        for b in self.c.execute("SELECT id, session FROM batches WHERE status = 'done' AND result IS NULL").fetchall():
+            clips = [r["name"] or r["file"] for r in self.c.execute(
+                "SELECT v.name, v.file FROM batch_clips bc JOIN videos v ON v.session = bc.session AND v.file = bc.file "
+                "WHERE bc.batch = ? ORDER BY v.name", (b["id"],))]
+            stamp = b["id"][:15].replace("-", "_")          # 20261010-203503-564331 -> 20261010_203503
+            logs = [r["file"] for r in self.c.execute("SELECT file FROM blackbox WHERE session = ? AND file LIKE ?",
+                                                      (b["session"], f"%_{stamp}_%"))] if b["session"] else []
+            self.c.execute("UPDATE batches SET result = ? WHERE id = ?", (json.dumps({"clips": clips, "logs": logs}), b["id"]))
         # the readable name of a clip imported before ids: its file name without the extension
         rows = self.c.execute("SELECT session, file FROM videos WHERE name IS NULL OR name = '' OR name LIKE '%.'").fetchall()
         self.c.executemany("UPDATE videos SET name = ? WHERE session = ? AND file = ?",

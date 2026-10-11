@@ -124,5 +124,18 @@ class EditTest(unittest.TestCase):
             self.assertEqual(self.db.c.execute(f"SELECT count(*) FROM {t} WHERE session = ?", (B,)).fetchone()[0], 0, t)
 
 
+class BatchBackfillTest(unittest.TestCase):
+    def test_result_backfilled_from_clips_and_log_stamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Db(Path(tmp) / "t.db")
+            S = "2026-10-10-unsorted"
+            db.upsert_video(S, "cabc.mp4", name="2026-10-10_006")
+            db.attach(S, "BTFL_BLACKBOX_LOG_OTTO_20261010_203503_BETAFPVG473_V2.bbl")
+            db.set_batch("20261010-203503-564331", status="done", session=S)
+            db.add_batch_clip("20261010-203503-564331", "VID00001.mov", "cabc.mp4", S)
+            db2 = Db(Path(tmp) / "t.db")                                   # a reopen runs the migration
+            self.assertEqual(db2.batches()[0]["result"], {"clips": ["2026-10-10_006"], "logs": ["BTFL_BLACKBOX_LOG_OTTO_20261010_203503_BETAFPVG473_V2.bbl"]})
+
+
 if __name__ == "__main__":
     unittest.main()
