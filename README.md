@@ -45,9 +45,11 @@ start, every 5 minutes, and on `refresh`): new session folders and clips are reg
 is marked `missing_since` and keeps its matches and moments until an explicit `purge`. A folder that cannot be
 listed, or lists no clip at all, marks nothing, so an unmounted or half-synced Drive never looks like a deletion.
 
-A CLI on another machine does not open the database: set `ACROSCOPE_URL=http://<server>:8070` and it uses the
-server's API for everything in the database, while metrics, events and frames still run locally against that
-machine's own mount of the data dir. The pre-database `videos/<session>/session.json` files are imported once by
+A CLI on another machine does not open the database: set `ACROSCOPE_URL=http://<server>:8070` (or put it in
+`~/.config/acroscope/url`) and it uses the server's API for everything in the database, and the commands that need
+the clips, the logs or the cache (`arms`, `decode`, `metrics`, `events`, `frame`, `sheet`, `osd`, `automatch`,
+`match`, `attach`, `detach`, `tag`, `sessions`, `inbox`) run on the server; frames and sheets come back as files
+into the local cache. Nothing on that machine needs the data dir. The pre-database `videos/<session>/session.json` files are imported once by
 `acroscope import-json` (a server with an empty database does it at start) and not read afterwards.
 
 The cache (`ACROSCOPE_CACHE`, default `~/.cache/acroscope`) holds decoded arms (`arms/<bbl>/arm-NN.bin` plus

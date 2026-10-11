@@ -1,8 +1,8 @@
 """A client of a running acroscope server: the same methods as db.Db, over its JSON API.
 
-Used by the CLI when ACROSCOPE_URL is set (the CLI on joan, the database on the LXC). Only the store operations go
-over the wire; metrics, events, frames and the OSD reader still run locally against the mounted data dir and the
-local cache.
+Used by the CLI when ACROSCOPE_URL (or ~/.config/acroscope/url) names a server: the store operations map to the
+server's endpoints, and the commands that need the clips, the logs or the cache go through cli() (POST /api/cli)
+with frames and sheets fetched back through fetch() (GET /api/file). Nothing on the client machine needs the data.
 """
 import json
 import urllib.error
