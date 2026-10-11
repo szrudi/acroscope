@@ -12,7 +12,7 @@
 <style>
   :root { --bg:#14161a; --panel:#1c1f25; --line:#2b3039; --fg:#e6e8ec; --dim:#9aa3b2; --acc:#f5a524; --acc2:#4cc2ff; --bad:#ff6b6b; --ok:#5fd68b; }
   * { box-sizing:border-box }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; height:100vh; display:grid; grid-template-rows:44px 1fr; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; height:100vh; height:100dvh; display:grid; grid-template-rows:44px 1fr; }
   header { display:flex; align-items:center; gap:14px; padding:0 14px; border-bottom:1px solid var(--line); background:var(--panel) }
   header h1 { font-size:16px; margin:0; color:var(--acc); letter-spacing:.5px }
   header select { background:var(--bg); color:var(--fg); border:1px solid var(--line); padding:4px 8px; border-radius:6px; font-size:14px }
@@ -110,7 +110,10 @@
   body.phone[data-tab=moments] .right, body.phone[data-tab=sugg] .right { display:flex }
   body.phone .pane { display:none } body.phone[data-tab=moments] #paneMoments, body.phone[data-tab=sugg] #paneSugg { display:flex; flex:1 }
   body.phone .pane .list { display:block }
+  body.phone { grid-template-rows:auto 1fr }   /* the header may wrap; the viewport unit above keeps the tab bar on screen under the browser's bar */
   body.phone header { height:auto; min-height:44px; flex-wrap:wrap; padding:6px 10px; gap:8px } body.phone header select { flex:1; min-width:0; font-size:16px }
+  body.phone .tagbar .mgr { margin-left:0 } body.phone .tagbar .cat { margin-left:4px }   /* no push to the right edge: in a wrapping row that is a row of its own */
+  body.phone video { max-height:34vh }
   body.phone header #status { width:100%; font-size:12px } body.phone .readout { font-size:12px; gap:10px; flex-wrap:wrap }
   body.phone .snote { display:none } body.phone #editor { position:fixed; left:0; right:0; bottom:46px; max-height:60vh; overflow:auto; z-index:4; border-radius:8px 8px 0 0 }
   @media (pointer: coarse) {
