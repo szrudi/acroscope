@@ -32,7 +32,8 @@ On a light background the mark stays amber (no inversion); the wordmark becomes 
 | `banner.svg` | 1200x400 README banner: dark bg, mark, wordmark, tagline, a timeline strip with moments, throttle trace and playhead. |
 | `favicon-32.png`, `favicon-16.png` | raster favicons from `favicon.svg`, transparent. |
 | `apple-touch-icon.png` | 180x180, mark at 140 px centred on `#14161a`, opaque. |
-| `icon-512.png` | the mark at 512, transparent (PWA manifest, app stores, social previews on dark). |
+| `icon-192.png`, `icon-512.png` | the mark at 192 and 512, transparent (PWA manifest: Chrome's install check wants both sizes; app stores, social previews on dark). |
+| `icon-maskable-512.png` | the mark at 300 px centred on `#14161a`, opaque: the manifest's maskable icon, inside the safe circle (80 %) Android crops launcher icons to. |
 | `banner.png` | the banner rendered at 1200x400. |
 
 ## Regenerating the PNGs
@@ -44,7 +45,9 @@ every stroked path (it defaults the root to 0); the SVGs carry it, keep it when 
 magick -background none -density 384 favicon.svg -resize 32x32 favicon-32.png
 magick -background none -density 384 favicon.svg -resize 16x16 favicon-16.png
 magick -background "#14161a" -density 384 icon.svg -resize 140x140 -gravity center -extent 180x180 -alpha off apple-touch-icon.png
+magick -background none -density 384 icon.svg -resize 192x192 icon-192.png
 magick -background none -density 384 icon.svg -resize 512x512 icon-512.png
+magick -background "#14161a" -density 384 icon.svg -resize 300x300 -gravity center -extent 512x512 -alpha off icon-maskable-512.png
 magick -density 96 banner.svg banner.png
 ```
 
