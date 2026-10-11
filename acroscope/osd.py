@@ -589,31 +589,36 @@ def arm_window(key: str | None, others: list[tuple[str, int]]) -> tuple[int | No
     return lo, hi
 
 
-def flash_full(rt: dict, runs: list[dict], path: Path, name: str) -> dict | None:
-    """The first run whose STATS screen shows BLACKBOX 100 %: {clip, run, at} (at = the run's start), or None."""
-    for k, st in enumerate(read_stats(path, runs, rt["layout"])):
-        if st.get("blackbox") == 100:
-            return {"clip": name, "run": k, "at": runs[k]["start"], "total_arm": st.get("total_arm")}
-    return None
+def full_point(s: dict, name: str, after: str | None, fps: float, here: tuple) -> dict | None:
+    """Where a log that ended with the flash full ends: the first run, in the session's clips after `after` (the last
+    clip holding arms of the log) up to this one (`here` = (read_timers result, runs, path)), whose STATS screen
+    shows BLACKBOX 100 %. {clip, run, at, total_arm} (at = the run's start), or None.
 
-
-def _full_before(s: dict, name: str, after: str | None, fps: float) -> dict | None:
-    """The first clip of the session between `after` (the last clip holding arms of the log) and this one whose
-    STATS screen shows the flash full. Their readings are cached from earlier runs, mostly."""
+    A 100 % only counts when it is this fill: after a clip holding arms of the log, or after a reading below 100 %.
+    A flash is erased between fills (10-07: 001 shows the previous fill at 100 %, the erase is in 003, this log
+    starts after it), and an erase leaves no trace in the footage the reader sees."""
     if clip_order(name) is None:
         return None
-    for v in s["videos"]:
-        key = clip_order(v.get("name"))
-        if key is None or key >= name or (after is not None and key <= after) or not v.get("duration"):
-            continue
+    clips = [(clip_order(v.get("name")), v) for v in s["videos"] if v.get("duration")]
+    clips = sorted((k, v) for k, v in clips if k is not None and k < name and (after is None or k > after))
+    seen_below = after is not None
+    for key, v in clips + [(name, None)]:
         try:
-            path = sessions.clip_path(s["session"], v["file"])
-            rt = read_timers(path, fps)
-            f = flash_full(rt, video_arms(rt, fps), path, key)
+            if v is None:
+                rt, runs, path = here
+            else:
+                path = sessions.clip_path(s["session"], v["file"])
+                rt = read_timers(path, fps)
+                runs = video_arms(rt, fps)
+            stats = read_stats(path, runs, rt["layout"])
         except Exception:  # noqa: BLE001  (a clip gone or unreadable says nothing)
             continue
-        if f:
-            return f
+        for k, st in enumerate(stats):
+            bb = st.get("blackbox")
+            if bb is not None and bb < 100:
+                seen_below = True
+            elif bb == 100 and seen_below:
+                return {"clip": key, "run": k, "at": runs[k]["start"], "total_arm": st.get("total_arm")}
     return None
 
 
@@ -653,7 +658,6 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
     others = _log_matches(s, path.name, pending or [])
     taken = {(b, a) for b, ms in others.items() for _, a in ms}
     windows, fulls = {}, {}
-    full_here = None
     # a clip comes from one flash dump, so align against each log separately and keep the best alignment
     best = None
     for b in s["blackbox"]:
@@ -665,11 +669,7 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
         if idx["arms"] and idx["arms"][-1].get("truncated"):
             last = idx["arms"][-1]["index"]
             before = max((k for k, a in others.get(idx["file"], []) if clip_order(k) and clip_order(name) and k < name), default=None)
-            f = _full_before(s, name, before, fps)
-            if f is None:
-                if full_here is None:
-                    full_here = flash_full(rt, varms, path, name) or {}
-                f = full_here or None
+            f = full_point(s, name, before, fps, (rt, varms, path))
             if f:
                 fulls[idx["file"]] = f
                 if f["clip"] != name:
