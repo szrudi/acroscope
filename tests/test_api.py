@@ -151,6 +151,10 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, 503)
         (root / "data" / "blackbox" / "z4.bbl").unlink()                           # a log that is gone: nothing, not a 404
         self.assertEqual(get("events", "2026-10-06_004.mp4"), [])
+        with self.assertRaises(urllib.error.HTTPError) as cm:                   # metrics: a 404, not "try again" forever
+            get("metrics", "2026-10-06_004.mp4", "&from=0&to=1")
+        self.assertEqual(cm.exception.code, 404)
+        self.assertIn("z4.bbl", json.loads(cm.exception.read())["error"])
         for _ in range(50):                                                        # the child decode of z1 lands in the cache
             if (root / "cache" / "arms" / "z1" / "arms.json").exists():
                 break

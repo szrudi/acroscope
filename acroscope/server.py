@@ -120,16 +120,20 @@ def _decode_async(bbl: str):
     _background(f"decode:{bbl}", lambda: _cli("arms", bbl))
 
 
-def _indexed(bbl: str) -> bool:
-    """True when the log's arms are in the cache. Else start the decode in a child and answer False: a request
-    thread must never decode (30 s with the GIL held freezes every other request)."""
+def _log_state(bbl: str) -> str:
+    """"ready" when the log's arms are in the cache, "gone" when the log file is, else "decoding": the decode starts
+    in a child, as a request thread must never decode (30 s with the GIL held freezes every other request)."""
     try:
         if blackbox.index_bbl(bbl, cached_only=True) is not None:
-            return True
-    except FileNotFoundError:            # the log file is gone: nothing to show, nothing to decode
-        return False
+            return "ready"
+    except FileNotFoundError:            # nothing to show, nothing to decode
+        return "gone"
     _decode_async(bbl)
-    return False
+    return "decoding"
+
+
+def _indexed(bbl: str) -> bool:
+    return _log_state(bbl) == "ready"
 
 
 def _probe_async(session: str):
@@ -373,8 +377,9 @@ class Handler(BaseHTTPRequestHandler):
                 if parts[3] == "metrics":
                     s = sessions.load(name)
                     t0, t1 = float(q["from"]), float(q["to"])
-                    if not all(_indexed(m["bbl"]) for m in s["matches"] if m["video"] == q.get("video")):
-                        return self._json({"error": "log not decoded yet, try again shortly"}, 503)   # before match_for measures the arms
+                    # before match_for measures the arms; a gone log measures as no length and load_arm 404s below
+                    if any(_log_state(m["bbl"]) == "decoding" for m in s["matches"] if m["video"] == q.get("video")):
+                        return self._json({"error": "log not decoded yet, try again shortly"}, 503)
                     m = sessions.match_for(s, q["video"], t0)
                     if not m:
                         return self._json({"error": "no match"}, 404)
