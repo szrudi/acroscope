@@ -22,6 +22,7 @@ from . import blackbox, events as ev, ingest, metrics, sessions, video
 from .config import CACHE_DIR, VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 _lock = threading.Lock()
 _busy: set[str] = set()          # blackbox files being decoded / sessions being probed right now
 _busy_lock = threading.Lock()
