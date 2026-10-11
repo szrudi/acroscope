@@ -584,8 +584,7 @@ document.querySelectorAll('#mtabs span').forEach(x => x.onclick = () => showMTab
 phoneQuery.addEventListener('change', setPhone);
 setPhone();
 // the header on the phone: a drag on the area outside the tabs (video, strip, controls, readout, tag bar) hides it
-// on the way up and shows it on the way down; inside a tab, only pulling down at the very top brings it back,
-// scrolling the tab's content never hides it
+// on the way up and shows it on the way down; nothing inside a tab moves it
 {
   const hide = () => document.body.classList.add('hide-head'), show = () => document.body.classList.remove('hide-head');
   let y0 = null, fired = false;
@@ -596,14 +595,6 @@ setPhone();
     const dy = e.touches[0].clientY - y0;
     if (dy < -30) { hide(); fired = true; } else if (dy > 30) { show(); fired = true; }
   }, {passive: true});
-  document.querySelectorAll('.pane-body, .list').forEach(el => {
-    let py0 = null, atTop = false;
-    el.addEventListener('touchstart', e => { py0 = e.touches[0].clientY; atTop = el.scrollTop <= 0; }, {passive: true});
-    el.addEventListener('touchmove', e => {
-      if (!phoneQuery.matches || py0 === null || !atTop) return;
-      if (e.touches[0].clientY - py0 > 40 && el.scrollTop <= 0) { show(); py0 = null; }
-    }, {passive: true});
-  });
 }
 
 // ---- a question at the bottom of the screen instead of prompt(): resolves to the text, or null
