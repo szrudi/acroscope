@@ -422,12 +422,15 @@ def cmd_osd(a):
 def cmd_automatch(a):
     s = _session(a.session)
     clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]     # in name order: chronological
-    results, pending = [], []
+    if not clips:
+        print(f"{s}: no probed clips, nothing to match", file=sys.stderr)
+    results, pending, errors = [], [], []
     for c in clips:
         try:
             r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending)
         except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
-            print(f"{c}: {type(e).__name__}: {e}", file=sys.stderr)
+            errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
+            print(f"{c}: {errors[-1]['error']}", file=sys.stderr)
             continue
         results.append(r)
         if not a.write:            # the next clips see these as taken, as they would once written
@@ -453,8 +456,12 @@ def cmd_automatch(a):
                 print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms; {100 * (f['a'] - 1):+.2f} % clock difference)")
         for v in r["unmatched_video_arms"]:
             print(f"   unmatched run at {fmt_time(v['start'])}: {v['length']} s")
-    if a.json:
-        out(results[0] if len(results) == 1 else results)
+    if a.json:      # without errors the shape it always had: one clip's result, or the list
+        out({"results": results, "errors": errors} if errors else results[0] if len(results) == 1 else results)
+    # clips named on the command line must all go through; a whole session only fails when none did (some clips
+    # there have no log at all)
+    if (errors and a.videos) or not results:
+        sys.exit(1)
 
 
 def cmd_osd_learn(a):

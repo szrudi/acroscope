@@ -157,6 +157,11 @@ cumulative length. Offsets come out within about half a second, and the method c
 `cobra-compress.py` cuts out. Arms shorter than about 2 s and arms whose timer never shows up readable stay
 unmatched, as do clips without the OSD.
 
+A clip it cannot read (no log covers it, a clip still syncing) is named on stderr, and with `--json` in `errors`
+next to `results` (without errors the output is one clip's result, or the list, as it always was). The exit code is
+1 when a clip named on the command line failed, or when a run over a whole session read no clip at all; a session
+run where some clips have no log still exits 0.
+
 What a clip may match is bounded by the other clips: an arm matched to another clip (in any session the log is
 attached to) is taken, and clips are chronological, so a clip's arms lie after the arms of the clips named before it
 and before those of the clips named after it (a run over a whole session carries its proposals from clip to clip

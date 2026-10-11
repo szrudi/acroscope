@@ -1,9 +1,13 @@
 """Clip resolution against the database (no files on disk): by id, readable name or number, and ambiguity."""
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
-from acroscope import blackbox, sessions, video
+from acroscope import blackbox, cli, osd, sessions, video
 from acroscope.db import Db
 
 
@@ -173,6 +177,55 @@ class EditGuardsTest(_Scratch):
             sessions.move_clip(A, "001", B)
         self.assertEqual((sessions.DATA_DIR / "originals" / B / "VID1.mov").read_bytes(), b"b's")
         self.assertTrue((sessions.VIDEOS_DIR / A / "2026-10-09_001.mp4").exists())
+
+
+class AutomatchExitTest(_Scratch):
+    """automatch tells by its exit code whether it could run (review finding 10): clips named on the command line
+    must all go through; a whole-session run fails only when no clip did (some clips there have no log, as 10-07's
+    001/002 and 012-019). With --json the failures are in the output too."""
+    S = "2026-10-09-am"
+
+    def setUp(self):
+        super().setUp()
+        for n in (1, 2):
+            sessions.store().upsert_video(self.S, f"2026-10-09_00{n}.mp4", 60.0, "h264")
+
+    def automatch(self, *args, fail=()):
+        def fake(session, clip, **kw):
+            if clip in fail:
+                raise FileNotFoundError(f"{clip}: no log covers it")
+            return {"clip": clip, "matches": []}
+        out, err = io.StringIO(), io.StringIO()
+        # SERVER_URL pinned empty: an unset ACROSCOPE_URL means the URL file, and cli.main would proxy this to it
+        with mock.patch.object(sessions, "SERVER_URL", ""), mock.patch.object(osd, "automatch", fake), \
+                redirect_stdout(out), redirect_stderr(err):
+            try:
+                cli.main(["automatch", self.S, *args, "--json"])
+                code = 0
+            except SystemExit as e:
+                code = e.code if isinstance(e.code, int) else 1
+        return code, json.loads(out.getvalue() or "null"), err.getvalue()
+
+    def test_a_named_clip_that_fails_fails_the_command(self):
+        code, res, err = self.automatch("2026-10-09_002.mp4", fail={"2026-10-09_002.mp4"})
+        self.assertEqual(code, 1)
+        self.assertIn("no log covers it", err)
+        self.assertEqual(res["errors"], [{"clip": "2026-10-09_002.mp4", "error": "FileNotFoundError: 2026-10-09_002.mp4: no log covers it"}])
+        code, _, _ = self.automatch("2026-10-09_001.mp4", "2026-10-09_002.mp4", fail={"2026-10-09_002.mp4"})
+        self.assertEqual(code, 1)
+
+    def test_a_session_run_fails_only_when_no_clip_went_through(self):
+        code, res, _ = self.automatch(fail={"2026-10-09_002.mp4"})
+        self.assertEqual(code, 0)
+        self.assertEqual(([r["clip"] for r in res["results"]], [e["clip"] for e in res["errors"]]), (["2026-10-09_001.mp4"], ["2026-10-09_002.mp4"]))
+        code, res, _ = self.automatch(fail={"2026-10-09_001.mp4", "2026-10-09_002.mp4"})
+        self.assertEqual(code, 1)
+
+    def test_json_without_errors_keeps_its_shape(self):
+        code, res, _ = self.automatch("2026-10-09_001.mp4")
+        self.assertEqual((code, res), (0, {"clip": "2026-10-09_001.mp4", "matches": []}))   # one clip: the result itself
+        code, res, _ = self.automatch()
+        self.assertEqual((code, [r["clip"] for r in res]), (0, ["2026-10-09_001.mp4", "2026-10-09_002.mp4"]))
 
 
 if __name__ == "__main__":
