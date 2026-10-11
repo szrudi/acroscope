@@ -49,7 +49,8 @@ def browser_available() -> bool:
 @unittest.skipUnless(browser_available(), "no headless browser: run scripts/browser-setup.sh")
 class PlayerTest(unittest.TestCase):
     SESSIONS = {"2026-10-11-unsorted": ["2026-10-11_001.mp4", "2026-10-11_002.mp4"], "2026-10-11-bea": ["2026-10-11_005.mp4"],
-                "2026-10-12-del": ["2026-10-12_001.mp4", "2026-10-12_002.mp4"], "2026-10-13-phone": ["2026-10-13_001.mp4"]}
+                "2026-10-12-del": ["2026-10-12_001.mp4", "2026-10-12_002.mp4"], "2026-10-13-phone": ["2026-10-13_001.mp4"],
+                "2026-10-09-attick-is-the-limit": ["2026-10-09_001.mp4"]}
 
     @classmethod
     def setUpClass(cls):
@@ -100,6 +101,48 @@ class PlayerTest(unittest.TestCase):
         page.goto(f"{self.url}/?session={session}")
         page.wait_for_function("() => typeof S !== 'undefined' && S && S.session === " + repr(session))
         return page
+
+    # ---- the desktop header -------------------------------------------------------------------------------------
+
+    def keys_in_header(self, page):
+        return page.evaluate("""() => {
+          const h = document.querySelector('header').getBoundingClientRect(), k = document.querySelector('header .keys');
+          const r = k.getBoundingClientRect(), st = document.getElementById('status').getBoundingClientRect();
+          const prev = document.getElementById('renameSession').getBoundingClientRect();
+          return {shown: r.width > 0, inside: r.right <= Math.min(h.right, innerWidth) + 0.5, header: h.width, inner: innerWidth, clear: r.left >= prev.right, status: st.width};
+        }""")
+
+    def test_key_hints_show_where_they_fit(self):
+        """The key hints sit in the header whenever they fit, with room left for the status line: Rudi's screen
+        (2069 px at 150 %, about 1380 CSS px) has plenty of space, and a fixed 1400 px breakpoint hid them there.
+        Where they show, nothing spills off the window or overlaps, at any width and whatever the status says."""
+        page = self.open("2026-10-09-attick-is-the-limit", {"viewport": {"width": 1380, "height": 900}})
+        page.evaluate("() => { $('#status').textContent = 'decoding blackbox in the background, arms appear when done…' }")
+        page.wait_for_timeout(100)
+        self.assertTrue(self.keys_in_header(page)["shown"])
+        for width in range(900, 1501, 50):
+            with self.subTest(width=width):
+                page.set_viewport_size({"width": width, "height": 900})
+                page.wait_for_timeout(50)
+                k = self.keys_in_header(page)
+                self.assertLessEqual(k["header"], k["inner"], k)                      # the header never outgrows the window
+                if k["shown"]:
+                    self.assertTrue(k["inside"] and k["clear"], k)                 # nothing overlaps, nothing spills
+                    self.assertGreaterEqual(k["status"], 160, k)                   # the status line keeps its room
+        page.set_viewport_size({"width": 1000, "height": 900})
+        page.wait_for_timeout(50)
+        self.assertFalse(self.keys_in_header(page)["shown"])
+        # the session list filling in after the first look (it is empty when the page starts): a wider select
+        page.set_viewport_size({"width": 1380, "height": 900})
+        page.wait_for_timeout(50)
+        page.evaluate("() => { $('#session').options[0].textContent += ' · and a much longer label than any session has'.repeat(3) }")
+        page.wait_for_timeout(100)
+        k = self.keys_in_header(page)
+        self.assertTrue(not k["shown"] or (k["inside"] and k["status"] >= 160), k)
+
+    def test_no_key_hints_on_a_phone(self):
+        page = self.open("2026-10-13-phone", PHONE)
+        self.assertFalse(self.keys_in_header(page)["shown"])
 
     # ---- the phone layout --------------------------------------------------------------------------------------
 
