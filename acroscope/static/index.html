@@ -16,7 +16,7 @@
   header { display:flex; align-items:center; gap:14px; padding:0 14px; border-bottom:1px solid var(--line); background:var(--panel) }
   header h1 { font-size:16px; margin:0; color:var(--acc); letter-spacing:.5px; white-space:nowrap; flex:none }
   header select { background:var(--bg); color:var(--fg); border:1px solid var(--line); padding:4px 8px; border-radius:6px; font-size:14px }
-  header .keys { margin-left:auto; color:var(--dim); font-size:12px; white-space:nowrap; flex:none }
+  header .keys { margin-left:auto; color:var(--dim); font-size:11px; white-space:nowrap; flex:none } header .keys kbd { font-size:11px; padding:0 4px }
   header #status { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }   /* one line, never wraps the header */
   .snote { color:var(--dim); font-size:13px; white-space:pre-wrap }
   kbd { background:#2a2f38; border:1px solid #3a404b; border-radius:4px; padding:0 5px; font:12px ui-monospace, monospace }
@@ -539,15 +539,18 @@ function drawStrip() {
 }
 strip.onclick = e => { const D = v.duration; if (!D) return; v.currentTime = (e.offsetX / strip.clientWidth) * D; };
 window.addEventListener('resize', drawStrip);
-// the key hints take the header's free space when they fit and leave the status line 160 px (a fixed breakpoint hid
-// them on a 1380 px wide screen with room to spare)
+// the key hints take the header's free space when they fit; a status message comes first: while there is one, it
+// keeps 160 px and the hints step aside until it clears (a fixed breakpoint hid them on a screen with room to spare)
 function fitKeys() {
-  const k = document.querySelector('header .keys');
+  const k = document.querySelector('header .keys'), st = $('#status');
   k.hidden = false;
-  k.hidden = $('#status').clientWidth < 160;
+  const need = k.offsetWidth + 14;                       // the hints and the header's gap before them
+  k.hidden = true;
+  k.hidden = st.clientWidth - need < (st.textContent.trim() ? 160 : 0);
 }
-// the header's size (a resize) and the status line's room (the session list filling in after the first look)
+// the header's size (a resize), the status line's room (the session list filling in after the first look) and its text
 const keysRO = new ResizeObserver(fitKeys); keysRO.observe(document.querySelector('header')); keysRO.observe($('#status'));
+new MutationObserver(fitKeys).observe($('#status'), {childList: true, characterData: true, subtree: true});
 
 // ---- editor
 let ed = null;
