@@ -77,7 +77,9 @@ class RealDataTest(unittest.TestCase):
             runs = osd.video_arms(cli_json("osd", "10-07", "008", "--json"))
             idx = cli_json("arms", BBL, "--json")
         real = [r for r in runs if r["length"] >= 2]
-        self.assertEqual([round(r["start"], 1) for r in real], [4.7, 20.2, 64.2])
+        for got, want in zip([r["start"] for r in real], [4.75, 20.25, 64.25]):     # ±0.1: the bias is 0.25, not 0.2, since #4
+            self.assertAlmostEqual(got, want, delta=0.1)
+        self.assertEqual(len(real), 3)
         self.assertEqual([r["timer_max"] for r in real], [12, 7, 24])
         boot_of = {i: k for k, bt in enumerate(idx["boots"]) for i in bt["arms"]}
         cum, logs = {}, []
