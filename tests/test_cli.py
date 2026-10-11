@@ -16,7 +16,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(fmt_time(92.7), "1:32.7")
         self.assertEqual(fmt_time(59.96), "1:00.0")          # never "0:60.0"
         self.assertEqual(fmt_time(119.99), "2:00.0")
-        self.assertEqual(fmt_time(-0.2), "0:00.0")           # an event that starts before the clip does
+        self.assertEqual(fmt_time(-0.2), "-0:00.2")          # an event that starts before the clip does: not at 0
+        self.assertEqual(fmt_time(-75.0), "-1:15.0")
+        self.assertEqual(fmt_time(-0.04), "0:00.0")          # rounds to zero: no "-0:00.0"
 
     def test_version_opens_no_database(self):
         with tempfile.TemporaryDirectory() as tmp:

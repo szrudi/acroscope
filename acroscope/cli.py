@@ -21,8 +21,9 @@ def parse_time(s: str) -> float:
 
 
 def fmt_time(t: float) -> str:
-    m, s = divmod(round(max(t, 0.0), 1), 60)      # round first, or 59.96 prints as 0:60.0
-    return f"{int(m)}:{s:04.1f}"
+    t = round(t, 1)                               # round first, or 59.96 prints as 0:60.0
+    m, s = divmod(abs(t), 60)
+    return ("-" if t < 0 else "") + f"{int(m)}:{s:04.1f}"    # before the clip's start: signed, not 0:00.0
 
 
 def out(obj):
