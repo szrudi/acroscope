@@ -23,6 +23,8 @@ def _server_url() -> str:
 
 
 SERVER_URL = _server_url()   # set: the CLI is a client of that server's database
+# set by the server for a client's command (/api/cli): clips and logs by name only, never a path on this host
+NAMES_ONLY = os.environ.get("ACROSCOPE_NAMES_ONLY") == "1"
 
 VIDEOS_DIR = DATA_DIR / "videos"
 BLACKBOX_DIR = DATA_DIR / "blackbox"

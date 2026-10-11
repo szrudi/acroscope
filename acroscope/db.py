@@ -10,6 +10,7 @@ back); purge() is the only thing that removes rows, and it is explicit.
 import json
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -63,10 +64,7 @@ class Db:
     def __init__(self, path: Path | str):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.c = sqlite3.connect(self.path, timeout=10, check_same_thread=False, isolation_level=None)
-        self.c.row_factory = sqlite3.Row
-        self.c.execute("PRAGMA journal_mode=WAL")
-        self.c.execute("PRAGMA foreign_keys=ON")
+        self._local = threading.local()
         self.c.executescript(SCHEMA)
         self._migrate()
         if not self.c.execute("SELECT 1 FROM tag_categories LIMIT 1").fetchone():
@@ -77,6 +75,19 @@ class Db:
 
     def __repr__(self):
         return f"sqlite {self.path}"
+
+    @property
+    def c(self) -> sqlite3.Connection:
+        """A connection per thread. The server answers requests from threads; one sqlite3 connection shared between
+        them fails under load (statement state is per connection) and a BEGIN in one thread swallows the others'
+        writes into its transaction."""
+        c = getattr(self._local, "c", None)
+        if c is None:
+            c = self._local.c = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA foreign_keys=ON")
+        return c
 
     def _migrate(self) -> None:
         """Columns added after a table first shipped (CREATE TABLE IF NOT EXISTS does not add them)."""
@@ -299,12 +310,14 @@ class Db:
         row = self.c.execute("SELECT * FROM sessions WHERE name = ?", (old,)).fetchone()
         if not row:
             raise ValueError(f"session {old}: no such session")
-        self.c.execute("BEGIN")
+        self.c.execute("BEGIN IMMEDIATE")   # the write lock first: a read-then-write transaction cannot wait out a concurrent commit
         try:
             self.c.execute("INSERT INTO sessions (name, date, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                            (new, new[:10], row["note"], row["created_at"], now()))
             for t in ("videos", "blackbox", "matches", "moments", "batch_clips"):
                 self.c.execute(f"UPDATE {t} SET session = ? WHERE session = ?", (new, old))
+            self.c.execute("UPDATE videos SET original = replace(original, ?, ?) WHERE session = ? AND original LIKE ?",
+                           (f"originals/{old}/", f"originals/{new}/", new, f"originals/{old}/%"))   # the folder moves too
             self.c.execute("UPDATE batches SET session = ? WHERE session = ?", (new, old))
             self.c.execute("DELETE FROM sessions WHERE name = ?", (old,))
             self.c.execute("COMMIT")
@@ -314,11 +327,17 @@ class Db:
 
     def move_clip(self, session: str, file: str, to: str) -> None:
         """A clip and its matches and moments go to another session (the file keeps its name: it is the id)."""
+        if to == session:
+            return
         self.ensure_session(to, to[:10])
-        self.c.execute("BEGIN")
+        self.c.execute("BEGIN IMMEDIATE")   # the write lock first: a read-then-write transaction cannot wait out a concurrent commit
         try:
-            for t in ("matches", "moments"):
-                self.c.execute(f"UPDATE {t} SET session = ? WHERE session = ? AND video = ?", (to, session, file))
+            # moment ids count per session (m01, m02, ...): one that `to` already uses gets the next free id there
+            for r in self.c.execute("SELECT id FROM moments WHERE session = ? AND video = ? ORDER BY start", (session, file)).fetchall():
+                taken = self.c.execute("SELECT 1 FROM moments WHERE session = ? AND id = ?", (to, r["id"])).fetchone()
+                self.c.execute("UPDATE moments SET session = ?, id = ? WHERE session = ? AND id = ?",
+                               (to, self.next_id(to) if taken else r["id"], session, r["id"]))
+            self.c.execute("UPDATE matches SET session = ? WHERE session = ? AND video = ?", (to, session, file))
             self.c.execute("UPDATE batch_clips SET session = ? WHERE session = ? AND file = ?", (to, session, file))
             self.c.execute("UPDATE videos SET session = ? WHERE session = ? AND file = ?", (to, session, file))
             self.c.execute("COMMIT")
@@ -354,6 +373,20 @@ class Db:
     def add_batch_clip(self, batch: str, source: str, file: str, session: str) -> None:
         self.c.execute("INSERT OR REPLACE INTO batch_clips (batch, source, file, session) VALUES (?, ?, ?, ?)", (batch, source, file, session))
 
+    def record_ingested(self, batch: str, source: str, session: str, file: str, name: str, duration, codec, **fields) -> None:
+        """An ingested clip: its row, its fields and the batch's note of it, in one transaction. A clip is either
+        recorded and done for the retry, or not there at all (half a row would show as missing and use up a number)."""
+        self.ensure_session(session)
+        self.c.execute("BEGIN IMMEDIATE")
+        try:
+            self.upsert_video(session, file, duration, codec, name=name)
+            self.set_video_fields(session, file, **fields)
+            self.add_batch_clip(batch, source, file, session)
+            self.c.execute("COMMIT")
+        except BaseException:
+            self.c.execute("ROLLBACK")
+            raise
+
     def expired_originals(self, before: str) -> list[tuple[str, str, str]]:
         return [(r["session"], r["file"], r["original"]) for r in self.c.execute(
             "SELECT session, file, original FROM videos WHERE original IS NOT NULL AND original_until IS NOT NULL AND original_until < ?", (before,))]
@@ -373,8 +406,16 @@ class Db:
         return {"categories": [dict(r) for r in self.c.execute("SELECT name, color, pos FROM tag_categories ORDER BY pos")],
                 "tags": [dict(r) for r in self.c.execute("SELECT name, category, color, pos FROM tags ORDER BY pos")]}
 
+    @staticmethod
+    def _color(color: str | None) -> str | None:
+        """#rrggbb, or None/'' as given: the player puts it into an attribute and a style, so nothing else goes in."""
+        if color and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            raise ValueError(f"{color!r}: not a colour (#rrggbb)")
+        return color
+
     def set_category(self, name: str, color: str | None = None) -> dict:
         """Create a category (colour required) or change its colour; the position is kept."""
+        color = self._color(color)
         row = self.c.execute("SELECT * FROM tag_categories WHERE name = ?", (name,)).fetchone()
         if row:
             if color:
@@ -388,6 +429,7 @@ class Db:
 
     def set_tag(self, name: str, category: str, color: str | None = None) -> dict:
         """Define a tag in a category, or move it there; color None keeps the colour, '' clears it."""
+        color = self._color(color)
         if not self.c.execute("SELECT 1 FROM tag_categories WHERE name = ?", (category,)).fetchone():
             raise ValueError(f"category {category}: no such category")
         row = self.c.execute("SELECT * FROM tags WHERE name = ?", (name,)).fetchone()

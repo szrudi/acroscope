@@ -7,6 +7,7 @@ matches (video <-> arm + offset) and moments. The clips and the logs themselves 
 Times are video seconds. video time = arm time + offset (offset holds within one arm; the clips have static cut
 out, so a clip's timeline is not continuous across arms). Arm details come from the blackbox cache, not from here.
 """
+import math
 import re
 import subprocess
 import sys
@@ -52,6 +53,12 @@ def session_path(session: str) -> Path:
     return VIDEOS_DIR / session / "session.json"
 
 
+def _check_name(session: str) -> None:
+    """A session is a folder name; anything with a slash or a '..' would reach outside videos/ on disk."""
+    if not session or "/" in session or session in (".", "..") or "\\" in session:
+        raise ValueError(f"{session!r}: not a session name")
+
+
 def resolve_session(name: str) -> str:
     """Accept the full name or a unique fragment ('10-07', 'schammer'); folders and database sessions both count."""
     names = {d.name for d in session_dirs()} | {s["session"] for s in store().sessions()}
@@ -66,6 +73,7 @@ def resolve_session(name: str) -> str:
 def resolve_clip(session: str, file: str) -> str:
     """A clip's file name (its id on disk) from its file name, its readable name ('2026-10-07_007'), its number
     ('007'/'7') or a path; a clip that is only in the database (file gone) still resolves."""
+    _check_name(session)
     vids = load(session)["videos"]
     by_file = {v["file"]: v for v in vids}
     if file in by_file:
@@ -75,8 +83,11 @@ def resolve_clip(session: str, file: str) -> str:
     hits = [v["file"] for v in vids if v.get("name") == file or Path(v["file"]).stem == file]
     if file.isdigit():
         hits += [v["file"] for v in vids if (v.get("name") or "").endswith(f"_{int(file):03d}")]
-    if len(set(hits)) == 1:
+    hits = sorted(set(hits), key=lambda f: Path(f).suffix.lower() != ".mp4")   # the compressed .mp4 before an original .mov beside it
+    if hits and len({Path(f).stem for f in hits}) == 1:
         return hits[0]
+    if len(hits) > 1:
+        raise FileNotFoundError(f"{file}: {len(hits)} clips match (need exactly 1)")
     return video.resolve_video(session, file).name     # a file not registered yet, or a FileNotFoundError
 
 
@@ -169,6 +180,7 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
     clip at all, marks nothing: an unmounted or half-synced Drive must not look like a deletion."""
     if remote():
         return store().refresh(session, probe_videos)
+    _check_name(session)
     db = store()
     d = VIDEOS_DIR / session
     if not d.is_dir() and not db.exists(session):
@@ -210,11 +222,14 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
 
 # ---- writing ------------------------------------------------------------------------------------------------------
 
-def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: str = "", boot: bool = False) -> dict:
+def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: str = "", boot: bool = False) -> list[dict]:
     """Record video <-> arm with `offset` (video = arm time + offset). With boot=True, also record every other arm
-    of the same power cycle, their offsets derived from the FC uptime (video = uptime + boot offset)."""
+    of the same power cycle, their offsets derived from the FC uptime (video = uptime + boot offset). Returns the
+    matches written, as the store gives them back (the named arm first)."""
     vid = resolve_clip(session, vid)
-    bbl_name = blackbox.resolve_bbl(bbl).name
+    if boot and remote():
+        raise ValueError("match --boot reads the log: run it where the data is (unset ACROSCOPE_URL)")
+    bbl_name = bbl if remote() else blackbox.resolve_bbl(bbl).name      # the server resolves it against its own logs
     new = [(arm, round(offset, 2), note)]
     if boot:
         idx = blackbox.index_bbl(bbl_name)
@@ -241,9 +256,8 @@ def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: s
                 if i != arm and dur and (off > dur or off + meta[i]["length"] < 0):
                     continue
                 new.append((i, off, note if i == arm else f"derived from arm {arm} via uptime (boot {b['first']}-{b['last']}" + (f", clock {100 * (a - 1):+.2f} %)" if a != 1.0 else ")")))
-    for i, off, n in new:
-        store().set_match(session, vid, bbl_name, i, off, n)
-    return load(session)
+    new.sort(key=lambda r: r[0] != arm)
+    return [store().set_match(session, vid, bbl_name, i, off, n) for i, off, n in new]
 
 
 def unmatch(session: str, vid: str, arm: int | None = None) -> int:
@@ -254,6 +268,8 @@ def unmatch(session: str, vid: str, arm: int | None = None) -> int:
 def tag(session: str, vid: str, start: float, end: float, title: str, tags: list[str], note: str = "",
         metrics: dict | None = None, mid: str | None = None) -> dict:
     """Add a moment, or replace the one with id `mid`."""
+    if not (math.isfinite(start) and math.isfinite(end)) or end < start:
+        raise ValueError(f"a moment runs from start to end, in seconds: {start}..{end}")
     return store().tag(session, resolve_clip(session, vid), start, end, title, tags, note, metrics, mid)
 
 
@@ -266,11 +282,12 @@ def set_note(session: str, note: str, vid: str | None = None) -> None:
 
 
 def attach(session: str, bbl: str) -> list[str]:
-    return store().attach(session, blackbox.resolve_bbl(bbl).name)
+    return store().attach(session, bbl if remote() else blackbox.resolve_bbl(bbl).name)
 
 
 def detach(session: str, bbl: str) -> list[str]:
-    return store().detach(session, blackbox.resolve_bbl(bbl).name)
+    known = bbl in load(session)["blackbox"]          # a log that was deleted from blackbox/ can still be detached by name
+    return store().detach(session, bbl if remote() or known else blackbox.resolve_bbl(bbl).name)
 
 
 def purge(session: str, vid: str | None = None, days: float = 0) -> list[dict]:
@@ -280,6 +297,12 @@ def purge(session: str, vid: str | None = None, days: float = 0) -> list[dict]:
 # ---- editing sessions (folders and rows move together) -------------------------------------------------------------
 
 SESSION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-[A-Za-z0-9_-]+)?$")
+
+
+def _mounted() -> None:
+    """Folders and rows move together: with the data dir unmounted, an edit would move rows only."""
+    if not session_dirs():
+        raise ValueError("data dir not mounted (no session folders): nothing is moved")
 
 
 def _move_dir(old: Path, new: Path) -> None:
@@ -294,9 +317,11 @@ def rename_session(session: str, new: str) -> dict:
     """videos/<session> and originals/<session> become <new>; every row follows. The date is the new name's."""
     if remote():
         return store().rename_session(session, new)
+    _check_name(session)
+    _mounted()
     if not SESSION_RE.match(new):
         raise ValueError(f"{new}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
-    if (VIDEOS_DIR / new).exists() or store().exists(new):
+    if (VIDEOS_DIR / new).exists() or (VIDEOS_DIR.parent / "originals" / new).exists() or store().exists(new):
         raise ValueError(f"{new} exists")
     _move_dir(VIDEOS_DIR / session, VIDEOS_DIR / new)
     _move_dir(VIDEOS_DIR.parent / "originals" / session, VIDEOS_DIR.parent / "originals" / new)
@@ -315,17 +340,40 @@ def move_clip(session: str, vid: str, to: str) -> dict:
     """A clip, its original, its matches and its moments go to session `to` (created if new)."""
     if remote():
         return store().move_clip(session, vid, to)
+    _check_name(session)
+    _mounted()
     if not SESSION_RE.match(to):
         raise ValueError(f"{to}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
     file = resolve_clip(session, vid)
-    v = next((x for x in load(session)["videos"] if x["file"] == file), None)
+    v = next((x for x in load(session)["videos"] if x["file"] == file), None) or {"file": file}
+    _check_moves(session, [v], to)
+    _move_clip(session, v, to)
+    return load(to)
+
+
+def _check_moves(session: str, clips: list[dict], to: str) -> None:
+    """Refuse before anything moves: a clip whose file, original or row is already in `to` (a rename onto an
+    existing file replaces it without a word, and the row would clash halfway). Names every clash at once."""
+    there = {v["file"] for v in load(to)["videos"]}
+    clash = []
+    for v in clips:
+        if (VIDEOS_DIR / session / v["file"]).exists() and (VIDEOS_DIR / to / v["file"]).exists():
+            clash.append(str(VIDEOS_DIR / to / v["file"]) + " exists")
+        elif v["file"] in there:
+            clash.append(f"{v['file']} is in {to} already")
+        if v.get("original") and (DATA_DIR / v["original"]).exists() and (DATA_DIR / "originals" / to / Path(v["original"]).name).exists():
+            clash.append(f"originals/{to}/{Path(v['original']).name} exists")
+    if clash:
+        raise ValueError("nothing moved: " + "; ".join(clash))
+
+
+def _move_clip(session: str, v: dict, to: str) -> None:
+    file = v["file"]
     src, dst = VIDEOS_DIR / session / file, VIDEOS_DIR / to / file
     if src.exists():
-        if dst.exists():
-            raise ValueError(f"{dst} exists")
         dst.parent.mkdir(parents=True, exist_ok=True)
         src.rename(dst)
-    if v and v.get("original"):
+    if v.get("original"):
         o = DATA_DIR / v["original"]
         if o.exists():
             no = DATA_DIR / "originals" / to / o.name
@@ -333,7 +381,6 @@ def move_clip(session: str, vid: str, to: str) -> dict:
             o.rename(no)
             store().set_video_fields(session, file, original=str(no.relative_to(DATA_DIR)))
     store().move_clip(session, file, to)
-    return load(to)
 
 
 def delete_clip(session: str, vid: str) -> dict:
@@ -364,9 +411,16 @@ def merge_sessions(session: str, into: str) -> dict:
     """Every clip and log of `session` goes to `into`; the emptied session is removed."""
     if remote():
         return store().merge_sessions(session, into)
+    _check_name(session)
+    _mounted()
+    if into == session:
+        raise ValueError(f"{session}: cannot merge a session into itself")
+    if not SESSION_RE.match(into):
+        raise ValueError(f"{into}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
     s = load(session)
+    _check_moves(session, s["videos"], into)            # all or nothing: a clash at clip 5 must not leave 1-4 moved
     for v in s["videos"]:
-        move_clip(session, v["file"], into)
+        _move_clip(session, v, into)
     for b in s["blackbox"]:
         store().attach(into, b)
     if s.get("note"):
@@ -383,5 +437,7 @@ def import_json(session: str | None = None) -> list[dict]:
     """Import the pre-database videos/<session>/session.json files (one session, or every one found)."""
     if remote():
         return store().import_json(session)
+    if session:
+        _check_name(session)
     paths = [session_path(session)] if session else [session_path(d.name) for d in session_dirs()]
     return [store().import_json(p) for p in paths if p.exists()]

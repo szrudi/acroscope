@@ -13,10 +13,11 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   LXC 109 with a nightly copy in `/data/state/`. **joan has no data**: `~/.config/acroscope/url` points the CLI at
   the server, the store calls go to the API, and the commands that need clips, logs or the cache (`cli.PROXIED`)
   run on the server through `POST /api/cli` (a child process, allow-listed in `server.PROXIED`); frames and sheets
-  come back through `GET /api/file` into the local cache. Without a server configured the CLI opens a private local
-  database and says so on stderr. joan's `~/gdrive/fpv` is Rudi's Drive folder: notes and gear docs only now (the
-  flight-analysis session's `CLAUDE.md`, `app-handover.md`, `video-blackbox-index.md`); the clips and logs left it
-  on 2026-10-10.
+  come back through `GET /api/file` into the local cache. The server is `ACROSCOPE_URL`, else the URL file, so
+  unsetting the variable still reaches the live server: a throwaway run needs `ACROSCOPE_URL=` (empty: a private
+  local database, said on stderr); check with `acroscope --version` (it names the store) before anything that
+  writes. joan's `~/gdrive/fpv` is Rudi's Drive folder: notes and gear docs only now (the flight-analysis session's
+  `CLAUDE.md`, `app-handover.md`, `video-blackbox-index.md`); the clips and logs left it on 2026-10-10.
 - Ingest (`acroscope/ingest.py`): the laptop drops a batch into `inbox/` (`cobra-import-inbox.sh` on Rudi's laptop,
   via the `fpvpush` user, write-only), the server numbers, compresses, files, decodes and automatches it. The inbox
   is hostile ground (the push user owns everything in a batch): keep the regular-file/plain-name rules in

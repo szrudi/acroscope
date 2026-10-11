@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from . import blackbox, events as ev, ingest, metrics, osd, sessions, video, xspf
-from .config import CACHE_DIR, DATA_DIR, TAGS
+from .config import CACHE_DIR, DATA_DIR, DB_PATH, SERVER_URL, TAGS
 
 
 def parse_time(s: str) -> float:
@@ -21,8 +21,9 @@ def parse_time(s: str) -> float:
 
 
 def fmt_time(t: float) -> str:
-    m, s = divmod(t, 60)
-    return f"{int(m)}:{s:04.1f}"
+    t = round(t, 1)                               # round first, or 59.96 prints as 0:60.0
+    m, s = divmod(abs(t), 60)
+    return ("-" if t < 0 else "") + f"{int(m)}:{s:04.1f}"    # before the clip's start: signed, not 0:00.0
 
 
 def out(obj):
@@ -167,11 +168,15 @@ def cmd_ingest(a):
     batches = a.batches or ingest.pending()
     if not batches:
         return print("nothing to ingest")
+    failed = 0
     for b in batches:
         try:
             out(ingest.process_batch(b, log=lambda m: print(m, file=sys.stderr)))
         except Exception as e:  # noqa: BLE001
             print(f"{b}: FAILED {type(e).__name__}: {e}", file=sys.stderr)
+            failed += 1
+    if failed:
+        sys.exit(1)
 
 
 def cmd_housekeeping(a):
@@ -242,8 +247,9 @@ def cmd_decode(a):
 
 
 def cmd_match(a):
-    s = sessions.set_match(_session(a.session), a.video, a.bbl, a.arm, a.offset, a.note or "", boot=a.boot)
-    out([m for m in s["matches"] if m["video"] == sessions.resolve_clip(s["session"], a.video)])
+    session = _session(a.session)
+    vid = sessions.set_match(session, a.video, a.bbl, a.arm, a.offset, a.note or "", boot=a.boot)[0]["video"]
+    out([m for m in sessions.load(session)["matches"] if m["video"] == vid])
 
 
 def cmd_unmatch(a):
@@ -416,12 +422,15 @@ def cmd_osd(a):
 def cmd_automatch(a):
     s = _session(a.session)
     clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]     # in name order: chronological
-    results, pending = [], []
+    if not clips:
+        print(f"{s}: no probed clips, nothing to match", file=sys.stderr)
+    results, pending, errors = [], [], []
     for c in clips:
         try:
             r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending)
         except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
-            print(f"{c}: {type(e).__name__}: {e}", file=sys.stderr)
+            errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
+            print(f"{c}: {errors[-1]['error']}", file=sys.stderr)
             continue
         results.append(r)
         if not a.write:            # the next clips see these as taken, as they would once written
@@ -447,8 +456,12 @@ def cmd_automatch(a):
                 print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms; {100 * (f['a'] - 1):+.2f} % clock difference)")
         for v in r["unmatched_video_arms"]:
             print(f"   unmatched run at {fmt_time(v['start'])}: {v['length']} s")
-    if a.json:
-        out(results[0] if len(results) == 1 else results)
+    if a.json:      # without errors the shape it always had: one clip's result, or the list
+        out({"results": results, "errors": errors} if errors else results[0] if len(results) == 1 else results)
+    # clips named on the command line must all go through; a whole session only fails when none did (some clips
+    # there have no log at all)
+    if (errors and a.videos) or not results:
+        sys.exit(1)
 
 
 def cmd_osd_learn(a):
@@ -488,7 +501,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="acroscope", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     class Version(argparse.Action):   # the store is opened only when asked: `--help` must not create a database
         def __call__(self, parser, ns, values, option_string=None):
-            print(f"acroscope (data {DATA_DIR}, cache {CACHE_DIR}, store {sessions.store()})"); parser.exit()
+            store = f"server {SERVER_URL}" if SERVER_URL else f"sqlite {DB_PATH}"      # named, not opened
+            print(f"acroscope (data {DATA_DIR}, cache {CACHE_DIR}, store {store})"); parser.exit()
     ap.add_argument("--version", action=Version, nargs=0)
     sp = ap.add_subparsers(dest="cmd", required=True)
 

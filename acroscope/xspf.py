@@ -17,7 +17,8 @@ def import_session(session: str) -> list[dict]:
         loc = tr.findtext("x:location", default="", namespaces=NS)
         title = tr.findtext("x:title", default="", namespaces=NS)
         opts = {o.text.partition("=")[0]: float(o.text.partition("=")[2]) for o in tr.iterfind(".//vlc:option", NS) if "=" in (o.text or "")}
-        start, end = opts.get("start-time", 0.0), opts.get("stop-time", 0.0)
+        start = opts.get("start-time", 0.0)
+        end = opts.get("stop-time", start)
         if (loc, start, end) in have:
             continue
         # titles are "10-07 powerloop 1": strip the date prefix

@@ -28,6 +28,8 @@ inbox/<batch>/                               what the laptop drops: VID*.mov off
                                              import.json ({date, session, imported_at, host}) and a .done marker written
                                              last (optionally a manifest {"files": {name: size}}); consumed by ingest
 originals/<session>/<id>.mov                 the originals, kept 7 days after the compressed clip verified
+originals/.ingest/<batch>/                   a batch's clips taken out of the inbox and their encodes, until each is in place
+                                             (what a crashed ingest left there, the retry finishes)
 state/acroscope-<date>.db                    nightly copies of the database (seven kept)
 ```
 
@@ -154,6 +156,11 @@ starts in video time, and aligns them to the log's arms by length and by the tot
 cumulative length. Offsets come out within about half a second, and the method carries across the static stretches
 `cobra-compress.py` cuts out. Arms shorter than about 2 s and arms whose timer never shows up readable stay
 unmatched, as do clips without the OSD.
+
+A clip it cannot read (no log covers it, a clip still syncing) is named on stderr, and with `--json` in `errors`
+next to `results` (without errors the output is one clip's result, or the list, as it always was). The exit code is
+1 when a clip named on the command line failed, or when a run over a whole session read no clip at all; a session
+run where some clips have no log still exits 0.
 
 What a clip may match is bounded by the other clips: an arm matched to another clip (in any session the log is
 attached to) is taken, and clips are chronological, so a clip's arms lie after the arms of the clips named before it

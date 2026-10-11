@@ -59,14 +59,18 @@ def _cli(*args: str):
 
 
 def _check_proxied(args: list[str]) -> None:
+    """Only PROXIED commands, and only names (sessions, clips, logs, times): a path would let a client point ffmpeg
+    or the decoder at any file on this host."""
     if not args or args[0] not in PROXIED:
         raise ValueError(f"not a command a client may run here: {args[:1]}")
+    if any("/" in a for a in args[1:]):
+        raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
 
 
 def run_cli(args: list[str], timeout: float = 1800) -> dict:
-    """A client's CLI command, run here: {stdout, stderr, code}. Only PROXIED commands."""
+    """A client's CLI command, run here: {stdout, stderr, code}."""
     _check_proxied(args)
-    env = dict(os.environ, ACROSCOPE_URL="")
+    env = dict(os.environ, ACROSCOPE_URL="", ACROSCOPE_NAMES_ONLY="1")   # and a bare name never means a file in our cwd
     r = subprocess.run([sys.executable, "-m", "acroscope.cli", *args], capture_output=True, text=True, env=env, timeout=timeout)
     return {"stdout": r.stdout, "stderr": r.stderr, "code": r.returncode}
 
@@ -114,6 +118,22 @@ def job(jid: str) -> dict | None:
 
 def _decode_async(bbl: str):
     _background(f"decode:{bbl}", lambda: _cli("arms", bbl))
+
+
+def _log_state(bbl: str) -> str:
+    """"ready" when the log's arms are in the cache, "gone" when the log file is, else "decoding": the decode starts
+    in a child, as a request thread must never decode (30 s with the GIL held freezes every other request)."""
+    try:
+        if blackbox.index_bbl(bbl, cached_only=True) is not None:
+            return "ready"
+    except FileNotFoundError:            # nothing to show, nothing to decode
+        return "gone"
+    _decode_async(bbl)
+    return "decoding"
+
+
+def _indexed(bbl: str) -> bool:
+    return _log_state(bbl) == "ready"
 
 
 def _probe_async(session: str):
@@ -178,6 +198,15 @@ def background_scans():
     threading.Thread(target=run, name="scan", daemon=True).start()
 
 
+def _under(root: Path, *parts: str) -> Path:
+    """root/parts, refused when it would leave root (a '..' or an encoded slash inside a path segment). Lexical,
+    so a session folder that is a symlink to somewhere else still serves."""
+    p = root.joinpath(*parts)
+    if not Path(os.path.normpath(p)).is_relative_to(Path(os.path.normpath(root))):
+        raise FileNotFoundError(f"{'/'.join(parts)}: not under {root.name}")
+    return p
+
+
 @lru_cache(maxsize=64)
 def _events(bbl: str, arm: int) -> list[dict]:
     return ev.detect(blackbox.load_arm(bbl, arm))
@@ -217,7 +246,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":           # a HEAD with a body corrupts the next request on a keep-alive connection
+            self.wfile.write(body)
 
     def _file(self, path: Path, ctype=None, cache="no-store"):
         if not path.is_file():
@@ -281,14 +311,11 @@ class Handler(BaseHTTPRequestHandler):
             if not parts:
                 return self._file(STATIC / "index.html", "text/html; charset=utf-8")
             if parts[0] == "static" and 2 <= len(parts) <= 3:          # static/<file> or static/brand/<file>
-                p = STATIC.joinpath(*parts[1:]).resolve()
-                if not p.is_relative_to(STATIC.resolve()):
-                    return self._json({"error": "not found"}, 404)
-                return self._file(p, cache="max-age=3600")
+                return self._file(_under(STATIC, *parts[1:]), cache="max-age=3600")
             if parts[0] == "video" and len(parts) == 3:
-                return self._file(video.playable(VIDEOS_DIR / parts[1] / parts[2]), "video/mp4", "max-age=3600")
+                return self._file(video.playable(_under(VIDEOS_DIR, parts[1], parts[2])), "video/mp4", "max-age=3600")
             if parts[0] == "frame" and len(parts) == 4:
-                return self._file(video.frame(VIDEOS_DIR / parts[1] / parts[2], float(parts[3])), "image/jpeg", "max-age=86400")
+                return self._file(video.frame(_under(VIDEOS_DIR, parts[1], parts[2]), float(parts[3])), "image/jpeg", "max-age=86400")
             if parts[:2] == ["api", "sessions"]:
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
             if parts == ["api", "inbox"]:
@@ -311,6 +338,8 @@ class Handler(BaseHTTPRequestHandler):
                 name = parts[2]
                 if len(parts) == 3:
                     if not sessions.store().exists(name):
+                        if name not in {d.name for d in sessions.session_dirs()}:   # a GET registers nothing
+                            return self._json({"error": f"{name}: no such session"}, 404)
                         sessions.refresh(name, probe_videos=False)
                     o = sessions.overview(name, cached_only=True)
                     for b in o["arms_pending"]:
@@ -333,7 +362,7 @@ class Handler(BaseHTTPRequestHandler):
                     s = sessions.load(name)
                     rows = []
                     for m in s["matches"]:
-                        if q.get("video") and m["video"] != q["video"]:
+                        if (q.get("video") and m["video"] != q["video"]) or not _indexed(m["bbl"]):
                             continue
                         for e in _events(m["bbl"], m["arm"]):
                             rows.append({**e, "video": m["video"], "start": round(e["arm_from"] + m["offset"], 2), "end": round(e["arm_to"] + m["offset"], 2)})
@@ -342,12 +371,15 @@ class Handler(BaseHTTPRequestHandler):
                     s = sessions.load(name)
                     out = []
                     for m in s["matches"]:
-                        if m["video"] == q.get("video"):
+                        if m["video"] == q.get("video") and _indexed(m["bbl"]):
                             out.append({"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **_series(m["bbl"], m["arm"], float(q.get("step", 0.1)))})
                     return self._json(out)
                 if parts[3] == "metrics":
                     s = sessions.load(name)
                     t0, t1 = float(q["from"]), float(q["to"])
+                    # before match_for measures the arms; a gone log measures as no length and load_arm 404s below
+                    if any(_log_state(m["bbl"]) == "decoding" for m in s["matches"] if m["video"] == q.get("video")):
+                        return self._json({"error": "log not decoded yet, try again shortly"}, 503)
                     m = sessions.match_for(s, q["video"], t0)
                     if not m:
                         return self._json({"error": "no match"}, 404)
@@ -392,8 +424,8 @@ class Handler(BaseHTTPRequestHandler):
                 if what == "note":
                     sessions.set_note(name, b.get("note", ""), b.get("video"))
                     return self._json({"ok": True})
-                if what == "match":
-                    return self._json(sessions.store().set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", "")))
+                if what == "match":                     # resolves the clip and the log like the CLI does
+                    return self._json(sessions.set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", ""))[0])
                 if what == "blackbox":
                     for f in b.get("add", []):
                         sessions.attach(name, f)
