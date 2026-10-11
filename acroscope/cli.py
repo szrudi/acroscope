@@ -220,7 +220,8 @@ def cmd_arms(a):
     print(f"{idx['file']}  ({len(idx['arms'])} arms)")
     for r in idx["arms"]:
         flags = ("" if r["motors_spun"] else " motors-off") + ("" if r["complete"] else " cut-off") + (" TRUNCATED" if r["truncated"] else "")
-        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  uptime {r.get('uptime_start', 0):7.1f}-{r.get('uptime_end', 0):7.1f}  {r['vbat_start']:.2f}→{r['vbat_end']:.2f} V (min {r['vbat_min']:.2f})  disarm {r['disarm_reason']}{flags}")
+        v = {k: "-" if r.get(k) is None else f"{r[k]:.2f}" for k in ("vbat_start", "vbat_end", "vbat_min")}   # an arm can log no vbat
+        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  uptime {r.get('uptime_start') or 0:7.1f}-{r.get('uptime_end') or 0:7.1f}  {v['vbat_start']}→{v['vbat_end']} V (min {v['vbat_min']})  disarm {r['disarm_reason']}{flags}")
     for b in idx.get("boots", []):
         print(f"  boot: arms {b['first']}-{b['last']} ({len(b['arms'])} arms, uptime {b['uptime_start']:.1f}-{b['uptime_end']:.1f} s, {b['length']:.0f} s span): one offset covers them all (`match --boot`)")
 
