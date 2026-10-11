@@ -122,8 +122,19 @@ class PlayerTest(unittest.TestCase):
                         self.assertGreater(r["height"], 20)
                         self.assertAlmostEqual(r["bottom"], r["inner"], delta=1)
 
+    def test_no_empty_row_between_the_controls_and_the_pane(self):
+        """The readout under the controls is empty until the video reports a time: it takes no room then (it left
+        ~32 px of nothing between the buttons and the list); once it reads, it is there."""
+        page = self.open("2026-10-13-phone", PHONE)
+        gap = page.evaluate("""() => { showMTab('clips'); document.getElementById('readout').innerHTML = '';
+          return document.querySelector('aside').getBoundingClientRect().top - document.querySelector('.mctl').getBoundingClientRect().bottom; }""")
+        self.assertLessEqual(gap, 8)
+        h = page.evaluate("() => { readout(); return document.getElementById('readout').getBoundingClientRect().height; }")
+        self.assertGreater(h, 10)
+
     def test_pull_to_refresh_needs_a_long_pull(self):
-        """With the header showing, a pull down on it of 150 px reloads the page; a shorter one does not."""
+        """With the header showing, a pull down on it of 22 % of the screen height (204 px on Rudi's phone) reloads
+        the page; a shorter one does not."""
         page = self.open("2026-10-13-phone", PHONE)
         pull = """dy => {
           const el = document.querySelector('header'), x = 200, y = 60;
@@ -136,11 +147,11 @@ class PlayerTest(unittest.TestCase):
         }"""
         release = "() => { setTimeout(window.__release, 100); }"
         page.evaluate("window.__before = 1")
-        self.assertEqual(page.evaluate(pull, 100), "↓ pull to refresh")
+        self.assertEqual(page.evaluate(pull, 180), "↓ pull to refresh")
         page.evaluate(release)
         page.wait_for_timeout(400)
         self.assertEqual(page.evaluate("window.__before"), 1)                  # no reload
-        self.assertEqual(page.evaluate(pull, 170), "↻ release to refresh")
+        self.assertEqual(page.evaluate(pull, 220), "↻ release to refresh")
         with page.expect_navigation():
             page.evaluate(release)
         page.wait_for_load_state("load")

@@ -51,6 +51,7 @@
   video { width:100%; max-height:62vh; background:#000; border-radius:6px; outline:none }
   #strip { width:100%; height:54px; display:block; cursor:pointer; border-radius:4px; background:#0f1115 }
   .readout { display:flex; gap:18px; color:var(--dim); font-variant-numeric:tabular-nums; font-size:13px; min-height:20px }
+  body.phone .readout:empty { display:none }   /* until the video reports a time: no empty row (and its gaps) under the controls; the desktop keeps the row so nothing jumps */
   .readout b { color:var(--fg); font-weight:500 }
   .editor { display:none; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--panel); gap:8px; flex-direction:column }
   .editor.open { display:flex }
@@ -626,11 +627,11 @@ setPhone();
 
 // pull to refresh on the phone: the page never scrolls (body.phone is fixed, only the panes do), so the browser's own
 // pull-down never fires, and the installed app has no reload button. With the header showing, a pull down of
-// PTR_PX (150 px: 90 fired by accident) on the header, the video area or a pane scrolled to its top reloads; the address bar is a link to what is
+// PTR_FRAC of the screen height on the header, the video area or a pane scrolled to its top reloads; the address bar is a link to what is
 // on screen (setUrl), so the reload comes back to the same clip and spot. Not on the strip, the video, a field or
 // the editor: those drags are theirs.
 {
-  const PTR_PX = 150, ptr = $('#ptr');
+  const PTR_FRAC = 0.22, ptr = $('#ptr');   // of the screen height: 204 px on Rudi's Pixel (412 x 927); 90 and 150 fired by accident
   let y0 = null, x0 = 0, go = false;
   const scroller = el => { for (; el && el !== document.body; el = el.parentElement) { const o = getComputedStyle(el).overflowY; if ((o === 'auto' || o === 'scroll') && el.scrollHeight > el.clientHeight) return el; } return null; };
   const reset = () => { y0 = null; go = false; ptr.classList.remove('on', 'go'); ptr.textContent = '↓ pull to refresh'; };
@@ -649,7 +650,7 @@ setPhone();
     if (dy < 0 || dx > Math.max(dy, 10) || (sc && sc.scrollTop > 0)) return reset();   // up, sideways or scrolling: not a pull
     if (dy < 10) return;
     ptr.classList.add('on');
-    go = dy >= PTR_PX;
+    go = dy >= PTR_FRAC * innerHeight;
     ptr.classList.toggle('go', go);
     ptr.textContent = go ? '↻ release to refresh' : '↓ pull to refresh';
   }, {passive: true});
