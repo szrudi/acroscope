@@ -345,14 +345,35 @@ def move_clip(session: str, vid: str, to: str) -> dict:
     if not SESSION_RE.match(to):
         raise ValueError(f"{to}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
     file = resolve_clip(session, vid)
-    v = next((x for x in load(session)["videos"] if x["file"] == file), None)
+    v = next((x for x in load(session)["videos"] if x["file"] == file), None) or {"file": file}
+    _check_moves(session, [v], to)
+    _move_clip(session, v, to)
+    return load(to)
+
+
+def _check_moves(session: str, clips: list[dict], to: str) -> None:
+    """Refuse before anything moves: a clip whose file, original or row is already in `to` (a rename onto an
+    existing file replaces it without a word, and the row would clash halfway). Names every clash at once."""
+    there = {v["file"] for v in load(to)["videos"]}
+    clash = []
+    for v in clips:
+        if (VIDEOS_DIR / session / v["file"]).exists() and (VIDEOS_DIR / to / v["file"]).exists():
+            clash.append(str(VIDEOS_DIR / to / v["file"]) + " exists")
+        elif v["file"] in there:
+            clash.append(f"{v['file']} is in {to} already")
+        if v.get("original") and (DATA_DIR / v["original"]).exists() and (DATA_DIR / "originals" / to / Path(v["original"]).name).exists():
+            clash.append(f"originals/{to}/{Path(v['original']).name} exists")
+    if clash:
+        raise ValueError("nothing moved: " + "; ".join(clash))
+
+
+def _move_clip(session: str, v: dict, to: str) -> None:
+    file = v["file"]
     src, dst = VIDEOS_DIR / session / file, VIDEOS_DIR / to / file
     if src.exists():
-        if dst.exists():
-            raise ValueError(f"{dst} exists")
         dst.parent.mkdir(parents=True, exist_ok=True)
         src.rename(dst)
-    if v and v.get("original"):
+    if v.get("original"):
         o = DATA_DIR / v["original"]
         if o.exists():
             no = DATA_DIR / "originals" / to / o.name
@@ -360,7 +381,6 @@ def move_clip(session: str, vid: str, to: str) -> dict:
             o.rename(no)
             store().set_video_fields(session, file, original=str(no.relative_to(DATA_DIR)))
     store().move_clip(session, file, to)
-    return load(to)
 
 
 def delete_clip(session: str, vid: str) -> dict:
@@ -398,8 +418,9 @@ def merge_sessions(session: str, into: str) -> dict:
     if not SESSION_RE.match(into):
         raise ValueError(f"{into}: a session is named YYYY-MM-DD or YYYY-MM-DD-<name>")
     s = load(session)
+    _check_moves(session, s["videos"], into)            # all or nothing: a clash at clip 5 must not leave 1-4 moved
     for v in s["videos"]:
-        move_clip(session, v["file"], into)
+        _move_clip(session, v, into)
     for b in s["blackbox"]:
         store().attach(into, b)
     if s.get("note"):

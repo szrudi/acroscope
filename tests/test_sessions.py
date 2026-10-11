@@ -137,6 +137,43 @@ class EditGuardsTest(_Scratch):
         self.assertFalse(sessions.store().exists(A))
         self.assertFalse((sessions.VIDEOS_DIR / A).exists())
 
+    def test_merge_checks_every_clip_before_moving_one(self):
+        # a merge that would stop at clip 2 must not have moved clip 1 already: nothing moves, and the error names
+        # every clash. Clashes: the clip's file in the target folder, its original in the target's originals/,
+        # and its row in the target session
+        A, B = "2026-10-09-a", "2026-10-09-b"
+        for f in ("2026-10-09_001.mp4", "2026-10-09_002.mp4", "2026-10-09_003.mp4"):
+            self.session_with_clip(A, f) if f.endswith("1.mp4") else (sessions.VIDEOS_DIR / A / f).write_bytes(b"")
+        sessions.refresh(A, probe_videos=False)
+        (sessions.DATA_DIR / "originals" / A).mkdir(parents=True)
+        (sessions.DATA_DIR / "originals" / A / "VID1.mov").write_bytes(b"a's")
+        sessions.store().set_video_fields(A, "2026-10-09_001.mp4", original=f"originals/{A}/VID1.mov")
+        self.session_with_clip(B, "2026-10-09_002.mp4")                         # the same file id: a clash on disk
+        (sessions.DATA_DIR / "originals" / B).mkdir(parents=True)
+        (sessions.DATA_DIR / "originals" / B / "VID1.mov").write_bytes(b"b's")  # rename() would replace it silently
+        sessions.store().upsert_video(B, "2026-10-09_003.mp4")                   # a row only (file gone): a clash in the db
+        before = (sorted(p.name for p in (sessions.VIDEOS_DIR / A).iterdir()), sessions.load(A), sessions.load(B))
+        with self.assertRaises(ValueError) as cm:
+            sessions.merge_sessions(A, B)
+        for clash in ("2026-10-09_002.mp4", "VID1.mov", "2026-10-09_003.mp4"):
+            self.assertIn(clash, str(cm.exception))
+        self.assertEqual((sorted(p.name for p in (sessions.VIDEOS_DIR / A).iterdir()), sessions.load(A), sessions.load(B)), before)
+        self.assertEqual((sessions.DATA_DIR / "originals" / B / "VID1.mov").read_bytes(), b"b's")
+        self.assertTrue((sessions.DATA_DIR / "originals" / A / "VID1.mov").exists())
+
+    def test_move_clip_does_not_replace_an_original(self):
+        A, B = "2026-10-09-a", "2026-10-09-b"
+        self.session_with_clip(A, "2026-10-09_001.mp4")
+        self.session_with_clip(B, "2026-10-09_002.mp4")
+        for s, data in ((A, b"a's"), (B, b"b's")):
+            (sessions.DATA_DIR / "originals" / s).mkdir(parents=True)
+            (sessions.DATA_DIR / "originals" / s / "VID1.mov").write_bytes(data)
+        sessions.store().set_video_fields(A, "2026-10-09_001.mp4", original=f"originals/{A}/VID1.mov")
+        with self.assertRaisesRegex(ValueError, "VID1.mov"):
+            sessions.move_clip(A, "001", B)
+        self.assertEqual((sessions.DATA_DIR / "originals" / B / "VID1.mov").read_bytes(), b"b's")
+        self.assertTrue((sessions.VIDEOS_DIR / A / "2026-10-09_001.mp4").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
