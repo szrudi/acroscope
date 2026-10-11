@@ -66,6 +66,11 @@ python3 -m venv .venv && .venv/bin/pip install -e .     # needs ffmpeg/ffprobe o
 .venv/bin/acroscope --help
 ```
 
+Tests: `.venv/bin/python -m unittest discover tests` (the database, the API against a server child, ingest on a
+synthetic batch, the aligner, the real-data pins through a server when one is configured). The player's
+end-to-end tests run in a headless Chromium and skip until `scripts/browser-setup.sh` has run once (Playwright as the
+`e2e` extra, the browser and the libraries it needs under `~/.cache`, no root).
+
 `pip install orangebox` ends with an "Invalid script entry point: bb2csv" error from orangebox 0.5.0's wheel;
 the package is installed anyway (the Dockerfile tolerates it and checks the import).
 
