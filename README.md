@@ -58,9 +58,6 @@ The cache (`ACROSCOPE_CACHE`, default `~/.cache/acroscope`) holds decoded arms (
 `video time = arm time + offset`. The clips have static cut out, so an offset only holds within one arm; a clip can
 have several matches.
 
-The mark and the wordmark live in `acroscope/static/brand/` (`BRAND.md` there has the concept, the palette and how
-to regenerate the PNGs; `scripts/brand.py` generates the geometry).
-
 ## Install
 
 ```
@@ -178,3 +175,9 @@ Every `metrics` result carries a `conventions` block with these facts, so they n
 0.01 V; `accSmooth` /2048 = g; `imuQuaternion` /32767. Roll + = right, pitch + = nose down, yaw + = nose right; a
 back flip or a powerloop integrates to a negative pitch angle. The firmware's `flightModeFlags` labels are wrong
 (shows ANGLE while the OSD shows AIR).
+
+## Brand
+
+The mark (a powerloop seen through a scope), the wordmark, the favicon, the app icon and the banner above live in
+`acroscope/static/brand/`. `BRAND.md` there has the concept, the palette, usage notes and the commands that
+regenerate the PNGs; `scripts/brand.py` generates the geometry.
