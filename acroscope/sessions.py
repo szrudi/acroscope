@@ -171,6 +171,10 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
         return store().refresh(session, probe_videos)
     db = store()
     d = VIDEOS_DIR / session
+    if not d.is_dir() and not db.exists(session):
+        # nothing to bring in line: a session is not made from a name alone (a probe still running for a session
+        # merged or renamed away meanwhile, a page asking for the old name, brought it back empty)
+        raise FileNotFoundError(f"{session}: no such session")
     db.ensure_session(session, session[:10])
     s = db.load(session)
     present = clip_files(d) if d.is_dir() else None
@@ -330,6 +334,30 @@ def move_clip(session: str, vid: str, to: str) -> dict:
             store().set_video_fields(session, file, original=str(no.relative_to(DATA_DIR)))
     store().move_clip(session, file, to)
     return load(to)
+
+
+def delete_clip(session: str, vid: str) -> dict:
+    """A clip goes (a no-signal recording, a test): its file and its original into trash/<today>/<session>/, where
+    housekeeping empties a day's folder after TRASH_DAYS (until then: move the file back and refresh), and its row
+    with its matches and moments out of the database. {video, trash, matches, moments}."""
+    if remote():
+        return store().delete_clip(session, vid)
+    file = resolve_clip(session, vid)
+    v = next((x for x in load(session)["videos"] if x["file"] == file), None)
+    if v is None:
+        raise ValueError(f"{session}: no clip {vid}")
+    trash = DATA_DIR / "trash" / now()[:10] / session
+    dst = None
+    for src in [VIDEOS_DIR / session / file] + ([DATA_DIR / v["original"]] if v.get("original") else []):
+        if src.is_file():
+            t = trash / ("originals" if src.parent.parent.name == "originals" else "") / src.name
+            if t.exists():
+                raise ValueError(f"{t} exists")
+            t.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(t)
+            dst = dst or t
+    out = store().delete_clip(session, file)
+    return {**out, "trash": str(dst.relative_to(DATA_DIR)) if dst else None}
 
 
 def merge_sessions(session: str, into: str) -> dict:

@@ -58,9 +58,9 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   trail of how a conclusion was reached is the record); don't squash. Rudi reviews and merges; never self-merge
   anything, here or in the homelab repo. Komodo can deploy the stack from a branch to try a PR.
 - `.venv/bin/python -m unittest discover tests` before committing: the database, the API against a server child,
-  ingest end to end on a synthetic batch, the aligner on made-up data, and the real-data pins (10-07 schammer by
+  ingest end to end on a synthetic batch, the aligner on made-up data, the player in a headless browser, and the real-data pins (10-07 schammer by
   hand in `video-blackbox-index.md`; the #4 truths on 10-10 001) through the server. A pin of new behaviour is red
-  until the server runs it. Red/green: write the test first for store, API and aligner work.
+  until the server runs it. Red/green: write the test first for store, API, aligner and player work.
 - Smoke checks with known answers through the server, seconds each: `sessions 10-07` (20 arms, 12 matches, 29
   moments); `events 10-07 011` (motor 1 power loss at 1:23.4, hard landing at 1:24.4); `automatch 10-07 008`
   without `--write` (arms 14/15/17 at about +4.75/+20.25/+64.25); `metrics 10-07 007 1:20 1:25 --loop` (-385 deg
@@ -72,8 +72,14 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - orangebox 0.5.0's wheel has a broken script entry point; pip exits 1 after installing. The Dockerfile tolerates it.
 - ffmpeg filter graphs: `:` in drawtext text must be escaped; concat of several inputs needs `trim=end_frame=1` per input.
 - Conventions the metrics ship (`metrics.CONVENTIONS`) are the single place for sign/scaling facts. Keep them true.
-- The player has no test harness and joan no browser: `node --check` the script, read the renders you can, and say
-  so in the commit; Rudi's eyes are the UI test.
+- The player is tested in a headless Chromium (`tests/test_player.py`, Playwright): a server child on a scratch
+  data dir, the page driven at a desktop size and at Rudi's phone's (412 x 927 CSS px), the layout measured, the
+  dialogs answered, touch gestures dispatched. One-time setup per machine, no root: `scripts/browser-setup.sh`
+  (Playwright into `.venv` as the `e2e` extra, the browser into `~/.cache/ms-playwright`, the five libraries
+  trixie lacks unpacked into `~/.cache/acroscope-browser`); without it the tests skip. A player change gets a test
+  there, red first like the rest. For a look, `page.screenshot()` and Read the PNG. What it cannot stand in for:
+  the installed app's own viewport on the phone (system bars, 100dvh) and how a gesture feels; say so in the
+  commit, Rudi's phone is the last check.
 
 ## Known gaps / ideas (also as issues)
 - #3: read the flight counter (top right since 2026-10-10, Betaflight stats on) so every arm names itself.

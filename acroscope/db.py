@@ -280,6 +280,16 @@ class Db:
             self._touch(session)
         return out
 
+    def delete_clip(self, session: str, video: str) -> dict:
+        """A clip's row with its matches and moments (the file is the caller's): {video, matches, moments}."""
+        if not self.c.execute("SELECT 1 FROM videos WHERE session = ? AND file = ?", (session, video)).fetchone():
+            raise ValueError(f"{session}: no clip {video}")
+        n_m = self.c.execute("DELETE FROM matches WHERE session = ? AND video = ?", (session, video)).rowcount
+        n_t = self.c.execute("DELETE FROM moments WHERE session = ? AND video = ?", (session, video)).rowcount
+        self.c.execute("DELETE FROM videos WHERE session = ? AND file = ?", (session, video))
+        self._touch(session)
+        return {"video": video, "matches": n_m, "moments": n_t}
+
     # ---- editing sessions -------------------------------------------------------------------------------------
 
     def rename_session(self, old: str, new: str) -> None:
