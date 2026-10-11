@@ -583,15 +583,27 @@ function showMTab(t) {
 document.querySelectorAll('#mtabs span').forEach(x => x.onclick = () => showMTab(x.dataset.mtab));
 phoneQuery.addEventListener('change', setPhone);
 setPhone();
-// scrolling down inside a pane hides the header, scrolling up shows it again (phone only)
+// the header on the phone: a drag on the area outside the tabs (video, strip, controls, readout, tag bar) hides it
+// on the way up and shows it on the way down; inside a tab, only pulling down at the very top brings it back,
+// scrolling the tab's content never hides it
 {
-  let lastY = 0;
-  document.querySelectorAll('.pane-body, .list').forEach(el => el.addEventListener('scroll', () => {
-    if (!phoneQuery.matches) return;
-    const y = el.scrollTop, d = y - lastY; lastY = y;
-    if (d > 8 && y > 40) document.body.classList.add('hide-head');
-    else if (d < -8 || y <= 0) document.body.classList.remove('hide-head');
-  }, {passive: true}));
+  const hide = () => document.body.classList.add('hide-head'), show = () => document.body.classList.remove('hide-head');
+  let y0 = null, fired = false;
+  const center = document.querySelector('.center');
+  center.addEventListener('touchstart', e => { y0 = e.touches[0].clientY; fired = false; }, {passive: true});
+  center.addEventListener('touchmove', e => {
+    if (!phoneQuery.matches || y0 === null || fired) return;
+    const dy = e.touches[0].clientY - y0;
+    if (dy < -30) { hide(); fired = true; } else if (dy > 30) { show(); fired = true; }
+  }, {passive: true});
+  document.querySelectorAll('.pane-body, .list').forEach(el => {
+    let py0 = null, atTop = false;
+    el.addEventListener('touchstart', e => { py0 = e.touches[0].clientY; atTop = el.scrollTop <= 0; }, {passive: true});
+    el.addEventListener('touchmove', e => {
+      if (!phoneQuery.matches || py0 === null || !atTop) return;
+      if (e.touches[0].clientY - py0 > 40 && el.scrollTop <= 0) { show(); py0 = null; }
+    }, {passive: true});
+  });
 }
 
 // ---- a question at the bottom of the screen instead of prompt(): resolves to the text, or null
