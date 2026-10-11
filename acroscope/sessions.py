@@ -171,6 +171,10 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
         return store().refresh(session, probe_videos)
     db = store()
     d = VIDEOS_DIR / session
+    if not d.is_dir() and not db.exists(session):
+        # nothing to bring in line: a session is not made from a name alone (a probe still running for a session
+        # merged or renamed away meanwhile, a page asking for the old name, brought it back empty)
+        raise FileNotFoundError(f"{session}: no such session")
     db.ensure_session(session, session[:10])
     s = db.load(session)
     present = clip_files(d) if d.is_dir() else None

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -153,6 +154,21 @@ class ApiTest(unittest.TestCase):
         self.assertEqual((s["matches"], s["moments"]), ([], []))
         with self.assertRaises(RemoteError):
             r.delete_clip(S, "002")                                  # gone already
+
+    def test_no_session_from_nothing(self):
+        # a session that is neither in the database nor on disk is not created by a refresh or a page asking for it:
+        # a probe still running for a session merged or renamed away meanwhile brought it back empty (#16)
+        r = self.r
+        with self.assertRaises(RemoteError):
+            r.refresh("2026-10-20-nothing", probe_videos=False)
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(self.url + "/api/session/2026-10-20-nothing")
+        self.assertEqual(e.exception.code, 404)
+        self.assertNotIn("2026-10-20-nothing", [s["session"] for s in r.sessions()])
+        # a folder not registered yet is registered, as before
+        (Path(self.tmp.name) / "data" / "videos" / "2026-10-20-new").mkdir()
+        urllib.request.urlopen(self.url + "/api/session/2026-10-20-new").read()
+        self.assertTrue(r.exists("2026-10-20-new"))
 
     def test_cli_proxy(self):
         r = self.r
