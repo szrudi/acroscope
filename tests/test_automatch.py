@@ -67,8 +67,10 @@ class AutomatchTest(unittest.TestCase):
 
     def test_flash_full_in_this_clip(self):
         # the first run's disarm shows BLACKBOX 100 %: nothing after it is in the log, and that run can only be the
-        # log's cut-off last arm (here: arm 6, 40 s, does not fit a 10 s run)
+        # log's cut-off last arm (here: arm 6, 40 s, does not fit a 10 s run). It is this fill: the day before's
+        # clip holds an arm of the log.
         self.index = FULL
+        self.db.set_match("2026-10-02", "2026-10-02_001.mp4", BBL, 1, 5.0)
         self.stats["2026-10-03_001.mp4"] = [{"total_arm": 10, "blackbox": 100}, {"total_arm": 50, "blackbox": 100}]
         r = osd.automatch("2026-10-03", "2026-10-03_001.mp4")
         self.assertEqual(self.arms(r), [])
@@ -78,14 +80,25 @@ class AutomatchTest(unittest.TestCase):
         self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
 
     def test_flash_full_in_an_earlier_clip(self):
+        # the flash filling up (55 %, then 100 %) in the clip before
         self.index = FULL
-        self.stats["2026-10-03_001.mp4"] = [{"total_arm": 10, "blackbox": 100}, {"total_arm": 50, "blackbox": 100}]
+        self.stats["2026-10-03_001.mp4"] = [{"total_arm": 10, "blackbox": 55}, {"total_arm": 50, "blackbox": 100}]
         r = osd.automatch("2026-10-03", "2026-10-03_002.mp4")
         self.assertEqual(self.arms(r), [])
         self.assertEqual(r["flash_full"]["clip"], "2026-10-03_001")
         # an earlier clip below 100 % leaves the log open
         self.stats["2026-10-03_001.mp4"] = [{"total_arm": 10, "blackbox": 55}, {"total_arm": 50, "blackbox": 66}]
         self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_002.mp4")), [2, 6])
+
+    def test_a_full_flash_before_the_erase_is_not_this_log(self):
+        # 10-07 001-003: 001 shows the previous fill at 100 %, the flash is erased in 003, and this log starts
+        # after it. A 100 % with neither a lower reading nor an arm of the log before it says nothing.
+        self.index = FULL
+        self.stats["2026-10-03_001.mp4"] = [{"total_arm": 10, "blackbox": 100}, {"total_arm": 50, "blackbox": 100}]
+        r = osd.automatch("2026-10-03", "2026-10-03_002.mp4")
+        self.assertEqual(self.arms(r), [2, 6])
+        self.assertIsNone(r["flash_full"])
+        self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
 
 
 if __name__ == "__main__":
