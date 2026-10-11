@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -56,13 +57,58 @@ def _cli(*args: str):
     subprocess.run([sys.executable, "-m", "acroscope.cli", *args], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
 
-def run_cli(args: list[str]) -> dict:
-    """A client's CLI command, run here: {stdout, stderr, code}. Only PROXIED commands."""
+def _check_proxied(args: list[str]) -> None:
     if not args or args[0] not in PROXIED:
         raise ValueError(f"not a command a client may run here: {args[:1]}")
+
+
+def run_cli(args: list[str], timeout: float = 1800) -> dict:
+    """A client's CLI command, run here: {stdout, stderr, code}. Only PROXIED commands."""
+    _check_proxied(args)
     env = dict(os.environ, ACROSCOPE_URL="")
-    r = subprocess.run([sys.executable, "-m", "acroscope.cli", *args], capture_output=True, text=True, env=env, timeout=1800)
+    r = subprocess.run([sys.executable, "-m", "acroscope.cli", *args], capture_output=True, text=True, env=env, timeout=timeout)
     return {"stdout": r.stdout, "stderr": r.stderr, "code": r.returncode}
+
+
+# A client's command as a job: POST /api/cli with "async" answers {job} at once, GET /api/cli/<job> gives {done}
+# until it has finished, then the result (once). An automatch over a whole session takes longer than any HTTP
+# read timeout the client can sensibly wait on (#9). The child is a subprocess, so a thread is fine.
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+JOB_TIMEOUT = 3600               # seconds a job's child may run
+JOB_KEEP = 3600                  # seconds a finished job nobody fetched is kept
+
+
+def start_job(args: list[str]) -> str:
+    _check_proxied(args)
+    jid = uuid.uuid4().hex[:12]
+    now = time.time()
+    with _jobs_lock:
+        for k in [k for k, j in _jobs.items() if j["done"] and now - j["finished"] > JOB_KEEP]:
+            del _jobs[k]
+        _jobs[jid] = {"done": False, "args": args, "started": now}
+
+    def run():
+        try:
+            r = run_cli(args, timeout=JOB_TIMEOUT)
+        except Exception as e:  # noqa: BLE001  (the child timed out, ...)
+            r = {"stdout": "", "stderr": f"{type(e).__name__}: {e}\n", "code": 1}
+        with _jobs_lock:
+            _jobs[jid] = {"done": True, "finished": time.time(), **r}
+    threading.Thread(target=run, name=f"job:{jid}", daemon=True).start()
+    return jid
+
+
+def job(jid: str) -> dict | None:
+    """{done: False, seconds} while running; the result once done (and the job is forgotten); None if unknown."""
+    with _jobs_lock:
+        j = _jobs.get(jid)
+        if j is None:
+            return None
+        if not j["done"]:
+            return {"done": False, "seconds": round(time.time() - j["started"])}
+        del _jobs[jid]
+    return {"done": True, "stdout": j["stdout"], "stderr": j["stderr"], "code": j["code"]}
 
 
 def _decode_async(bbl: str):
@@ -246,6 +292,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
             if parts == ["api", "inbox"]:
                 return self._json(ingest.list_inbox())
+            if parts[:2] == ["api", "cli"] and len(parts) == 3:
+                j = job(parts[2])
+                return self._json(j if j else {"error": f"no job {parts[2]} (finished and fetched, or the server restarted)"}, 200 if j else 404)
             if parts == ["api", "file"]:                      # a file the CLI made here (a frame, a sheet): cache only
                 p = Path(q.get("path", "")).resolve()
                 if not p.is_relative_to(CACHE_DIR.resolve()):
@@ -316,7 +365,11 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "scan"]:
                 return self._json(sessions.scan())
             if parts == ["api", "cli"]:
-                return self._json(run_cli([str(x) for x in self._body().get("args", [])]))
+                b = self._body()
+                args = [str(x) for x in b.get("args", [])]
+                if b.get("async"):
+                    return self._json({"job": start_job(args)})
+                return self._json(run_cli(args))
             if parts == ["api", "import"]:
                 return self._json(sessions.import_json(self._body().get("session")))
             if parts[:2] == ["api", "inbox"] and len(parts) == 4 and parts[3] == "retry":

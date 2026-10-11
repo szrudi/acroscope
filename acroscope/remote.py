@@ -5,6 +5,7 @@ server's endpoints, and the commands that need the clips, the logs or the cache 
 with frames and sheets fetched back through fetch() (GET /api/file). Nothing on the client machine needs the data.
 """
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -91,7 +92,19 @@ class Remote:
         return self._call("POST", self._s(session) + "/merge", {"into": into})
 
     def cli(self, args: list[str]) -> dict:
-        return self._call("POST", "/api/cli", {"args": args})
+        """{stdout, stderr, code} of a CLI command run on the server: started as a job and polled, so a command
+        that runs for many minutes (automatch over a whole session) outlasts no read timeout. A server from
+        before jobs answers with the result straight away."""
+        r = self._call("POST", "/api/cli", {"args": args, "async": True})
+        if "job" not in r:
+            return r
+        jid, wait = r["job"], 0.2
+        while True:
+            time.sleep(wait)
+            wait = min(wait * 1.5, 2.0)
+            r = self._call("GET", "/api/cli/" + jid)
+            if r.get("done"):
+                return {k: r[k] for k in ("stdout", "stderr", "code")}
 
     def fetch(self, path: str, dest):
         """A file the server's CLI made (under its cache dir) into `dest`."""

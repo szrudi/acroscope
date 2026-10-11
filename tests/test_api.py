@@ -49,6 +49,23 @@ class ApiTest(unittest.TestCase):
         cls.proc.wait(5)
         cls.tmp.cleanup()
 
+    def test_cli_runs_as_a_job(self):
+        # a long proxied command must not hit the client's read timeout (#9): the server answers with a job, the
+        # client polls it
+        j = self.r._call("POST", "/api/cli", {"args": ["sessions", "--json"], "async": True})
+        self.assertIn("job", j)
+        for _ in range(100):
+            r = self.r._call("GET", "/api/cli/" + j["job"])
+            if r["done"]:
+                break
+            time.sleep(0.1)
+        self.assertEqual(r["code"], 0, r["stderr"])
+        with self.assertRaises(RemoteError):                       # fetched once, then gone
+            self.r._call("GET", "/api/cli/" + j["job"])
+        self.assertEqual(self.r.cli(["sessions", "--json"])["code"], 0)
+        with self.assertRaises(RemoteError):
+            self.r._call("POST", "/api/cli", {"args": ["serve"], "async": True})
+
     def test_session_roundtrip(self):
         r = self.r
         s = r.refresh("2026-10-07-s", probe_videos=False)
