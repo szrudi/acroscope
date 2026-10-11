@@ -102,7 +102,8 @@
   body.phone { overflow:hidden; width:100vw; max-width:100vw; position:fixed; inset:0; height:100dvh }   /* the page never scrolls; the panes do */
   body.phone.hide-head header { display:none }   /* scrolled down in a pane: the header goes; scrolling up brings it back */
   body.phone .mtabs { padding-bottom:env(safe-area-inset-bottom) }
-  body.phone main { display:flex; flex-direction:column; min-height:0; min-width:0; max-width:100vw; overflow-x:hidden }
+  body.phone main { display:flex; flex-direction:column; min-height:0; min-width:0; max-width:100vw; overflow-x:hidden; grid-row:2 }   /* row 2 also with the header hidden: in row 1 (auto) a short pane left the tab bar mid-screen */
+  body.phone .mtabs { margin-top:auto }   /* the tab bar at the bottom however little the pane holds */
   body.phone main > *, body.phone .center > * { min-width:0; max-width:100% }
   body.phone #strip { width:100% }
   body.phone .center { flex:none; padding:6px 8px; gap:6px; overflow:visible; order:0 } body.phone video { max-height:38vh }
