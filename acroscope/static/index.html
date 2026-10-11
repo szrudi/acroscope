@@ -130,7 +130,7 @@
 <header>
   <h1><img src="/static/brand/icon.svg" alt="" style="height:22px;vertical-align:-5px;margin-right:6px" onerror="this.remove()">acroscope</h1>
   <select id="session"></select>
-  <button class="small" id="renameSession" title="rename this session (YYYY-MM-DD-name); the date is the first ten characters">✎</button>
+  <button class="small" id="renameSession" title="rename this session (YYYY-MM-DD-name; the date is the first ten characters), or merge it into another by giving that one's name">✎</button>
   <span id="status" style="color:var(--dim)"></span>
   <span class="keys"><kbd>space</kbd> play <kbd>←</kbd><kbd>→</kbd> 2 s <kbd>,</kbd><kbd>.</kbd> frame <kbd>i</kbd><kbd>o</kbd> in/out <kbd>t</kbd> tag <kbd>n</kbd><kbd>p</kbd> next/prev <kbd>l</kbd> loop</span>
 </header>
@@ -270,13 +270,25 @@ function renderClips() {
   renderLogs();
 }
 
-// ---- editing sessions: rename (the date is the name's first ten characters), move a clip; both save at once
+// ---- editing sessions: rename (the date is the name's first ten characters), merge into another, move a clip;
+// all save at once. A rename onto an existing name offers the merge (#16: an import cut short leaves the first half
+// as <date>-unsorted next to the session the rest went to): clips, logs, matches, moments and the note move over,
+// and this session goes.
 async function renameSession() {
-  const name = await ask('session name (YYYY-MM-DD or YYYY-MM-DD-name)', S.session);
+  const name = await ask('session name (YYYY-MM-DD or YYYY-MM-DD-name; an existing session\'s name merges this one into it)', S.session);
   if (!name || name === S.session) return;
   const r = await api(`/api/session/${encodeURIComponent(S.session)}/rename`, {method: 'POST', body: JSON.stringify({name})});
+  if (r.error && / exists$/.test(r.error)) return mergeSession(name);
   if (r.error) { alert(r.error); return; }
   await init(); $('#session').value = name; await loadSession(name, clip);
+}
+async function mergeSession(into) {
+  const n = S.videos.length, logs = (S.blackbox || []).length;
+  if (!confirm(`${into} exists. Merge ${S.session} into it?\n\nIts ${n} clip${n === 1 ? '' : 's'}${logs ? ` and ${logs} log${logs === 1 ? '' : 's'}` : ''}, with their matches, moments and the note, go to ${into}, and ${S.session} is removed.`)) return;
+  const r = await api(`/api/session/${encodeURIComponent(S.session)}/merge`, {method: 'POST', body: JSON.stringify({into})});
+  if (r.error) { alert(r.error); return; }
+  flash(`merged into ${into}`);
+  await init(); $('#session').value = into; await loadSession(into, clip);
 }
 async function moveClip(file) {
   const others = [...$('#session').options].map(o => o.value).filter(n => n !== S.session);

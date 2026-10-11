@@ -105,6 +105,32 @@ class ApiTest(unittest.TestCase):
         with self.assertRaises(RemoteError):
             r.rename_session("2026-10-09-renamed", "not a session name")
 
+    def test_merge_a_cut_short_import(self):
+        # #16: an import cut short came in as <date>-unsorted (two clips and the log), the restart under the right
+        # name (one clip). Renaming onto the existing name refuses; merging takes clips, log, matches, moments, note.
+        r = self.r
+        root = Path(self.tmp.name)
+        for sess, clips in (("2026-10-11-unsorted", ["2026-10-11_001.mp4", "2026-10-11_002.mp4"]), ("2026-10-11-bea", ["2026-10-11_005.mp4"])):
+            (root / "data" / "videos" / sess).mkdir()
+            for c in clips:
+                (root / "data" / "videos" / sess / c).write_bytes(b"")
+            r.refresh(sess, probe_videos=False)
+        (root / "data" / "blackbox" / "BTFL_x.bbl").write_bytes(b"")
+        r.attach("2026-10-11-unsorted", "BTFL_x.bbl")
+        r.set_match("2026-10-11-unsorted", "2026-10-11_001.mp4", "BTFL_x.bbl", 1, 2.5)
+        r.tag("2026-10-11-unsorted", "2026-10-11_002.mp4", 1, 2, "t", ["poi"])
+        r.set_note("2026-10-11-unsorted", "cut short")
+        with self.assertRaisesRegex(RemoteError, "exists"):
+            r.rename_session("2026-10-11-unsorted", "2026-10-11-bea")
+        s = r.merge_sessions("2026-10-11-unsorted", "2026-10-11-bea")
+        self.assertEqual(sorted(v["file"] for v in s["videos"]), ["2026-10-11_001.mp4", "2026-10-11_002.mp4", "2026-10-11_005.mp4"])
+        self.assertEqual(s["blackbox"], ["BTFL_x.bbl"])
+        self.assertEqual([(m["video"], m["arm"]) for m in s["matches"]], [("2026-10-11_001.mp4", 1)])
+        self.assertEqual(len(s["moments"]), 1)
+        self.assertIn("cut short", s["note"])
+        self.assertFalse(r.exists("2026-10-11-unsorted"))
+        self.assertFalse((root / "data" / "videos" / "2026-10-11-unsorted").exists())
+
     def test_cli_proxy(self):
         r = self.r
         out = r.cli(["tags"])
