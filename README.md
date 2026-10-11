@@ -11,6 +11,12 @@ Two users over one data layer:
 - the **person** uses the player (`acroscope serve`): tagged playback, tagging with in/out points, suggestions
 - the **agent** (Claude Code) uses the CLI: sessions, arms, metrics, events, frames, tag
 
+![The player: a session's clips with their matched arms, the log under the video, the live readout, tags and moments](docs/player.png)
+*The player on the 2026-10-09 attic session, at the start of the moment "First flight up to the attic" (clip 018,
+0:21, the milestone tag picked): the clips with the arms automatch placed in them, the log strip under the video (arm
+63 at the cursor), the readout at the current frame, the tag bar, and the three milestone moments with their
+numbers.*
+
 The blackbox is a supporting layer: it shows which flights the clips cover and feeds the metrics. Deep log reading
 stays in the Betaflight App's blackbox viewer.
 
