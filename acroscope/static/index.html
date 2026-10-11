@@ -98,7 +98,8 @@
   #askbox.open { display:flex } #askbox input { flex:1; min-width:160px; font-size:16px } #askbox .l { width:100%; color:var(--dim); font-size:12px }
   /* phone: the video pinned at the top, one pane at a time under a tab bar; set by JS on the viewport, not just width */
   body.phone main { display:flex; flex-direction:column; min-height:0 }
-  body.phone .center { flex:none; padding:6px 8px; gap:6px; overflow:visible } body.phone video { max-height:38vh }
+  body.phone .center { flex:none; padding:6px 8px; gap:6px; overflow:visible; order:0 } body.phone video { max-height:38vh }
+  body.phone aside, body.phone .right { order:1 } body.phone .mtabs { order:2 }   /* video, then the pane, then the tabs, whatever the markup order */
   body.phone .mctl { display:flex } body.phone .mtabs { display:flex }
   body.phone aside, body.phone .right { display:none; border:0; flex:1; min-height:0; overflow:hidden }
   body.phone aside .tabs, body.phone .right h2 { display:none }
