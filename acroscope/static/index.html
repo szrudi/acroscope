@@ -48,11 +48,15 @@
   .clip .warn { color:var(--bad) } .clip .cnt { color:var(--acc) }
   .clip.gone { opacity:.55 } .clip.gone .n { text-decoration:line-through }
   .center { display:flex; flex-direction:column; padding:10px 14px; gap:8px }
-  video { width:100%; max-height:62vh; background:#000; border-radius:6px; outline:none }
+  video { width:100%; max-height:62vh; background:#000; border-radius:6px; outline:none; display:block }
+  .vwrap { position:relative } #sticks { position:absolute; inset:0; width:100%; height:100%; pointer-events:none }
   #strip { width:100%; height:54px; display:block; cursor:pointer; border-radius:4px; background:#0f1115 }
   .readout { display:flex; gap:18px; color:var(--dim); font-variant-numeric:tabular-nums; font-size:13px; min-height:20px }
   body.phone .readout:empty { display:none }   /* until the video reports a time: no empty row (and its gaps) under the controls; the desktop keeps the row so nothing jumps */
   .readout b { color:var(--fg); font-weight:500 }
+  .rorow { display:flex; gap:8px; align-items:flex-start } .rorow .readout { flex:1 }
+  #sticksTog.on { background:var(--acc); color:#1a1200; border-color:var(--acc) }
+  body.phone #sticksTog { display:none } body.phone .rorow:has(.readout:empty) { display:none }   /* the phone has its button in the controls */
   .editor { display:none; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--panel); gap:8px; flex-direction:column }
   .editor.open { display:flex }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
@@ -147,15 +151,16 @@
     <div class="pane-body" id="inbox" style="display:none"></div>
   </aside>
   <section class="center">
-    <video id="v" controls preload="metadata"></video>
+    <div class="vwrap"><video id="v" controls preload="metadata"></video><canvas id="sticks"></canvas></div>
     <canvas id="strip" height="54"></canvas>
     <div class="tagbar" id="tagbar"></div>
     <div class="mctl">
       <button data-act="prev" title="previous moment">◀◀</button><button data-act="in" title="set the in point here">in</button>
       <button data-act="out" title="set the out point here">out</button><button data-act="tag" title="tag from in to out">tag</button>
       <button data-act="next" title="next moment">▶▶</button><button data-act="loop" id="loopBtn" title="loop the current moment">loop</button>
+      <button data-act="sticks" id="sticksBtn" title="the sticks from the log over the picture">sticks</button>
     </div>
-    <div class="readout" id="readout"></div>
+    <div class="rorow"><div class="readout" id="readout"></div><button class="small" id="sticksTog" title="the sticks from the log over the picture (s)">sticks</button></div>
     <div class="snote" id="snote"></div>
     <div class="editor" id="editor">
       <div class="row">
@@ -260,7 +265,7 @@ async function refreshSession() {
   $('#status').textContent = pending ? 'decoding blackbox in the background…' : '';
   $('#snote').textContent = S.note || '';
   renderClips(); drawStrip();
-  if (keep && !pending) { series = await api(`/api/session/${encodeURIComponent(name)}/series?video=${encodeURIComponent(keep)}`); sugg = await api(`/api/session/${encodeURIComponent(name)}/events?video=${encodeURIComponent(keep)}`); renderSugg(); drawStrip(); }
+  if (keep && !pending) { loadSticks(keep); series = await api(`/api/session/${encodeURIComponent(name)}/series?video=${encodeURIComponent(keep)}`); sugg = await api(`/api/session/${encodeURIComponent(name)}/events?video=${encodeURIComponent(keep)}`); renderSugg(); drawStrip(); }
   if (pending) window._poll = setTimeout(refreshSession, 8000);
 }
 
@@ -383,6 +388,7 @@ async function loadClip(file) {
   if (gone) { v.removeAttribute('src'); v.load(); } else v.src = `/video/${encodeURIComponent(S.session)}/${encodeURIComponent(file)}`;
   renderClips(); renderMoments(); drawStrip();
   if (gone) $('#readout').innerHTML = `<b style="color:var(--bad)">file missing since ${gone.slice(0, 10)}</b> its moments and matches are kept until purged`;
+  sticks = []; drawSticks(); loadSticks(file);
   series = await api(`/api/session/${encodeURIComponent(S.session)}/series?video=${encodeURIComponent(file)}`);
   sugg = await api(`/api/session/${encodeURIComponent(S.session)}/events?video=${encodeURIComponent(file)}`);
   renderSugg(); drawStrip();
@@ -537,6 +543,61 @@ function drawStrip() {
     ctx.fillStyle = 'rgba(245,165,36,.25)'; ctx.fillRect(X(a), 0, Math.max(2, X(b) - X(a)), H); }
   ctx.fillStyle = '#fff'; ctx.fillRect(X(v.currentTime) - devicePixelRatio, 0, 2 * devicePixelRatio, H);
 }
+// ---- virtual sticks over the picture (Mode 2: throttle and yaw left, pitch and roll right), from the log every 20 ms;
+// the last STICK_TRAIL s drag behind each stick, faint to strong. The server gives every axis + = right or up.
+const STICK_TRAIL = 0.8, sk = $('#sticks'), skx = sk.getContext('2d');
+let sticks = [], showSticks = localStorage.getItem('acro.sticks') !== '0', skRaf = 0;
+async function loadSticks(file) {
+  const r = await api(`/api/session/${encodeURIComponent(S.session)}/sticks?video=${encodeURIComponent(file)}`);
+  if (clip === file && Array.isArray(r)) { sticks = r; drawSticks(); }
+}
+function sticksAt(t) { for (const s of sticks) { const a = t - s.offset; if (a >= 0 && a <= s.length) return [s, a]; } return [null, null]; }
+function stickPos(s, a) {   // both sticks at arm time a, between two samples by straight line: {lx, ly, rx, ry}, -100..100
+  const n = s.roll.length, f = Math.max(0, a / s.step), i = Math.min(Math.floor(f), n - 1), j = Math.min(i + 1, n - 1), w = f - i;
+  const k = x => s[x][i] + (s[x][j] - s[x][i]) * w;
+  return {lx: k('yaw'), ly: k('throttle') * 2 - 100, rx: k('roll'), ry: k('pitch')};
+}
+function drawSticks() {   // returns what it drew, [{box: [x, y, size], dot: [x, y]}] left then right, in canvas px
+  const W = sk.width = v.clientWidth * devicePixelRatio, H = sk.height = v.clientHeight * devicePixelRatio;
+  skx.clearRect(0, 0, W, H);
+  const [s, a] = showSticks ? sticksAt(v.currentTime) : [null, null]; if (!s) return [];
+  // the picture inside the element (letterboxed when their shapes differ); the gimbals at its bottom centre, above
+  // the craft name and the browser's controls (about 50 px whatever the size: on the phone that is a fifth of the picture)
+  const vw = v.videoWidth || 16, vh = v.videoHeight || 9, sc = Math.min(W / vw, H / vh), pw = vw * sc, ph = vh * sc, d = devicePixelRatio;
+  const px = (W - pw) / 2, py = (H - ph) / 2, G = Math.min(pw * 0.11, ph * 0.2), y0 = py + ph - Math.max(ph * 0.17, Math.min(58 * d, ph * 0.3)) - G;
+  const trail = [];
+  for (let i = Math.max(0, Math.ceil((a - STICK_TRAIL) / s.step)); i * s.step < a && i < s.roll.length; i++) trail.push(stickPos(s, i * s.step));
+  trail.push(stickPos(s, a));
+  const drawn = [];
+  for (const [x0, kx, ky] of [[px + pw / 2 - G * 1.18, 'lx', 'ly'], [px + pw / 2 + G * 0.18, 'rx', 'ry']]) {
+    const at = p => [x0 + (p[kx] + 100) / 200 * G, y0 + (100 - p[ky]) / 200 * G];
+    skx.globalAlpha = 1; skx.lineWidth = d;
+    skx.fillStyle = 'rgba(0,0,0,.35)'; skx.strokeStyle = 'rgba(255,255,255,.4)';
+    skx.beginPath(); skx.roundRect(x0, y0, G, G, G * 0.12); skx.fill(); skx.stroke();
+    skx.strokeStyle = 'rgba(255,255,255,.15)';
+    skx.beginPath(); skx.moveTo(x0 + G / 2, y0); skx.lineTo(x0 + G / 2, y0 + G); skx.moveTo(x0, y0 + G / 2); skx.lineTo(x0 + G, y0 + G / 2); skx.stroke();
+    skx.strokeStyle = '#f5a524'; skx.lineWidth = 2 * d; skx.lineCap = 'round';
+    for (let k = 1; k < trail.length; k++) {
+      skx.globalAlpha = k / trail.length;
+      skx.beginPath(); skx.moveTo(...at(trail[k - 1])); skx.lineTo(...at(trail[k])); skx.stroke();
+    }
+    skx.globalAlpha = 1; skx.fillStyle = '#fff'; skx.lineWidth = 1.5 * d;
+    skx.beginPath(); skx.arc(...at(trail[trail.length - 1]), Math.max(3 * d, G * 0.06), 0, 2 * Math.PI); skx.fill(); skx.stroke();
+    drawn.push({box: [x0, y0, G], dot: at(trail[trail.length - 1])});
+  }
+  return drawn;
+}
+function sticksLoop() { drawSticks(); skRaf = v.paused || v.ended ? 0 : requestAnimationFrame(sticksLoop); }   // timeupdate is ~4 Hz: too slow for a stick
+v.addEventListener('play', () => { if (!skRaf) sticksLoop(); });
+for (const ev of ['seeked', 'pause', 'loadedmetadata']) v.addEventListener(ev, drawSticks);
+new ResizeObserver(drawSticks).observe(v);
+function toggleSticks() {
+  showSticks = !showSticks; localStorage.setItem('acro.sticks', showSticks ? '1' : '0');
+  for (const b of ['#sticksBtn', '#sticksTog']) $(b).classList.toggle('on', showSticks);
+  drawSticks();
+}
+for (const b of ['#sticksBtn', '#sticksTog']) $(b).classList.toggle('on', showSticks);
+$('#sticksTog').onclick = e => { e.currentTarget.blur(); toggleSticks(); };   // blurred: space plays, it does not press the button again
 strip.onclick = e => { const D = v.duration; if (!D) return; v.currentTime = (e.offsetX / strip.clientWidth) * D; };
 window.addEventListener('resize', drawStrip);
 // the key hints take the header's free space when they fit; a status message comes first: while there is one, it
@@ -604,7 +665,7 @@ function toggleLoop() { loopM = loopM ? null : cur; $('#loopBtn').classList.togg
 document.querySelectorAll('.mctl button').forEach(b => b.onclick = () => {
   const a = b.dataset.act;
   if (a === 'prev') step(-1); else if (a === 'next') step(1); else if (a === 'in') markIn(); else if (a === 'out') markOut();
-  else if (a === 'tag') tagNow(); else if (a === 'loop') toggleLoop();
+  else if (a === 'tag') tagNow(); else if (a === 'loop') toggleLoop(); else if (a === 'sticks') toggleSticks();
 });
 
 // ---- the phone layout: one pane at a time under the video, chosen from the tab bar at the bottom
@@ -696,6 +757,7 @@ document.addEventListener('keydown', e => {
   else if (k === 't') tagNow();
   else if (k === 'n') step(1); else if (k === 'p') step(-1);
   else if (k === 'l') toggleLoop();
+  else if (k === 's') toggleSticks();
   else if (k === 'Escape') closeEditor();
   else h = false;
   if (h) { e.preventDefault(); e.stopPropagation(); }

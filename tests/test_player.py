@@ -215,6 +215,45 @@ class PlayerTest(unittest.TestCase):
         self.assertIsNone(page.evaluate("window.__before"))
         self.assertIn("session=2026-10-13-phone", page.url)                    # comes back to the same session
 
+    # ---- virtual sticks ------------------------------------------------------------------------------------------
+
+    def test_virtual_sticks(self):
+        """The sticks over the picture, Mode 2, from what /sticks gives (every axis + = right or up): full throttle
+        and full left yaw put the left stick in its top left corner, full right roll and centred pitch the right one
+        on its right edge, both inside the picture's lower part. Nothing between arms; `s` hides them and the
+        choice survives a reload. (These clips do not play: the video's size and time are stood in for.)"""
+        page = self.open("2026-10-13-phone")
+        draw = """t => {
+          Object.defineProperty(v, 'videoWidth', {get: () => 1280, configurable: true});
+          Object.defineProperty(v, 'videoHeight', {get: () => 720, configurable: true});
+          Object.defineProperty(v, 'currentTime', {get: () => t, set: () => {}, configurable: true});
+          v.style.height = '450px';                                  // an element without a clip is 150 px high
+          const n = 200, arr = x => Array(n).fill(x);
+          sticks = [{offset: 3, arm: 1, length: 3.98, step: 0.02, throttle: arr(100), yaw: arr(-100), pitch: arr(0), roll: arr(100)}];
+          const r = drawSticks(), px = (x, y) => [...document.getElementById('sticks').getContext('2d').getImageData(x, y, 1, 1).data];
+          return {drawn: r, pixels: r.map(b => px(Math.round(b.dot[0]), Math.round(b.dot[1]))), w: sk.width, h: sk.height};
+        }"""
+        r = page.evaluate(draw, 5.0)
+        (left, right), (w, h) = r["drawn"], (r["w"], r["h"])
+        self.assertAlmostEqual(left["dot"][0], left["box"][0])                          # yaw full left
+        self.assertAlmostEqual(left["dot"][1], left["box"][1])                          # throttle full: the top
+        self.assertAlmostEqual(right["dot"][0], right["box"][0] + right["box"][2])      # roll full right
+        self.assertAlmostEqual(right["dot"][1], right["box"][1] + right["box"][2] / 2)  # pitch centred
+        self.assertLess(left["box"][0] + left["box"][2], right["box"][0])               # side by side, apart
+        for b in (left, right):
+            self.assertGreater(b["box"][1], h / 2)                                     # the lower half
+            self.assertLess(b["box"][1] + b["box"][2], h)
+        self.assertTrue(all(p[3] == 255 and p[0] > 200 for p in r["pixels"]), r["pixels"])   # the dots are drawn
+        self.assertEqual(page.evaluate(draw, 1.0)["drawn"], [])                         # before the arm: nothing
+        page.keyboard.press("s")
+        r = page.evaluate(draw, 5.0)
+        self.assertEqual(r["drawn"], [])
+        page.reload()
+        page.wait_for_function("() => typeof S !== 'undefined' && S && S.session")
+        self.assertEqual(page.evaluate(draw, 5.0)["drawn"], [])                         # still off after a reload
+        page.keyboard.press("s")
+        self.assertEqual(len(page.evaluate(draw, 5.0)["drawn"]), 2)
+
     # ---- editing sessions ----------------------------------------------------------------------------------------
 
     def test_rename_onto_an_existing_session_merges(self):
