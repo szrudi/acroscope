@@ -231,6 +231,25 @@ def _series(bbl: str, arm: int, step: float) -> dict:
     return {"step": step, "length": a.length, "fields": ["throttle", "tilt", "vbat", "gyro_max"], "rows": rows}
 
 
+@lru_cache(maxsize=16)
+def _sticks(bbl: str, arm: int, step: float) -> dict:
+    """The sticks every `step` s for the player's virtual sticks, in the picture's terms: Mode 2, every axis + = stick
+    right or up, in % (throttle 0..100, the others -100..100). rcCommand[2] is + for the left stick LEFT
+    (metrics.CONVENTIONS), so yaw is negated here and nowhere else."""
+    a = blackbox.load_arm(bbl, arm)
+    rc = [a.col(f"rcCommand[{k}]") for k in range(4)]
+    out = {"throttle": [], "yaw": [], "pitch": [], "roll": []}
+    i = 0
+    for b in range(int(a.length / step) + 1):
+        while i + 1 < a.n and a.t[i + 1] <= b * step:
+            i += 1
+        out["throttle"].append(max(0, min(100, round((rc[3][i] - 1000) / 10))))
+        out["yaw"].append(round(-rc[2][i] / 5))
+        out["pitch"].append(round(rc[1][i] / 5))
+        out["roll"].append(round(rc[0][i] / 5))
+    return {"step": step, "length": a.length, **out}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -374,6 +393,11 @@ class Handler(BaseHTTPRequestHandler):
                         if m["video"] == q.get("video") and _indexed(m["bbl"]):
                             out.append({"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **_series(m["bbl"], m["arm"], float(q.get("step", 0.1)))})
                     return self._json(out)
+                if parts[3] == "sticks":
+                    s = sessions.load(name)
+                    step = max(0.01, float(q.get("step", 0.02)))
+                    return self._json([{"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **_sticks(m["bbl"], m["arm"], step)}
+                                       for m in s["matches"] if m["video"] == q.get("video") and _indexed(m["bbl"])])
                 if parts[3] == "metrics":
                     s = sessions.load(name)
                     t0, t1 = float(q["from"]), float(q["to"])

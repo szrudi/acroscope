@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from acroscope import blackbox
 from acroscope.remote import Remote, RemoteError
 
 
@@ -19,6 +20,19 @@ def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def fake_arm(cache: Path, stem: str, length: float, rate: float, cols: dict):
+    """A decoded arm in the server's cache, as if index_bbl had run on <stem>.bbl: `cols` maps a field to a function
+    of the arm time."""
+    import array
+    n = int(length * rate)
+    t = array.array("d", (i / rate for i in range(n)))
+    meta = {"bbl": stem, "file": stem + ".bbl", "index": 1, "frames": n, "length": t[-1], "rate": rate, "fields": ["time", *cols]}
+    (cache / "arms" / stem).mkdir(parents=True, exist_ok=True)
+    blackbox._save(meta, t, {k: array.array("f", (f(x) for x in t)) for k, f in cols.items()}, cache / "arms" / stem / "arm-01.bin")
+    (cache / "arms" / stem / "arms.json").write_text(json.dumps({"v": blackbox.INDEX_VERSION, "file": stem + ".bbl", "stem": stem, "date": None,
+                                                                 "arms": [{k: v for k, v in meta.items() if k != "fields"}], "boots": []}))
 
 
 class ApiTest(unittest.TestCase):
@@ -161,6 +175,30 @@ class ApiTest(unittest.TestCase):
                 break
             time.sleep(0.1)
         self.assertTrue((root / "cache" / "arms" / "z1" / "arms.json").exists())
+
+    def test_sticks(self):
+        """The virtual sticks over a clip: every arm's sticks each 20 ms in the picture's terms, Mode 2, every axis +
+        = stick right or up (left stick: yaw, throttle 0..100; right stick: roll, pitch). rcCommand[2] is + for the
+        left stick LEFT (metrics.CONVENTIONS), so yaw comes out negated."""
+        root = Path(self.tmp.name)
+        S = "2026-10-08-sticks"
+        (root / "data" / "videos" / S).mkdir()
+        (root / "data" / "videos" / S / "2026-10-08_001.mp4").write_bytes(b"")
+        (root / "data" / "videos" / S / "2026-10-08_002.mp4").write_bytes(b"")
+        (root / "data" / "blackbox" / "sticks.bbl").write_bytes(b"")
+        step = lambda a, b: lambda t: a if t < 1 else b                     # one value for the first second, one after
+        fake_arm(root / "cache", "sticks", 2.0, 200, {"rcCommand[0]": step(250, -500), "rcCommand[1]": step(-100, 500),
+                                                      "rcCommand[2]": step(500, -250), "rcCommand[3]": step(1250, 2000)})
+        self.r.refresh(S, probe_videos=False)
+        self.r.set_match(S, "2026-10-08_001.mp4", "sticks.bbl", 1, 3.0)
+        get = lambda clip: json.loads(urllib.request.urlopen(f"{self.url}/api/session/{S}/sticks?video={clip}").read())
+        [s] = get("2026-10-08_001.mp4")
+        self.assertEqual((s["offset"], s["arm"], s["bbl"], s["step"]), (3.0, 1, "sticks.bbl", 0.02))
+        self.assertEqual(len(s["roll"]), 100)                                  # 0 .. 1.995 s every 20 ms
+        at = lambda i: {k: s[k][i] for k in ("throttle", "yaw", "pitch", "roll")}
+        self.assertEqual(at(0), {"throttle": 25, "yaw": -100, "pitch": -20, "roll": 50})
+        self.assertEqual(at(75), {"throttle": 100, "yaw": 50, "pitch": 100, "roll": -100})
+        self.assertEqual(get("2026-10-08_002.mp4"), [])                       # no match, no sticks
 
     def test_moment_times_are_checked(self):
         self.r.refresh("2026-10-07-s", probe_videos=False)
