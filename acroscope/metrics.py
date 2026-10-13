@@ -1,7 +1,7 @@
 """Numbers for a stretch of an arm: the analysis scripts (profile, flips, loopsum, orbit, kicks) as functions.
 
 All windows are in ARM seconds. Convert from video time with `t - offset` (see sessions.match_for).
-Sign conventions (Betaflight): roll + = right, pitch + = nose down / forward, yaw + = nose right. A back flip and a
+Sign conventions (Betaflight): roll + = right, pitch + = nose down / forward, yaw + = nose LEFT. A back flip and a
 powerloop integrate to a NEGATIVE pitch angle.
 """
 import math
@@ -14,7 +14,7 @@ AXES = ("roll", "pitch", "yaw")
 CONVENTIONS = {
     "roll": "+ = roll right (right stick right). In the camera view the horizon rotates anticlockwise, the right side of the picture drops",
     "pitch": "+ = nose down / forward (right stick forward). In the camera view the horizon rises; a back flip and a powerloop integrate to NEGATIVE pitch",
-    "yaw": "+ = nose right (left stick right). In the camera view the scene slides left",
+    "yaw": "+ = nose LEFT (left stick left; gyroADC[2] and rcCommand[2] both). In the camera view the scene slides right",
     "stick_pct": "rcCommand[0..2] / 5: -100..100 % of stick travel; throttle_pct = (rcCommand[3] - 1000) / 10",
     "tilt_deg": "angle between the quad's up and world up: 0 level, 90 knife edge, 180 inverted",
     "lean": "[forward, right] in degrees from the IMU; negative forward = nose up",

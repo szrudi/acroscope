@@ -277,7 +277,7 @@ def cmd_metrics(a):
         if a.json:
             res["profile"] = rows
         else:
-            print("conventions: roll + = right, pitch + = nose down (back flip = negative), yaw + = nose right; sticks in %, gyro deg/s, tilt 0 level / 180 inverted")
+            print("conventions: roll + = right, pitch + = nose down (back flip = negative), yaw + = nose left; sticks in %, gyro deg/s, tilt 0 level / 180 inverted")
             print("  arm_t  vid_t  stick r/p/y   thr | gyro r/p/y      | rot r/p/y        | vbat  mot  accZ tilt")
             for r in rows:
                 print(f"{r['t']:7.2f} {fmt_time(r['t'] + off):>6} {r['stick'][0]:4} {r['stick'][1]:4} {r['stick'][2]:4}  {r['throttle']:3} | "

@@ -209,9 +209,9 @@ the cache; `--replace` rewrites the files in the data dir).
 Every `metrics` result carries a `conventions` block with these facts, so they never need re-deriving.
 
 `gyroADC`/`gyroUnfilt` in deg/s; `rcCommand[0..2]` ±500 = ±100 % stick, `rcCommand[3]` 1000–2000; `vbatLatest` in
-0.01 V; `accSmooth` /2048 = g; `imuQuaternion` /32767. Roll + = right, pitch + = nose down, yaw + = nose right; a
-back flip or a powerloop integrates to a negative pitch angle. The firmware's `flightModeFlags` labels are wrong
-(shows ANGLE while the OSD shows AIR).
+0.01 V; `accSmooth` /2048 = g; `imuQuaternion` /32767. Roll + = right, pitch + = nose down, yaw + = nose left (stick
+and gyro alike; checked against the picture on 10-10 001 and 005); a back flip or a powerloop integrates to a
+negative pitch angle. The firmware's `flightModeFlags` labels are wrong (shows ANGLE while the OSD shows AIR).
 
 ## Brand
 
