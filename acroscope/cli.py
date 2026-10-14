@@ -179,6 +179,10 @@ def cmd_ingest(a):
         sys.exit(1)
 
 
+def cmd_recut(a):
+    out(ingest.recut(_session(a.session), a.clip, log=lambda m: print(m, file=sys.stderr)))
+
+
 def cmd_housekeeping(a):
     if sessions.remote():
         sys.exit("housekeeping runs on the server")
@@ -476,7 +480,7 @@ def cmd_serve(a):
 
 # with ACROSCOPE_URL set these run on the server (they need the clips, the logs or the cache); frames and sheets
 # come back as files into the local cache under the same relative path
-PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach", "tag"}
+PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach", "tag", "recut"}
 
 
 def _proxy(argv: list[str]) -> None:
@@ -527,6 +531,8 @@ def main(argv=None):
     p = sp.add_parser("inbox", help="the batches in inbox/ and their status"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_inbox)
     p = sp.add_parser("ingest", help="consume inbox batches now (all pending ones, or the named ones); the server does this on its own")
     p.add_argument("batches", nargs="*"); p.set_defaults(f=cmd_ingest)
+    p = sp.add_parser("recut", help="compress a clip again from its kept original (a cut that took real footage); its moments and matches move with it")
+    p.add_argument("session"); p.add_argument("clip"); p.set_defaults(f=cmd_recut)
     p = sp.add_parser("housekeeping", help="delete originals past their retention and back the database up into the data dir"); p.set_defaults(f=cmd_housekeeping)
     p = sp.add_parser("tags", help="the tag vocabulary by category, with how many moments use each tag")
     p.add_argument("session", nargs="?", help="count in one session only"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_tags)

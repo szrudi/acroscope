@@ -1,4 +1,4 @@
-"""Ingest end to end on a synthetic batch: a clip with a 7 s no-signal stretch in the middle, twice, with a
+"""Ingest end to end on a synthetic batch: a clip with a 7 s no-signal stretch (static) in the middle, twice, with a
 sidecar and a manifest, run through the CLI in a child process against a scratch data dir and database."""
 import json
 import os
@@ -10,13 +10,19 @@ import unittest
 from pathlib import Path
 
 from acroscope.db import Db
-from acroscope import ingest
+from acroscope import blackbox, ingest
 
 
-def make_clip(path: Path) -> None:
-    """3 s of colour bars, 7 s of flat grey (no signal), 3 s of bars; MJPEG in a .mov like the Cobra's, with audio."""
+MIDDLE = {
+    "static": "nullsrc=s=160x120:r=30:d=7,geq=lum='random(1)*255':cb=128:cr=128,format=yuv420p",   # snow, as the Cobra records no signal
+    "dusk": "color=c=0x141c40:d=7:s=160x120:r=30",       # a dark, flat, still picture: footage at dusk, a grey sky (2026-10-14)
+}
+
+
+def make_clip(path: Path, middle: str = "static") -> None:
+    """3 s of colour bars, 7 s of `middle`, 3 s of bars; MJPEG in a .mov like the Cobra's, with audio."""
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-                    "testsrc=d=3:s=160x120:r=30[a];color=c=gray:d=7:s=160x120:r=30[b];testsrc=d=3:s=160x120:r=30[c];[a][b][c]concat=n=3:v=1:a=0",
+                    f"testsrc=d=3:s=160x120:r=30[a];{MIDDLE[middle]}[b];testsrc=d=3:s=160x120:r=30[c];[a][b][c]concat=n=3:v=1:a=0",
                     "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-shortest", "-c:v", "mjpeg", "-q:v", "5", "-pix_fmt", "yuvj420p",
                     "-c:a", "pcm_s16le", str(path)], check=True)
 
@@ -57,6 +63,20 @@ class IngestTest(_Scratch):
         self.assertEqual(ingest.keep_segments(sig + noise + sig, 30), [(0, 11.0), (19.0, 30)])  # a 10 s gap is cut
         self.assertEqual(ingest.keep_segments(sig + [15] * 10 + sig, 30), [(0, 11.0), (14.0, 26.0)])  # exactly 5 s: cut
         self.assertEqual(ingest.keep_segments(noise, 10), [])
+        # flat but still is a picture (dusk, a grey sky: the 2026-10-14 schammer clips 018 and 022 lost 3.5 s of
+        # flight each): only flat AND changing like noise is static
+        still, snow = [1.0] * 20, [18.0] * 20
+        self.assertEqual(ingest.keep_segments(sig + noise + sig, 30, changes=still + still + still), [(0, 30)])
+        self.assertEqual(ingest.keep_segments(sig + noise + sig, 30, changes=still + snow + still), [(0, 11.0), (19.0, 30)])
+
+    def test_flat_footage_is_kept_and_static_cut(self):
+        for middle, kept in (("dusk", [[0.0, 13.0]]), ("static", [[0.0, 4.0], [9.0, 13.0]])):
+            with self.subTest(middle=middle):
+                src, dst = self.root / f"{middle}.mov", self.root / f"{middle}.mp4"
+                make_clip(src, middle)
+                res = ingest.compress(src, dst)
+                self.assertEqual([s for s, e in res["kept"]], [s for s, e in kept], res)
+                self.assertTrue(all(abs(e - k[1]) <= 0.5 for (s, e), k in zip(res["kept"], kept)), res)   # -shortest: ends a little past 13 s
 
     def test_batch(self):
         b = self.data / "inbox" / "b1"
@@ -135,6 +155,51 @@ class IngestTest(_Scratch):
         self.assertEqual(len(json.loads(r.stdout)["clips"]), 2)
         self.assertEqual(sorted(db.batch_clips("b3")), ["VID0001.mov", "VID0002.mov"])
         self.assertFalse(b.exists())
+
+    def test_recut_from_the_original(self):
+        """A clip cut by the old detector (dusk taken for static, 2026-10-14 schammer 018 and 022) is compressed again
+        from its kept original. Moments and a match inside one old stretch move with the footage (old clip time ->
+        original -> new clip time); a match whose arm spans an old cut held on one side of it only: it is left as it
+        is and reported. Cached frames of the clip go."""
+        b = self.data / "inbox" / "dusk"
+        b.mkdir(parents=True)
+        make_clip(b / "VID0001.mov", "dusk")
+        (b / "import.json").write_text(json.dumps({"date": "2026-10-14", "session": "dusk"}))
+        (b / ".done").write_text("")
+        r = self.cli("ingest", "dusk")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        S = "2026-10-14-dusk"
+        db = Db(self.root / "t.db")
+        v = db.load(S)["videos"][0]
+        db.set_video_fields(S, v["file"], cuts=[[0.0, 4.0], [9.0, 13.0]], duration=8.0)    # as the old detector left it
+        db.tag(S, v["file"], 2.0, 3.0, "before the cut", [])
+        db.tag(S, v["file"], 5.0, 6.0, "after the cut", [])
+        (self.data / "blackbox").mkdir(exist_ok=True)
+        (self.data / "blackbox" / "BTFL_d.bbl").write_bytes(b"x")
+        idx = self.root / "cache" / "arms" / "BTFL_d" / "arms.json"
+        idx.parent.mkdir(parents=True)
+        idx.write_text(json.dumps({"v": blackbox.INDEX_VERSION, "file": "BTFL_d.bbl", "stem": "BTFL_d", "date": None, "boots": [],
+                                   "arms": [{"index": 1, "length": 2.0, "frames": 10}, {"index": 2, "length": 3.0, "frames": 10}]}))
+        db.set_match(S, v["file"], "BTFL_d.bbl", 1, 4.5)                  # 4.5-6.5: inside the second stretch
+        db.set_match(S, v["file"], "BTFL_d.bbl", 2, 3.0)                  # 3-6: across the old cut at 4.0
+        stale = self.root / "cache" / "frames" / S / (Path(v["file"]).stem + "_5.00.jpg")
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"old")
+        r = self.cli("recut", S, "001")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        res = json.loads(r.stdout)
+        self.assertEqual(res["cuts"][0][0], 0.0)
+        self.assertEqual(len(res["cuts"]), 1)                                 # nothing cut now
+        s = db.load(S)
+        self.assertAlmostEqual(s["videos"][0]["duration"], 13.0, delta=0.6)
+        self.assertEqual(json.loads(json.dumps(s["videos"][0]["cuts"])), res["cuts"])
+        ms = {m["title"]: (m["start"], m["end"]) for m in s["moments"]}
+        self.assertEqual(ms, {"before the cut": (2.0, 3.0), "after the cut": (10.0, 11.0)})
+        off = {m["arm"]: m["offset"] for m in s["matches"]}
+        self.assertEqual(off, {1: 9.5, 2: 3.0})
+        self.assertEqual([(c["bbl"], c["arm"]) for c in res["check"]], [("BTFL_d.bbl", 2)])
+        self.assertFalse(stale.exists())
+        self.assertTrue((self.data / v["original"]).exists())               # the original stays until its date
 
     def two_clip_batch(self, name: str) -> Path:
         b = self.data / "inbox" / name

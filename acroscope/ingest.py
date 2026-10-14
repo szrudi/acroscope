@@ -7,8 +7,8 @@ checked before anything is touched, so a transfer cut short is never consumed.
 
 Per batch: the date and session (sidecar, else the import time, else the batch's time; session "<date>-unsorted"
 when unnamed), the clips numbered <date>_NNN continuing the day's sequence over all its sessions in card order,
-each original moved to originals/<session>/<id>.mov and compressed (no-signal stretches of 5 s or more cut, H.264
-as the player wants it) into videos/<session>/<id>.mp4, verified against the kept stretches, and kept for
+each original moved to originals/<session>/<id>.mov and compressed (no-signal stretches of 5 s or more cut: flat and
+changing like noise; H.264 as the player wants it) into videos/<session>/<id>.mp4, verified against the kept stretches, and kept for
 ORIGINAL_DAYS after that; the logs moved to blackbox/ and attached; then the arms decoded and automatch run on the
 new clips. The batch row in the database carries the status, the progress and any error; a failed batch stays in
 inbox/ for a retry. Everything heavy (ffmpeg, the decoder, the OSD reader) runs in child processes when the server
@@ -26,11 +26,12 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import blackbox, sessions, video
-from .config import BLACKBOX_DIR, DATA_DIR, H264_ARGS, VIDEOS_DIR
+from .config import BLACKBOX_DIR, CACHE_DIR, DATA_DIR, H264_ARGS, VIDEOS_DIR
 
 INBOX_DIR = DATA_DIR / "inbox"
 ORIGINALS_DIR = DATA_DIR / "originals"
@@ -38,7 +39,9 @@ STATE_DIR = DATA_DIR / "state"
 ORIGINAL_DAYS = 7          # an original is kept this long after its compressed clip verified
 TRASH_DAYS = 7             # a deleted clip waits this long in trash/<date>/ (sessions.delete_clip)
 RATE = 2                   # no-signal analysis samples per second
-THRESHOLD = 35             # luma range (16x12 frame, 10th-90th percentile) below this = no signal
+THRESHOLD = 35             # luma range (16x12 frame, 10th-90th percentile) below this = flat: static, or a dark/flat picture
+CHANGE = 8.0               # and frame-to-frame change (mean |difference|, 64x48) above this = static (snow 15-21; a flat
+                           # live picture 0.3-3: dusk, a grey sky with the OSD on, 2026-10-14 schammer 018 and 022)
 MIN_GAP = 5.0              # only cut no-signal runs at least this long (brief breakups mid-flight are kept)
 PAD = 1.0                  # seconds of context kept around each cut
 CLIP_RE = re.compile(r"^vid.*\.(mov|mp4|avi)$", re.I)
@@ -182,28 +185,44 @@ def new_id() -> str:
 
 # ---- the compressor (cobra-compress.py as functions) ---------------------------------------------------------------
 
-def luma_ranges(path: Path) -> list[float]:
-    """Per RATE-th of a second, the luma spread of the frame shrunk to 16x12: analog static averages to flat grey
-    (~15), black is 0, footage stays above 50."""
-    cmd = ["ffmpeg", "-hide_banner", "-nostats", "-nostdin", "-i", str(path), "-an", "-vf",
-           f"fps={RATE},scale=16:12:flags=area,signalstats,metadata=print:file=-", "-f", "null", "-"]
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=900).stdout
-    except subprocess.TimeoutExpired:   # ffmpeg hung here once (2026-10-09, main thread spinning); a rerun passed
-        out = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=900).stdout
-    lo = [float(x) for x in re.findall(r"YLOW=([\d.]+)", out)]
-    hi = [float(x) for x in re.findall(r"YHIGH=([\d.]+)", out)]
-    return [h - l for l, h in zip(lo, hi)]
+def signal_stats(path: Path) -> tuple[list[float], list[float]]:
+    """Per RATE-th of a second: the luma spread of the frame shrunk to 16x12 (analog static averages to flat grey,
+    ~15; footage mostly stays above 50, but dusk or a sky-filled frame drops to 22-34), and the mean change from one
+    frame to the next at 64x48 over that stretch (static is new noise every frame, 15-21; a flat live picture with
+    its OSD is nearly still). One decode, two branches, each printing its own stats to a file."""
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = Path(tmp) / "range", Path(tmp) / "change"
+        cmd = ["ffmpeg", "-hide_banner", "-nostats", "-nostdin", "-i", str(path), "-filter_complex",
+               f"[0:v]split[x][y];[x]fps={RATE},scale=16:12:flags=area,signalstats,metadata=print:file={a}[ra];"
+               f"[y]scale=64:48:flags=area,tblend=all_mode=difference,signalstats,metadata=print:file={b}[rb]",
+               "-map", "[ra]", "-f", "null", "-", "-map", "[rb]", "-f", "null", "-"]
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=900)
+        except subprocess.TimeoutExpired:   # ffmpeg hung here once (2026-10-09, main thread spinning); a rerun passed
+            subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=900)
+        ra, rb = a.read_text(), b.read_text()
+    lo = [float(x) for x in re.findall(r"YLOW=([\d.]+)", ra)]
+    hi = [float(x) for x in re.findall(r"YHIGH=([\d.]+)", ra)]
+    ranges = [h - l for l, h in zip(lo, hi)]
+    sums, counts = [0.0] * len(ranges), [0] * len(ranges)
+    for t, d in zip(re.findall(r"pts_time:([\d.]+)", rb), re.findall(r"YAVG=([\d.]+)", rb)):
+        i = int(float(t) * RATE)
+        if i < len(ranges):
+            sums[i] += float(d); counts[i] += 1
+    return ranges, [s / c if c else CHANGE for s, c in zip(sums, counts)]
 
 
-def keep_segments(ranges: list[float], duration: float) -> list[tuple[float, float]]:
-    """[(start, end)] seconds worth keeping: signal runs, gaps shorter than MIN_GAP bridged, PAD around each."""
+def keep_segments(ranges: list[float], duration: float, changes: list[float] | None = None) -> list[tuple[float, float]]:
+    """[(start, end)] seconds worth keeping: signal runs, gaps shorter than MIN_GAP bridged, PAD around each. A
+    sample is no signal when it is flat (range below THRESHOLD) and, where `changes` are given, changes like noise
+    (above CHANGE): flat and still is a picture (dusk, a grey sky) and is kept."""
+    live = [r >= THRESHOLD or (changes is not None and i < len(changes) and changes[i] <= CHANGE) for i, r in enumerate(ranges)]
     segs, start = [], None
-    for i, r in enumerate(ranges + [0]):
+    for i, ok in enumerate(live + [False]):
         t = i / RATE
-        if r >= THRESHOLD and start is None:
+        if ok and start is None:
             start = t
-        elif r < THRESHOLD and start is not None:
+        elif not ok and start is not None:
             segs.append([start, t])
             start = None
     merged: list[list[float]] = []
@@ -237,12 +256,96 @@ def compress(src: Path, dst: Path, progress=None) -> dict:
     """Analyse, cut and encode src into dst. Returns {kept: [[s, e]...], source_duration, duration, verified}.
     A clip without any signal is encoded whole (nothing cut), so nothing is silently dropped."""
     dur = video.probe(src)["duration"]
-    segs = keep_segments(luma_ranges(src), dur) or [(0.0, dur)]
+    ranges, changes = signal_stats(src)
+    segs = keep_segments(ranges, dur, changes) or [(0.0, dur)]
     encode(src, dst, segs, progress)
     info = video.probe(dst)
     kept = sum(e - s for s, e in segs)
     return {"kept": [[round(s, 2), round(e, 2)] for s, e in segs], "source_duration": round(dur, 2),
             "duration": info["duration"], "codec": info["codec"], "verified": abs(info["duration"] - kept) <= 1.5}
+
+
+def _to_source(t: float, cuts: list) -> float:
+    """A time in a compressed clip -> the same moment in its original, through the kept stretches."""
+    acc = 0.0
+    for s, e in cuts:
+        if t <= acc + (e - s):
+            return s + (t - acc)
+        acc += e - s
+    return cuts[-1][1]
+
+
+def _to_clip(o: float, cuts: list) -> float:
+    """A time in an original -> the compressed clip (a moment inside a cut lands where the next stretch starts)."""
+    acc = 0.0
+    for s, e in cuts:
+        if o <= e:
+            return acc + max(0.0, o - s)
+        acc += e - s
+    return acc
+
+
+def _stretch(t: float, cuts: list) -> int:
+    """Which kept stretch a compressed clip's time t falls in."""
+    acc = 0.0
+    for i, (s, e) in enumerate(cuts):
+        acc += e - s
+        if t < acc:
+            return i
+    return len(cuts) - 1
+
+
+def recut(session: str, vid: str, log=print) -> dict:
+    """Compress a clip again from its kept original, under the same id: for a cut that took real footage (the
+    detector before 2026-10-14 took dusk and a grey sky for static, and 3.5 s of flight each in 2026-10-14
+    schammer 018 and 022). Moments and matches move with the footage: old clip time -> original -> new clip time.
+    A match whose arm spans an old cut held on one side of it only, so it is left as it is and listed in `check`
+    for a look. The clip's cached frames and sheets go; the original stays until its date.
+    {video, old_cuts, cuts, duration, moments, matches, check}"""
+    db = sessions.store()
+    file = sessions.resolve_clip(session, vid)
+    s = db.load(session)
+    v = next((x for x in s["videos"] if x["file"] == file), None)
+    if v is None:
+        raise ValueError(f"{session}: no clip {vid}")
+    src = DATA_DIR / v["original"] if v.get("original") else None
+    if not src or not src.is_file():
+        raise ValueError(f"{v.get('name') or file}: no original kept (they go {ORIGINAL_DAYS} days after the import)")
+    old = v.get("cuts") or [[0.0, v["duration"]]]
+    work = ORIGINALS_DIR / ".ingest" / f"recut-{file}"                     # not under videos/: the scan would take it
+    work.parent.mkdir(parents=True, exist_ok=True)
+    log(f"{session}/{v.get('name') or file}: compressing again from {v['original']}")
+    try:
+        res = compress(src, work)
+        if not res["verified"]:
+            raise ValueError(f"{file}: compressed clip is {res['duration']} s against {sum(e - s for s, e in res['kept']):.1f} s kept: not replaced")
+    except Exception:
+        work.unlink(missing_ok=True)
+        raise
+    new = res["kept"]
+    move = lambda t: round(_to_clip(_to_source(t, old), new), 2)
+    moments, matches, check = [], [], []
+    for m in (m for m in s["moments"] if m["video"] == file):
+        a, b = move(m["start"]), move(m["end"])
+        if (a, b) != (m["start"], m["end"]):
+            db.tag(session, file, a, b, m["title"], m.get("tags") or [], m.get("note") or "", mid=m["id"])
+            moments.append({"id": m["id"], "from": [m["start"], m["end"]], "to": [a, b]})
+    for m in (m for m in s["matches"] if m["video"] == file):
+        idx = blackbox.index_bbl(m["bbl"], cached_only=True) if (BLACKBOX_DIR / m["bbl"]).is_file() else None
+        length = next((a["length"] for a in (idx or {}).get("arms", []) if a["index"] == m["arm"]), None)
+        if length is None or _stretch(m["offset"], old) != _stretch(m["offset"] + length, old):
+            check.append({"bbl": m["bbl"], "arm": m["arm"], "offset": m["offset"],
+                          "why": "arm length unknown" if length is None else "the arm spans an old cut: its offset held on one side only"})
+            continue
+        o = move(m["offset"])
+        if o != m["offset"]:
+            db.set_match(session, file, m["bbl"], m["arm"], o, m.get("note") or "")
+            matches.append({"bbl": m["bbl"], "arm": m["arm"], "from": m["offset"], "to": o})
+    os.replace(work, VIDEOS_DIR / session / file)
+    db.set_video_fields(session, file, cuts=new, duration=res["duration"], codec=res["codec"])
+    for f in (CACHE_DIR / "frames" / session).glob(f"{Path(file).stem}_*"):
+        f.unlink()
+    return {"video": file, "old_cuts": old, "cuts": new, "duration": res["duration"], "moments": moments, "matches": matches, "check": check}
 
 
 # ---- a batch -----------------------------------------------------------------------------------------------------
