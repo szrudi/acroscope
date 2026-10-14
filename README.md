@@ -42,7 +42,8 @@ state/acroscope-<date>.db                    nightly copies of the database (sev
 **Ingest** (`acroscope/ingest.py`, the server runs it on complete batches, one at a time): the date and session from
 the sidecar (else the import time; `<date>-unsorted` when unnamed), the clips numbered `<date>_NNN` continuing the
 day's sequence over all its sessions in card order, each compressed (no-signal runs of 5 s or more cut with 1 s of
-padding, libx264 crf 23, keyframe every 0.5 s) and verified against the kept stretches, the logs moved to
+padding: static is a flat frame that changes like noise, while a flat still picture such as dusk or a grey sky is
+kept; libx264 crf 23, keyframe every 0.5 s) and verified against the kept stretches, the logs moved to
 `blackbox/` and attached to the session, the arms decoded, automatch run on the new clips (and, when the batch brought
 a log, on the session's clips without a match: a log may come after its clips). A failed batch stays in `inbox/`
 with its error shown; a retry does not import a clip twice.
@@ -109,6 +110,9 @@ acroscope session rename|date|move|merge|delete  rename a session (the date is i
                                                  a clip (the file into trash/<date>/ for 7 days, its rows gone)
 acroscope inbox                                  the batches in inbox/ and their status
 acroscope ingest [batch...]                      consume batches now (the server does it on its own)
+acroscope recut <session> <clip>                 compress a clip again from its kept original (a cut that took real
+                                                 footage); moments and matches move with it, a match across an old cut
+                                                 is listed under `check`
 acroscope housekeeping                           originals past retention go, trash/ days older than 7 go; the database
                                                  is backed up into state/
 acroscope arms <bbl>                             list the arms (decodes the whole file into the cache once, ~30 s)
