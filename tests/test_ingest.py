@@ -69,6 +69,54 @@ class IngestTest(_Scratch):
         self.assertEqual(ingest.keep_segments(sig + noise + sig, 30, changes=still + still + still), [(0, 30)])
         self.assertEqual(ingest.keep_segments(sig + noise + sig, 30, changes=still + snow + still), [(0, 11.0), (19.0, 30)])
 
+    def test_clock_fit(self):
+        """The OSD arm clock against clip time, from read_timers rows. 2026-10-14 007: the DVR wrote ~27 fps stamped
+        60, and the OSD ran 2.20x the clip. Misreads, a disarmed (frozen) timer and a second arm whose rows disagree
+        must not bend the fit; too little to go on is None."""
+        def rows(rate, n=60, start=10.0):
+            out = [{"t": t / 2, "top": 0.0, "bottom": 0} for t in range(0, int(start * 2))]          # disarmed: 0/0
+            for i in range(n):
+                t = start + i / 2
+                v = round((t - start) * rate + 0.4, 2)
+                out.append({"t": t, "top": v, "bottom": int(v)})
+            if n > 25:
+                out[int(start * 2) + 20]["top"] = 3.0                                              # misreads
+                out[int(start * 2) + 21]["bottom"] = 99
+            last = out[-1]["top"]
+            out += [{"t": start + n / 2 + i / 2, "top": last, "bottom": int(last)} for i in range(30)]   # frozen after disarm
+            out += [{"t": start + n / 2 + 15 + i / 2, "top": last + i, "bottom": i} for i in range(20)]  # next arm: total != arm
+            return out
+        self.assertAlmostEqual(ingest.clock_fit(rows(2.2)), 2.2, delta=0.02)
+        self.assertAlmostEqual(ingest.clock_fit(rows(1.0)), 1.0, delta=0.02)
+        self.assertIsNone(ingest.clock_fit(rows(2.2, n=12)))                                  # 6 s of readings: too few
+        self.assertIsNone(ingest.clock_fit([]))
+
+    def test_fix_clock_retimes_a_misstamped_clip(self):
+        """A clip whose OSD clock runs k times its own is stretched by k (timestamps scaled, no re-encode; the audio,
+        stamped as wrongly, goes); a clip on time is left alone."""
+        from unittest import mock
+        for k, want in ((2.2, 2.2), (1.02, 1.0)):
+            with self.subTest(k=k):
+                src = self.root / f"c{k}.mp4"
+                subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=d=4:s=160x120:r=60", "-f", "lavfi",
+                                "-i", "anullsrc=r=32000:cl=mono", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(src)], check=True)
+                rt = {"layout": "x", "rows": [{"t": t / 2, "top": round(t / 2 * k + 1.3, 2), "bottom": int(t / 2 * k + 1.3)} for t in range(8)]}
+                with mock.patch.object(ingest, "clock_fit", return_value=k), mock.patch.object(ingest.osd, "read_timers", return_value=rt):
+                    got = ingest.fix_clock(src, log=lambda m: None)
+                self.assertEqual(got, want)
+                info = ingest.video.probe(src)
+                self.assertAlmostEqual(info["duration"], 4.0 * want, delta=0.1)
+                types = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(src)],
+                                       capture_output=True, text=True).stdout.split()
+                self.assertEqual(types, ["video"] if want != 1.0 else ["video", "audio"])
+
+    def test_times_move_through_cuts_and_clocks(self):
+        # old clip time -> its original (through the old cuts, at the old clock) -> the new clip (new cuts, new clock)
+        old, new = [[0.0, 4.0], [9.0, 13.0]], [[0.0, 13.0]]
+        self.assertEqual(ingest.move_time(5.0, old, 1.0, new, 1.0), 10.0)
+        self.assertEqual(ingest.move_time(5.0, [[0.0, 13.0]], 1.0, new, 2.2), 11.0)             # re-timed: 2.2x later
+        self.assertEqual(ingest.move_time(11.0, new, 2.2, new, 1.0), 5.0)
+
     def test_flat_footage_is_kept_and_static_cut(self):
         for middle, kept in (("dusk", [[0.0, 13.0]]), ("static", [[0.0, 4.0], [9.0, 13.0]])):
             with self.subTest(middle=middle):
