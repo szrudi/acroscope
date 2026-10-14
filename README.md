@@ -44,8 +44,9 @@ the sidecar (else the import time; `<date>-unsorted` when unnamed), the clips nu
 day's sequence over all its sessions in card order, each compressed (no-signal runs of 5 s or more cut with 1 s of
 padding: static is a flat frame that changes like noise, while a flat still picture such as dusk or a grey sky is
 kept; libx264 crf 23, keyframe every 0.5 s) and verified against the kept stretches, the logs moved to
-`blackbox/` and attached to the session, the arms decoded, automatch run on the new clips. A failed batch stays in
-`inbox/` with its error shown; a retry does not import a clip twice.
+`blackbox/` and attached to the session, the arms decoded, automatch run on the new clips (and, when the batch brought
+a log, on the session's clips without a match: a log may come after its clips). A failed batch stays in `inbox/`
+with its error shown; a retry does not import a clip twice.
 
 Everything acroscope knows about a session (its clips with duration and codec, its blackbox files, the matches
 video <-> arm + offset, the moments, the notes) is in one SQLite database (`ACROSCOPE_DB`, default
