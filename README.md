@@ -140,6 +140,7 @@ GET  /api/session/<s>                   the session plus its arms (from the cach
 GET  /api/session/<s>/data              the session as stored: videos, blackbox, matches, moments
 GET  /api/session/<s>/events?video=     detector suggestions for a clip
 GET  /api/session/<s>/series?video=     throttle/tilt/vbat/gyro lanes per arm for the strip
+GET  /api/session/<s>/sticks?video=     the sticks every 20 ms per arm (Mode 2, + = right/up, %) for the overlay
 GET  /api/session/<s>/metrics?video=&from=&to=
 POST /api/session/<s>/moment            {id?, video, start, end, title, tags, note, metrics?}   DELETE /api/session/<s>/moment/<id>
 POST /api/session/<s>/match             {video, bbl, arm, offset, note}                        DELETE /api/session/<s>/match?video=&arm=
@@ -197,9 +198,10 @@ reader sees: `acroscope osd` and the ASCII dumps in the labels workflow, not a J
 
 `acroscope serve` on the box that holds the data; open `http://<host>:8070/` in Chrome. Pick a session, pick a clip,
 play. Keys: space, arrows (2 s, shift 10 s), `,` `.` (frame), `i` `o` (in/out), `t` (tag from in/out), `n` `p`
-(next/previous moment), `l` (loop the current moment). The strip under the video shows the moments, the suggested
-untagged events (hollow), the arm coverage and the throttle. The readout shows arm time, throttle, tilt and vbat at
-the playhead.
+(next/previous moment), `l` (loop the current moment), `s` (virtual sticks on/off). The strip under the video shows
+the moments, the suggested untagged events (hollow), the arm coverage and the throttle. The readout shows arm time,
+throttle, tilt and vbat at the playhead. Over the picture, where a log covers it, the virtual sticks show the log's
+sticks (Mode 2: throttle and yaw left, pitch and roll right), each dragging its last 0.8 s behind it.
 
 Chrome on Linux has no HEVC decoder: clips before the H.264 switch need `acroscope transcode <session>` (proxies in
 the cache; `--replace` rewrites the files in the data dir).
