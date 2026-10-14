@@ -240,6 +240,42 @@ db.Db.add_batch_clip = add"""
         self.assert_consistent(self.root / "t.db", "man", 2)
 
 
+    def test_a_log_after_its_clips_automatches_them(self):
+        """2026-10-14 schammer: the clips came in one batch, the log in the next. Automatch ran on the first batch's
+        clips with no log yet, and the second batch had no clips of its own, so nothing was matched. A batch that
+        brings a log automatches every clip of its session that has no match yet (a clip already matched keeps
+        its matches and is left alone)."""
+        calls = self.root / "calls"
+        self.env["CALLS"] = str(calls)
+        patch = """import json
+def _cli(*a):
+    with open(os.environ["CALLS"], "a") as f:
+        f.write(json.dumps(a) + "\\n")
+    return 0
+ingest._cli = _cli"""
+        side = json.dumps({"date": "2026-10-14", "session": "late"})
+        b = self.two_clip_batch("clips")
+        (b / "import.json").write_text(side)
+        r = self.run_patched("clips", patch)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        db = Db(self.root / "t.db")
+        S = "2026-10-14-late"
+        c1, c2 = [v["file"] for v in db.load(S)["videos"]]
+        ran = lambda: [json.loads(x) for x in calls.read_text().splitlines()]
+        self.assertEqual(ran(), [["automatch", S, c1, "--write"], ["automatch", S, c2, "--write"]])
+        calls.unlink()
+        db.set_match(S, c1, "BTFL_other.bbl", 1, 2.0)                  # matched by hand meanwhile: not touched again
+        b = self.data / "inbox" / "log"
+        b.mkdir()
+        (b / "BTFL_late.bbl").write_bytes(b"x")
+        (b / "import.json").write_text(side)
+        (b / ".done").write_text(json.dumps({"files": {"BTFL_late.bbl": 1, "import.json": len(side)}}))
+        r = self.run_patched("log", patch)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(ran(), [["arms", "BTFL_late.bbl"], ["automatch", S, c2, "--write"]])
+        self.assertEqual(db.batches()[-1]["result"], {"clips": [], "logs": ["BTFL_late.bbl"]})
+
+
 class HostileInboxTest(_Scratch):
     def test_symlink_and_manifest_paths_fail_the_batch(self):
         b = self.data / "inbox" / "evil"

@@ -10,7 +10,8 @@ when unnamed), the clips numbered <date>_NNN continuing the day's sequence over 
 each original moved to originals/<session>/<id>.mov and compressed (no-signal stretches of 5 s or more cut, H.264
 as the player wants it) into videos/<session>/<id>.mp4, verified against the kept stretches, and kept for
 ORIGINAL_DAYS after that; the logs moved to blackbox/ and attached; then the arms decoded and automatch run on the
-new clips. The batch row in the database carries the status, the progress and any error; a failed batch stays in
+new clips, and when the batch brought a log, on every clip of the session without a match (a log pushed after its
+clips). The batch row in the database carries the status, the progress and any error; a failed batch stays in
 inbox/ for a retry. Everything heavy (ffmpeg, the decoder, the OSD reader) runs in child processes when the server
 drives this, so requests keep flowing.
 
@@ -357,8 +358,14 @@ def process_batch(batch: str, log=print) -> dict:
         for b in attached:
             if blackbox.index_bbl(b, cached_only=True) is None:
                 _cli("arms", b)
-        db.set_batch(batch, progress={"step": "automatch", "clips": len(imported)})
-        for c in imported:
+        # this batch's clips, and with a log: every clip of the session without a match yet (the log may come in a
+        # batch of its own after its clips, as on 2026-10-14; a clip already matched keeps its matches)
+        now_in = db.load(session)
+        matched = {m["video"] for m in now_in["matches"]}
+        to_match = [v["file"] for v in now_in["videos"] if v["file"] in imported
+                    or (attached and v["file"] not in matched and not v.get("missing_since"))]
+        db.set_batch(batch, progress={"step": "automatch", "clips": len(to_match)})
+        for c in to_match:
             _cli("automatch", session, c, "--write")
         for f in batch_entries(d):
             if f.name.startswith(".") or f.name == "import.json":
