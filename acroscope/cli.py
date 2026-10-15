@@ -425,7 +425,17 @@ def cmd_osd(a):
 
 def cmd_automatch(a):
     s = _session(a.session)
-    clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]     # in name order: chronological
+    loaded = sessions.load(s)
+    clips = a.videos or [v["file"] for v in loaded["videos"] if v.get("duration")]     # in name order: chronological
+    if a.unmatched:            # the player's button on a log: never a clip with a match (by hand or not), never a missing one
+        matched = {m["video"] for m in loaded["matches"]}
+        gone = {v["file"] for v in loaded["videos"] if v.get("missing_since")}
+        clips = [c for c in clips if c not in matched and c not in gone]
+        if not clips:
+            print(f"{s}: every clip has a match, nothing to do", file=sys.stderr)
+            if a.json:
+                out([])
+            return
     if not clips:
         print(f"{s}: no probed clips, nothing to match", file=sys.stderr)
     results, pending, errors = [], [], []
@@ -583,6 +593,7 @@ def main(argv=None):
     p.add_argument("session"); p.add_argument("video"); p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_osd)
     p = sp.add_parser("automatch", help="match clips to arms from the OSD timers (proposes; --write records)")
     p.add_argument("session"); p.add_argument("videos", nargs="*"); p.add_argument("--write", action="store_true"); p.add_argument("--overwrite", action="store_true", help="replace existing matches of the clip too")
+    p.add_argument("--unmatched", action="store_true", help="only the clips without a match yet (not missing ones)")
     p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_automatch)
     p = sp.add_parser("osd-learn", help="rebuild the OSD digit templates from a labels file")
     p.add_argument("labels", nargs="?", default="scripts/osd-labels.json"); p.set_defaults(f=cmd_osd_learn)

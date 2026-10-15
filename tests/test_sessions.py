@@ -130,6 +130,19 @@ class EditGuardsTest(_Scratch):
         sessions.store().attach(S, "deleted.bbl")                    # attached once, the file removed since
         self.assertEqual(sessions.detach(S, "deleted.bbl"), [])
 
+    def test_detach_drops_that_logs_matches_here_only(self):
+        """A log out of a session takes its matches there with it (they would point at a log the session no longer
+        has); the session's other log keeps its matches, and so does another session holding the same log."""
+        S, T = "2026-10-09-d", "2026-10-09-e"
+        f = self.session_with_clip(S)
+        g = self.session_with_clip(T, "2026-10-09_002.mp4")
+        sessions.store().set_match(S, f, "a.bbl", 1, 5.0)
+        sessions.store().set_match(S, f, "b.bbl", 1, 90.0)          # the same arm number in the other log
+        sessions.store().set_match(T, g, "a.bbl", 2, 7.0)
+        self.assertEqual(sessions.detach(S, "a.bbl"), ["b.bbl"])
+        self.assertEqual([(m["bbl"], m["arm"]) for m in sessions.load(S)["matches"]], [("b.bbl", 1)])
+        self.assertEqual([(m["bbl"], m["arm"]) for m in sessions.load(T)["matches"]], [("a.bbl", 2)])
+
     def test_merge_carries_logs_and_notes(self):
         A, B = "2026-10-09-a", "2026-10-09-b"
         self.session_with_clip(A, "2026-10-09_001.mp4")
@@ -244,6 +257,17 @@ class AutomatchExitTest(_Scratch):
         self.assertEqual((code, res), (0, {"clip": "2026-10-09_001.mp4", "matches": []}))   # one clip: the result itself
         code, res, _ = self.automatch()
         self.assertEqual((code, [r["clip"] for r in res]), (0, ["2026-10-09_001.mp4", "2026-10-09_002.mp4"]))
+
+    def test_unmatched_takes_only_clips_without_a_match(self):
+        """--unmatched (the player's button on a log): a clip matched by hand is never touched, a missing clip is
+        skipped, and nothing left to match is not a failure."""
+        sessions.store().set_match(self.S, "2026-10-09_001.mp4", "a.bbl", 1, 5.0)
+        code, res, _ = self.automatch("--unmatched")
+        self.assertEqual((code, res), (0, {"clip": "2026-10-09_002.mp4", "matches": []}))
+        sessions.store().set_match(self.S, "2026-10-09_002.mp4", "a.bbl", 2, 5.0)
+        code, res, err = self.automatch("--unmatched")
+        self.assertEqual((code, res), (0, []))
+        self.assertIn("every clip has a match", err)
 
 
 if __name__ == "__main__":

@@ -220,6 +220,8 @@ class Db:
         return self._blackbox(session)
 
     def detach(self, session: str, bbl: str) -> list[str]:
+        """The log out of the session, with its matches there (they would point at a log the session has not)."""
+        self.c.execute("DELETE FROM matches WHERE session = ? AND bbl = ?", (session, bbl))
         self.set_blackbox(session, [f for f in self._blackbox(session) if f != bbl])
         return self._blackbox(session)
 
