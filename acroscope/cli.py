@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import blackbox, events as ev, ingest, metrics, osd, sessions, video, xspf
 from .config import CACHE_DIR, DATA_DIR, DB_PATH, SERVER_URL, TAGS
+from .remote import RemoteError
 
 
 def parse_time(s: str) -> float:
@@ -622,7 +623,11 @@ def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if a.cmd in PROXIED and sessions.remote():
         return _proxy(args)
-    a.f(a)
+    try:
+        a.f(a)
+    except (FileNotFoundError, ValueError, RemoteError) as e:   # a name that is not there, a refused edit: one line
+        print(f"acroscope: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
