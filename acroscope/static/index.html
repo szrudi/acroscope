@@ -67,6 +67,7 @@
   button { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:5px 10px; cursor:pointer; font:inherit }
   button:hover { background:#343a46 } button.primary { background:var(--acc); color:#1a1200; border-color:var(--acc); font-weight:600 }
   button.small { padding:2px 7px; font-size:12px }
+  button:disabled, button:disabled:hover { opacity:.45; cursor:default; background:#2a2f38 }
   a.btn { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:2px 7px; font-size:12px; line-height:1.4; text-decoration:none } a.btn:hover { background:#343a46 }   /* a link that looks like button.small (a download needs a link) */
   .chip { display:inline-block; padding:2px 9px; border-radius:12px; border:1px solid var(--c, var(--line)); cursor:pointer; font-size:12px; user-select:none }
   .chip.on { background:var(--c, var(--acc2)); color:#111; border-color:var(--c, var(--acc2)) }
@@ -359,7 +360,7 @@ function logHead(b) {
 }
 function renderLogs() {
   const arms = S.arms || [], boots = S.boots || {};
-  let h = (S.blackbox || []).length ? `<div class="logbar"><button class="small" id="logsAutomatch" ${automatching ? 'disabled' : ''} title="match the clips without a match to the session's logs from the OSD timers; clips with a match, by hand or not, are left alone">🎯 automatch the clips without a match</button></div>` : '';
+  let h = `<div class="logbar"><button class="small" id="logsAutomatch" ${automatching === S.session ? 'disabled' : ''} title="match the clips without a match to the session's logs from the OSD timers; clips with a match, by hand or not, are left alone">🎯 automatch the clips without a match</button></div>`;
   for (const b of S.blackbox || []) {
     const rows = arms.filter(a => a.bbl === b);
     if ((S.arms_pending || []).includes(b)) { h += `<div class="log">${logHead(b)}<div class="cov">decoding in the background…</div></div>`; continue; }
@@ -379,7 +380,7 @@ function renderLogs() {
       }
     }
   }
-  $('#logs').innerHTML = (S.blackbox || []).length ? h : '<div class="empty">no blackbox file in this session</div>';
+  $('#logs').innerHTML = (S.blackbox || []).length ? h : '<div class="empty">no blackbox file in this session</div>';   // and no automatch
   $('#logs').querySelectorAll('.arm.has').forEach(el => el.onclick = async () => {
     const t = Math.max(0, +el.dataset.t - 1.0);   // a second before the arm, so the ARMED moment is on screen
     if (clip !== el.dataset.v) await loadClip(el.dataset.v);
@@ -391,11 +392,11 @@ function renderLogs() {
 }
 // automatch on the server as a job (a session's worth of OSD reading takes minutes): only the clips without a match,
 // so matches placed by hand stay as they are; then the session again, with the new matches and their suggestions
-let automatching = false;
+let automatching = null;   // the session whose job runs (one at a time from this page; the server runs one per command)
 async function automatchSession() {
   if (automatching) return;
-  automatching = true; renderLogs();
-  const name = S.session;
+  const name = automatching = S.session; renderLogs();
+  const say = msg => { if (S.session !== name) return; $('#status').textContent = msg; setTimeout(() => { if ($('#status').textContent === msg) $('#status').textContent = ''; }, 8000); };
   try {
     $('#status').textContent = 'automatch: reading the OSD of the clips without a match…';
     const {job, error} = await api('/api/cli', {method: 'POST', body: JSON.stringify({args: ['automatch', name, '--unmatched', '--write'], async: true})});
@@ -413,17 +414,17 @@ async function automatchSession() {
     const msg = r.code ? `automatch failed: ${(r.stderr || '').trim().split('\n').pop()}`
       : clips ? `automatch: ${got} matched over ${clips} clip${clips === 1 ? '' : 's'}` : `automatch: ${(r.stderr || 'nothing to do').trim().split('\n').pop()}`;
     if (S.session === name) await refreshSession();
-    $('#status').textContent = msg; setTimeout(() => { if ($('#status').textContent === msg) $('#status').textContent = ''; }, 8000);
+    say(msg);
   } catch (e) {
-    $('#status').textContent = `automatch: ${e.message}`;
-  } finally { automatching = false; if (S.session === name) renderLogs(); }
+    say(`automatch: ${e.message}`);
+  } finally { automatching = null; if (S) renderLogs(); }
 }
 function logMatchNote(b) {
   const n = S.matches.filter(m => m.bbl === b).length;
   return n ? `\n\nIts ${n} match${n === 1 ? '' : 'es'} to clips here ${n === 1 ? 'is' : 'are'} deleted.` : '';
 }
 // while automatch runs, a log taken out could get matches written to it (and come back): wait for it
-const busy = () => automatching && (alert('automatch is running on this session: wait for it to finish'), true);
+const busy = () => automatching === S.session && (alert('automatch is running on this session: wait for it to finish'), true);
 async function moveLog(b) {
   if (busy()) return;
   const others = [...$('#session').options].map(o => o.value).filter(n => n !== S.session);
@@ -839,7 +840,10 @@ document.addEventListener('keydown', e => {
   else h = false;
   if (h) { e.preventDefault(); e.stopPropagation(); }
 }, true);   // capture phase: the focused <video controls> would otherwise handle space/arrows too and undo ours
-function flash(s) { $('#status').textContent = s; setTimeout(() => $('#status').textContent = '', 1500); }
+function flash(s) {   // for a moment, then what the status said before (a reload's "decoding blackbox in the background…")
+  const before = $('#status').textContent;
+  $('#status').textContent = s; setTimeout(() => { if ($('#status').textContent === s) $('#status').textContent = before; }, 1500);
+}
 init();
 </script>
 </body>

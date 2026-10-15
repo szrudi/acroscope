@@ -50,13 +50,16 @@ def browser_available() -> bool:
 class PlayerTest(unittest.TestCase):
     LOG_A, LOG_B = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", "BTFL_BLACKBOX_LOG_OTTOJR_20261015_094754_BETAFPVG473_V2.bbl"
     LOG_ODD = "dump #2.bbl"                                           # a name the link must encode
+    ODD_BYTES = b"H Product:Blackbox flight data recorder\n" + bytes(range(256))
     SESSIONS = {"2026-10-11-unsorted": ["2026-10-11_001.mp4", "2026-10-11_002.mp4"], "2026-10-11-bea": ["2026-10-11_005.mp4"],
                 "2026-10-12-del": ["2026-10-12_001.mp4", "2026-10-12_002.mp4"], "2026-10-13-phone": ["2026-10-13_001.mp4"],
                 "2026-10-09-attick-is-the-limit": ["2026-10-09_001.mp4"],
                 "2026-10-14-logs": ["2026-10-14_001.mp4", "2026-10-14_002.mp4"], "2026-10-14-other": ["2026-10-14_005.mp4"],
                 "2026-10-14-typo-src": ["2026-10-14_007.mp4"], "2026-10-14-dl": ["2026-10-14_008.mp4"],
                 "2026-10-14-gone": ["2026-10-14_009.mp4"], "2026-10-14-job": ["2026-10-14_010.mp4"],
-                "2026-10-14-am": ["2026-10-14_001.mp4", "2026-10-14_002.mp4"]}
+                "2026-10-14-am": ["2026-10-14_001.mp4", "2026-10-14_002.mp4"],
+                "2026-10-14-run-a": ["2026-10-14_011.mp4"], "2026-10-14-run-b": ["2026-10-14_012.mp4"],
+                "2026-10-14-nologs": ["2026-10-14_013.mp4"]}
 
     @classmethod
     def setUpClass(cls):
@@ -68,8 +71,9 @@ class PlayerTest(unittest.TestCase):
             for c in clips:
                 (cls.data / "videos" / s / c).write_bytes(b"")      # not playable, which the player says; enough here
         (cls.data / "blackbox").mkdir()
-        for b in (cls.LOG_A, cls.LOG_B, cls.LOG_ODD):
+        for b in (cls.LOG_A, cls.LOG_B):
             (cls.data / "blackbox" / b).write_bytes(b"")              # decodes to nothing; the logs tab lists it all the same
+        (cls.data / "blackbox" / cls.LOG_ODD).write_bytes(cls.ODD_BYTES)
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(cls.root / "t.db"), ACROSCOPE_DATA=str(cls.data),
                    ACROSCOPE_CACHE=str(cls.root / "cache"), ACROSCOPE_URL="")
@@ -329,6 +333,41 @@ class PlayerTest(unittest.TestCase):
         self.assertEqual(posted, [{"args": ["automatch", "2026-10-14-am", "--unmatched", "--write"], "async": True}])
         self.assertTrue(page.evaluate("() => S.matches.some(m => m.video === '2026-10-14_002.mp4')"))
 
+    def test_while_automatch_runs(self):
+        """While the job runs: 🎯 is disabled and ⇄/🗑 say to wait (nothing is posted), in that session only; the
+        other session's buttons work, and the job's end there neither shows A's result nor leaves 🎯 disabled."""
+        A, B = "2026-10-14-run-a", "2026-10-14-run-b"
+        self.api.attach(A, self.LOG_A)
+        self.api.attach(B, self.LOG_A)
+        page = self.open_logs(A)
+        state, moves, said = {"done": False}, [], []
+        page.route("**/api/cli", lambda r: r.fulfill(json={"job": "j3"}))
+        page.route("**/api/cli/j3", lambda r: r.fulfill(json={"done": True, "code": 0, "stderr": "", "stdout": "x: 1 matched (written)\n"}
+                                                          if state["done"] else {"done": False, "seconds": 3}))
+        page.route("**/move-log", lambda r: (moves.append(1), r.continue_()))
+        page.on("dialog", lambda d: (said.append(d.message), d.dismiss()))
+        page.click("#logsAutomatch")
+        self.assertTrue(page.eval_on_selector("#logsAutomatch", "b => b.disabled"))   # at once, not at the next poll
+        self.assertEqual(page.eval_on_selector("#logsAutomatch", "b => getComputedStyle(b).opacity"), "0.45")
+        page.click(f"[data-lmv='{self.LOG_A}']")
+        page.click(f"[data-lrm='{self.LOG_A}']")
+        self.assertEqual([m[:20] for m in said], ["automatch is running"] * 2)
+        self.assertFalse(page.is_visible("#askbox"))
+        self.assertEqual(moves, [])
+        page.evaluate(f"() => loadSession({B!r})")
+        page.wait_for_function(f"() => S.session === {B!r} && !document.getElementById('logsAutomatch').disabled")
+        page.click(f"[data-lrm='{self.LOG_A}']")                       # B's: asks (dismissed), no wait
+        self.assertTrue(said[-1].startswith("Take "))
+        state["done"] = True
+        page.wait_for_timeout(3500)                                   # A's job ends while B is open
+        self.assertNotIn("matched", page.text_content("#status"))
+        self.assertFalse(page.eval_on_selector("#logsAutomatch", "b => b.disabled"))
+
+    def test_no_automatch_without_a_log(self):
+        page = self.open_logs("2026-10-14-nologs")
+        self.assertEqual(page.locator("#logsAutomatch").count(), 0)
+        self.assertIn("no blackbox file", page.text_content("#logs"))
+
     def test_log_automatch_job_gone(self):
         """A job the server does not know (restarted meanwhile): said, and no more polling."""
         self.api.attach("2026-10-14-job", self.LOG_A)
@@ -376,7 +415,9 @@ class PlayerTest(unittest.TestCase):
         page = self.open_logs("2026-10-14-dl")
         with page.expect_download() as d:
             page.click(f"[data-ldl='{self.LOG_ODD}']")
-        self.assertEqual(d.value.suggested_filename, self.LOG_ODD)
+        self.assertEqual(d.value.suggested_filename, self.LOG_ODD)   # from the link's download attribute: also a 404's
+        self.assertIsNone(d.value.failure())
+        self.assertEqual(Path(d.value.path()).read_bytes(), self.ODD_BYTES)
 
     def test_a_log_whose_file_is_gone(self):
         """No ⤓ for a log the server no longer has; the head says so."""
