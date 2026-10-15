@@ -176,6 +176,56 @@ class EditGuardsTest(_Scratch):
         self.assertEqual((sessions.load(S)["blackbox"], sessions.load(S)["matches"], sessions.load(T)["blackbox"]), ([], [], [log]))
         self.assertEqual(sessions.refresh(S, probe_videos=False)["blackbox"], [])
 
+    def log_of(self, date="20261015"):
+        blackbox.BLACKBOX_DIR.mkdir(exist_ok=True)
+        log = f"BTFL_BLACKBOX_LOG_OTTOJR_{date}_094754_BETAFPVG473_V2.bbl"
+        (blackbox.BLACKBOX_DIR / log).write_bytes(b"H Product:Blackbox flight data recorder")
+        return log
+
+    def test_marks_survive_a_rename_and_a_merge(self):
+        """A log taken out stays out of a session renamed, and of the session another one is merged into (its clips
+        came before the dump, so it has no log of its own for the date rule to see)."""
+        A, B = "2026-10-15-a", "2026-10-15-b"
+        self.session_with_clip(A, "2026-10-15_001.mp4")
+        log = self.log_of()
+        sessions.refresh(A, probe_videos=False)
+        sessions.detach(A, log)
+        sessions.rename_session(A, "2026-10-15-a2")
+        self.assertEqual(sessions.refresh("2026-10-15-a2", probe_videos=False)["blackbox"], [])
+        (sessions.VIDEOS_DIR / B).mkdir()
+        (sessions.VIDEOS_DIR / B / "2026-10-15_002.mp4").write_bytes(b"")
+        sessions.store().ensure_session(B)
+        sessions.store().upsert_video(B, "2026-10-15_002.mp4")
+        sessions.merge_sessions("2026-10-15-a2", B)
+        self.assertEqual(sessions.refresh(B, probe_videos=False)["blackbox"], [])
+
+    def test_move_log_guards(self):
+        """⇄ onto the session itself changes nothing; a log the session has not is refused; into a session that has
+        the log already it is not doubled; a mark the target had for it goes; an unknown source says so."""
+        S, T = "2026-10-15-x", "2026-10-15-t"
+        f = self.session_with_clip(S, "2026-10-15_001.mp4")
+        self.session_with_clip(T, "2026-10-15_002.mp4")
+        log = self.log_of()
+        sessions.refresh(S, probe_videos=False)
+        sessions.store().set_match(S, f, log, 1, 3.0)
+        sessions.move_log(S, log, S)
+        self.assertEqual((sessions.load(S)["blackbox"], len(sessions.load(S)["matches"])), ([log], 1))
+        with self.assertRaisesRegex(ValueError, "no log"):
+            sessions.move_log(S, "other.bbl", T)
+        with self.assertRaisesRegex(ValueError, "no such session"):
+            sessions.move_log("2026-10-15-nope", log, T)
+        sessions.refresh(T, probe_videos=False)                       # T has the same-date log too
+        sessions.detach(T, log)
+        sessions.move_log(S, log, T)
+        self.assertEqual(sessions.load(T)["blackbox"], [log])
+        self.assertEqual(sessions.store().detached(T), set())
+        sessions.store().attach(S, log)
+        sessions.move_log(S, log, T)                                  # T has it already: once
+        self.assertEqual(sessions.load(T)["blackbox"], [log])
+
+    def test_detach_from_an_unknown_session(self):
+        self.assertEqual(sessions.store().detach("2026-10-15-nope", "x.bbl"), [])
+
     def test_merge_carries_logs_and_notes(self):
         A, B = "2026-10-09-a", "2026-10-09-b"
         self.session_with_clip(A, "2026-10-09_001.mp4")
@@ -312,6 +362,22 @@ class AutomatchExitTest(_Scratch):
         sessions.store().set_blackbox(self.S, [])                     # a.bbl gone from the session, its match left behind
         code, res, _ = self.automatch("001", "--unmatched")
         self.assertEqual((code, res), (0, {"clip": "2026-10-09_001.mp4", "matches": []}))
+
+    def test_unmatched_with_clips_named(self):
+        """Named clips under --unmatched: an unknown name is an error like without the flag (in `errors`, exit 1), a
+        missing clip is an error too, a matched one is skipped and said so."""
+        sessions.store().set_match(self.S, "2026-10-09_001.mp4", "a.bbl", 1, 5.0)
+        code, res, err = self.automatch("nope", "--unmatched")
+        self.assertEqual(code, 1)
+        self.assertEqual([e["clip"] for e in res["errors"]], ["nope"])
+        sessions.store().upsert_video(self.S, "2026-10-09_002.mp4", missing_since="2026-10-10T00:00:00")
+        code, res, err = self.automatch("002", "--unmatched")
+        self.assertEqual(code, 1)
+        self.assertIn("missing", res["errors"][0]["error"])
+        self.assertNotIn("every clip has a match", err)
+        code, res, err = self.automatch("001", "--unmatched")
+        self.assertEqual((code, res), (0, []))
+        self.assertIn("has a match, skipped", err)
 
     def test_unmatched_with_nothing_probed_is_still_a_failure(self):
         sessions.store().upsert_video("2026-10-09-new", "2026-10-09_001.mp4")

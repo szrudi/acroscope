@@ -243,11 +243,18 @@ class Db:
         if self.exists(session):
             self.c.execute("INSERT OR IGNORE INTO detached (session, file) VALUES (?, ?)", (session, bbl))
 
+    def carry_detached(self, session: str, into: str) -> None:
+        """A merge: the logs taken out of `session` stay out of `into`, unless `into` has them."""
+        self.c.execute("""INSERT OR IGNORE INTO detached (session, file) SELECT ?, file FROM detached WHERE session = ?
+            AND file NOT IN (SELECT file FROM blackbox WHERE session = ?)""", (into, session, into))
+
     def detached(self, session: str) -> set[str]:
         return {r["file"] for r in self.c.execute("SELECT file FROM detached WHERE session = ?", (session,))}
 
     def move_log(self, session: str, bbl: str, to: str) -> None:
         """A log out of one session (as detach) and into another, in one transaction; `to` must exist."""
+        if not self.exists(session):
+            raise ValueError(f"{session}: no such session")
         if to == session:
             return
         self.c.execute("BEGIN IMMEDIATE")
@@ -276,6 +283,19 @@ class Db:
                        (session, video, bbl, arm, round(offset, 2), note))
         self.attach(session, bbl)
         return {"video": video, "bbl": bbl, "arm": arm, "offset": round(offset, 2), "note": note}
+
+    def add_match_if_attached(self, session: str, video: str, bbl: str, arm: int, offset: float, note: str = "",
+                              replace: bool = False) -> bool:
+        """automatch's write: the match goes in only while the log is in the session, checked in the same statement
+        (set_match would attach a log taken out meanwhile back); an existing match stays unless replace. True if
+        written."""
+        cur = self.c.execute(f"""INSERT INTO matches (session, video, bbl, arm, offset, note)
+            SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM blackbox WHERE session = ? AND file = ?)
+            ON CONFLICT (session, video, bbl, arm) DO {"UPDATE SET offset = excluded.offset, note = excluded.note" if replace else "NOTHING"}""",
+                             (session, video, bbl, arm, round(offset, 2), note, session, bbl))
+        if cur.rowcount:
+            self._touch(session)
+        return cur.rowcount > 0
 
     def unmatch(self, session: str, video: str, arm: int | None = None) -> int:
         if arm is None:

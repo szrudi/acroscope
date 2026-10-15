@@ -434,6 +434,7 @@ def merge_sessions(session: str, into: str) -> dict:
         _move_clip(session, v, into)
     for b in s["blackbox"]:
         store().attach(into, b)
+    store().carry_detached(session, into)
     if s.get("note"):
         t = load(into).get("note", "")
         store().set_note(into, (t + "\n" + s["note"]).strip())

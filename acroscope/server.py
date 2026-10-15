@@ -85,12 +85,17 @@ JOB_KEEP = 3600                  # seconds a finished job nobody fetched is kept
 
 
 def start_job(args: list[str]) -> str:
+    """A new job, or the one already running the very same command (a player reloaded during its 🎯 presses it
+    again: two `automatch --write` children on one session would race each other's matches)."""
     _check_proxied(args)
     jid = uuid.uuid4().hex[:12]
     now = time.time()
     with _jobs_lock:
         for k in [k for k, j in _jobs.items() if j["done"] and now - j["finished"] > JOB_KEEP]:
             del _jobs[k]
+        same = next((k for k, j in _jobs.items() if not j["done"] and j["args"] == args), None)
+        if same:
+            return same
         _jobs[jid] = {"done": False, "args": args, "started": now}
 
     def run():

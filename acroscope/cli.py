@@ -427,19 +427,36 @@ def cmd_automatch(a):
     s = _session(a.session)
     loaded = sessions.load(s)
     clips = a.videos or [v["file"] for v in loaded["videos"] if v.get("duration")]     # in name order: chronological
+    results, pending, errors = [], [], []
     if a.unmatched and clips:  # the player's automatch button: never a clip with a match (by hand or not), never a missing one
-        clips = [sessions.resolve_clip(s, c) for c in clips]
         matched = {m["video"] for m in loaded["matches"] if m["bbl"] in loaded["blackbox"]}   # a match to a log taken out is none
         gone = {v["file"] for v in loaded["videos"] if v.get("missing_since")}
-        clips = [c for c in clips if c not in matched and c not in gone]
-        if not clips:
+        picked = []
+        for c in clips:
+            try:
+                f = sessions.resolve_clip(s, c)
+            except Exception as e:  # noqa: BLE001  (an unknown name: an error, as without --unmatched)
+                errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
+                print(f"{c}: {errors[-1]['error']}", file=sys.stderr)
+                continue
+            if f in gone:
+                if a.videos:             # named: the file is what was asked for
+                    errors.append({"clip": c, "error": "file missing, nothing to read"})
+                    print(f"{c}: {errors[-1]['error']}", file=sys.stderr)
+                continue
+            if f in matched:
+                if a.videos:
+                    print(f"{c}: has a match, skipped (--unmatched)", file=sys.stderr)
+                continue
+            picked.append(f)
+        clips = picked
+        if not clips and not errors:
             print(f"{s}: every clip has a match, nothing to do", file=sys.stderr)
             if a.json:
                 out([])
             return
-    if not clips:
+    elif not clips:
         print(f"{s}: no probed clips, nothing to match", file=sys.stderr)
-    results, pending, errors = [], [], []
     for c in clips:
         try:
             r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending)

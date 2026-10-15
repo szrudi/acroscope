@@ -53,6 +53,10 @@ class ApiTest(unittest.TestCase):
         (root / "data" / "blackbox" / "dump #2.bbl").write_bytes(LOG_BYTES)   # one to download (an odd name on purpose)
         (root / "data" / "blackbox" / "x.csv").write_bytes(b"time,gyro")     # what blackbox_decode leaves next to a log
         (root / "data" / "blackbox" / "db.bbl").symlink_to(root / "t.db")    # a link out of blackbox/
+        (root / "elsewhere-logs").mkdir()
+        (root / "elsewhere-logs" / "x.bbl").write_bytes(b"secret")
+        (root / "data" / "blackbox" / "sub").symlink_to(root / "elsewhere-logs")   # a linked folder in blackbox/
+        (root / "data" / "blackbox" / "LOUD.BBL").write_bytes(b"upper case")    # a card that shouts
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"),
                    ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="")
@@ -357,6 +361,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(r.read(), LOG_BYTES)
         # only logs, only in blackbox/ itself, never through a link: a missing one, a CSV beside them, a symlink
         # to the database, a subfolder
+        self.assertEqual(urllib.request.urlopen(self.url + "/blackbox/LOUD.BBL").read(), b"upper case")
         for path in ("nope.bbl", "x.csv", "db.bbl", "sub%2Fx.bbl", "x.bbl/more"):
             with self.assertRaises(urllib.error.HTTPError, msg=path) as cm:
                 urllib.request.urlopen(self.url + "/blackbox/" + path)
@@ -410,3 +415,30 @@ class ApiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JobTest(unittest.TestCase):
+    """The same command started again while it runs (a reload of the player, then 🎯 again) is the same job: two
+    `automatch --write` children on one session would race each other's matches."""
+    def test_a_running_job_is_not_started_twice(self):
+        import threading
+        from unittest import mock
+        from acroscope import server
+        go, calls = threading.Event(), []
+
+        def run(args, timeout=0):
+            calls.append(args)
+            go.wait(5)
+            return {"stdout": "", "stderr": "", "code": 0}
+        with mock.patch.object(server, "run_cli", run):
+            args = ["automatch", "2026-10-15-x", "--unmatched", "--write"]
+            a, b = server.start_job(args), server.start_job(list(args))
+            c = server.start_job(["automatch", "2026-10-15-y", "--unmatched", "--write"])
+            self.assertEqual(a, b)
+            self.assertNotEqual(a, c)
+            go.set()
+            for _ in range(200):                                      # both children done
+                if all(server._jobs[j]["done"] for j in (a, c)):
+                    break
+                time.sleep(0.01)
+        self.assertEqual(len(calls), 2)

@@ -62,6 +62,33 @@ class AutomatchTest(unittest.TestCase):
         self.assertEqual(self.arms(r), [2, 6])                        # proposed all the same
         self.assertEqual((self.db.load("2026-10-03")["blackbox"], self.db.load("2026-10-03")["matches"]), ([], []))
 
+    def test_a_hand_match_set_while_reading_is_kept(self):
+        """A match set by hand on the clip while automatch read it (minutes): kept, not overwritten."""
+        def timers(p, fps=2.0):
+            self.db.set_match("2026-10-03", "2026-10-03_001.mp4", BBL, 2, 99.0, "by hand")
+            return {"layout": "air65f", "rows": []}
+        with mock.patch.object(osd, "read_timers", timers):
+            osd.automatch("2026-10-03", "2026-10-03_001.mp4", write=True)
+        m = {m["arm"]: m for m in self.db.load("2026-10-03")["matches"]}
+        self.assertEqual((m[2]["offset"], m[2]["note"]), (99.0, "by hand"))
+        self.assertIn(6, m)
+
+    def test_a_write_never_attaches_the_log(self):
+        """The match goes in only while the log is in the session, checked in the same statement: a 🗑 landing
+        between the re-read and the write leaves the log out (and its mark in place)."""
+        real = self.db.load
+        def load(session):                                            # the 🗑 right after automatch's last read
+            out = real(session)
+            if session == "2026-10-03" and load.n == 1:
+                self.db.detach("2026-10-03", BBL)
+            load.n += 1
+            return out
+        load.n = 0
+        with mock.patch.object(self.db, "load", load):
+            osd.automatch("2026-10-03", "2026-10-03_001.mp4", write=True)
+        self.assertEqual((self.db.load("2026-10-03")["blackbox"], self.db.load("2026-10-03")["matches"]), ([], []))
+        self.assertEqual(self.db.detached("2026-10-03"), {BBL})
+
     def test_alone_the_lengths_decide(self):
         self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
 
