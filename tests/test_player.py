@@ -48,9 +48,18 @@ def browser_available() -> bool:
 
 @unittest.skipUnless(browser_available(), "no headless browser: run scripts/browser-setup.sh")
 class PlayerTest(unittest.TestCase):
+    LOG_A, LOG_B = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", "BTFL_BLACKBOX_LOG_OTTOJR_20261015_094754_BETAFPVG473_V2.bbl"
+    LOG_ODD = "dump #2.bbl"                                           # a name the link must encode
+    ODD_BYTES = b"H Product:Blackbox flight data recorder\n" + bytes(range(256))
     SESSIONS = {"2026-10-11-unsorted": ["2026-10-11_001.mp4", "2026-10-11_002.mp4"], "2026-10-11-bea": ["2026-10-11_005.mp4"],
                 "2026-10-12-del": ["2026-10-12_001.mp4", "2026-10-12_002.mp4"], "2026-10-13-phone": ["2026-10-13_001.mp4"],
-                "2026-10-09-attick-is-the-limit": ["2026-10-09_001.mp4"]}
+                "2026-10-09-attick-is-the-limit": ["2026-10-09_001.mp4"],
+                "2026-10-14-logs": ["2026-10-14_001.mp4", "2026-10-14_002.mp4"], "2026-10-14-other": ["2026-10-14_005.mp4"],
+                "2026-10-14-typo-src": ["2026-10-14_007.mp4"], "2026-10-14-dl": ["2026-10-14_008.mp4"],
+                "2026-10-14-gone": ["2026-10-14_009.mp4"], "2026-10-14-job": ["2026-10-14_010.mp4"],
+                "2026-10-14-am": ["2026-10-14_001.mp4", "2026-10-14_002.mp4"],
+                "2026-10-14-run-a": ["2026-10-14_011.mp4"], "2026-10-14-run-b": ["2026-10-14_012.mp4"],
+                "2026-10-14-nologs": ["2026-10-14_013.mp4"]}
 
     @classmethod
     def setUpClass(cls):
@@ -62,6 +71,9 @@ class PlayerTest(unittest.TestCase):
             for c in clips:
                 (cls.data / "videos" / s / c).write_bytes(b"")      # not playable, which the player says; enough here
         (cls.data / "blackbox").mkdir()
+        for b in (cls.LOG_A, cls.LOG_B):
+            (cls.data / "blackbox" / b).write_bytes(b"")              # decodes to nothing; the logs tab lists it all the same
+        (cls.data / "blackbox" / cls.LOG_ODD).write_bytes(cls.ODD_BYTES)
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(cls.root / "t.db"), ACROSCOPE_DATA=str(cls.data),
                    ACROSCOPE_CACHE=str(cls.root / "cache"), ACROSCOPE_URL="")
@@ -284,6 +296,162 @@ class PlayerTest(unittest.TestCase):
         page.wait_for_function("() => S.videos.length === 1")
         self.assertEqual(page.locator(".clip").count(), 1)
         self.assertEqual([p.name for p in (self.data / "trash").rglob("*.mp4")], ["2026-10-12_002.mp4"])
+
+
+    # ---- the logs tab: automatch, move, remove -------------------------------------------------------------------
+
+    def logs_session(self, name):
+        """A session holding both logs, 001 matched by hand to log A's arm 1."""
+        self.api.attach(name, self.LOG_A)
+        self.api.attach(name, self.LOG_B)
+        self.api.set_match(name, "2026-10-14_001.mp4", self.LOG_A, 1, 5.0)
+
+    def open_logs(self, session, size=DESKTOP):
+        page = self.open(session, size)
+        if size is PHONE:
+            page.click("#mtabs [data-mtab=logs]")
+        else:
+            page.click("aside .tab[data-tab=logs]")
+        return page
+
+    def test_log_automatch_runs_on_the_clips_without_a_match(self):
+        """The automatch button on top of the logs runs `automatch <session> --unmatched --write` on the server as a
+        job, once however often it is pressed, waits for it, says what it found and reloads the session (the new
+        matches, their suggestions)."""
+        self.logs_session("2026-10-14-am")
+        page = self.open_logs("2026-10-14-am")
+        posted = []
+
+        def done(r):                                                  # the job wrote a match meanwhile
+            self.api.set_match("2026-10-14-am", "2026-10-14_002.mp4", self.LOG_B, 1, 3.0)
+            r.fulfill(json={"done": True, "code": 0, "stderr": "",
+                            "stdout": "2026-10-14_002.mp4: 40/50 frames readable, 1 arm runs, 1 matched (written)\n"})
+        page.route("**/api/cli", lambda r: (posted.append(r.request.post_data_json), r.fulfill(json={"job": "j1"})))
+        page.route("**/api/cli/j1", done)
+        page.evaluate("() => { document.getElementById('logsAutomatch').click(); automatchSession(); }")
+        page.wait_for_function("() => /1 matched over 1 clip/.test(document.getElementById('status').textContent)")
+        self.assertEqual(posted, [{"args": ["automatch", "2026-10-14-am", "--unmatched", "--write"], "async": True}])
+        self.assertTrue(page.evaluate("() => S.matches.some(m => m.video === '2026-10-14_002.mp4')"))
+
+    def test_while_automatch_runs(self):
+        """While the job runs: 🎯 is disabled and ⇄/🗑 say to wait (nothing is posted), in that session only; the
+        other session's buttons work, and the job's end there neither shows A's result nor leaves 🎯 disabled."""
+        A, B = "2026-10-14-run-a", "2026-10-14-run-b"
+        self.api.attach(A, self.LOG_A)
+        self.api.attach(B, self.LOG_A)
+        page = self.open_logs(A)
+        state, moves, said = {"done": False}, [], []
+        page.route("**/api/cli", lambda r: r.fulfill(json={"job": "j3"}))
+        page.route("**/api/cli/j3", lambda r: r.fulfill(json={"done": True, "code": 0, "stderr": "", "stdout": "x: 1 matched (written)\n"}
+                                                          if state["done"] else {"done": False, "seconds": 3}))
+        page.route("**/move-log", lambda r: (moves.append(1), r.continue_()))
+        page.on("dialog", lambda d: (said.append(d.message), d.dismiss()))
+        page.click("#logsAutomatch")
+        self.assertTrue(page.eval_on_selector("#logsAutomatch", "b => b.disabled"))   # at once, not at the next poll
+        self.assertEqual(page.eval_on_selector("#logsAutomatch", "b => getComputedStyle(b).opacity"), "0.45")
+        page.click(f"[data-lmv='{self.LOG_A}']")
+        page.click(f"[data-lrm='{self.LOG_A}']")
+        self.assertEqual([m[:20] for m in said], ["automatch is running"] * 2)
+        self.assertFalse(page.is_visible("#askbox"))
+        self.assertEqual(moves, [])
+        page.evaluate(f"() => loadSession({B!r})")
+        page.wait_for_function(f"() => S.session === {B!r} && !document.getElementById('logsAutomatch').disabled")
+        page.click(f"[data-lrm='{self.LOG_A}']")                       # B's: asks (dismissed), no wait
+        self.assertTrue(said[-1].startswith("Take "))
+        state["done"] = True
+        page.wait_for_timeout(3500)                                   # A's job ends while B is open
+        self.assertNotIn("matched", page.text_content("#status"))
+        self.assertFalse(page.eval_on_selector("#logsAutomatch", "b => b.disabled"))
+
+    def test_no_automatch_without_a_log(self):
+        page = self.open_logs("2026-10-14-nologs")
+        self.assertEqual(page.locator("#logsAutomatch").count(), 0)
+        self.assertIn("no blackbox file", page.text_content("#logs"))
+
+    def test_log_automatch_job_gone(self):
+        """A job the server does not know (restarted meanwhile): said, and no more polling."""
+        self.api.attach("2026-10-14-job", self.LOG_A)
+        page = self.open_logs("2026-10-14-job")
+        polls = []
+        page.route("**/api/cli", lambda r: r.fulfill(json={"job": "j2"}))
+        page.route("**/api/cli/j2", lambda r: (polls.append(1), r.fulfill(status=404, json={"error": "no job j2 (finished and fetched, or the server restarted)"})))
+        page.click("#logsAutomatch")
+        page.wait_for_function("() => /no job j2/.test(document.getElementById('status').textContent)")
+        page.wait_for_timeout(3500)
+        self.assertEqual(len(polls), 1)
+        self.assertFalse(page.eval_on_selector("#logsAutomatch", "b => b.disabled"))
+
+    def test_suggestions_say_why_they_are_missing(self):
+        """A match whose log will not decode: the pane says the server's error, not "no blackbox match"."""
+        self.logs_session("2026-10-14-logs")
+        page = self.open("2026-10-14-logs")
+        page.wait_for_function("() => /could not load the suggestions/.test(document.getElementById('sugg').textContent)")
+
+    def test_log_remove_and_move(self):
+        """🗑 on a log asks and takes it out of the session with its matches here (the file stays in blackbox/);
+        ⇄ moves it to another session, its matches here dropped the same way."""
+        self.logs_session("2026-10-14-logs")
+        page = self.open_logs("2026-10-14-logs")
+        asked = []
+        page.once("dialog", lambda d: (asked.append(d.message), d.dismiss()))
+        page.click(f"[data-lrm='{self.LOG_A}']")
+        page.wait_for_timeout(300)
+        self.assertIn("1 match to clips here is deleted", asked[0])
+        self.assertEqual(len(self.api.load("2026-10-14-logs")["blackbox"]), 2)
+        page.once("dialog", lambda d: d.accept())
+        page.click(f"[data-lrm='{self.LOG_A}']")
+        page.wait_for_function("() => S.blackbox.length === 1 && /taken out of/.test(document.getElementById('status').textContent)")
+        s = self.api.load("2026-10-14-logs")
+        self.assertEqual((s["blackbox"], s["matches"]), ([self.LOG_B], []))
+        page.click(f"[data-lmv='{self.LOG_B}']")
+        page.fill("#askInput", "2026-10-14-other")
+        page.click("#askOk")
+        page.wait_for_function("() => S.blackbox.length === 0 && /moved to 2026-10-14-other/.test(document.getElementById('status').textContent)")
+        self.assertEqual(self.api.load("2026-10-14-other")["blackbox"], [self.LOG_B])
+
+    def test_log_download(self):
+        """⤓ saves the .bbl from the server under its own name (one with a '#' too, which the link must encode)."""
+        self.api.attach("2026-10-14-dl", self.LOG_ODD)
+        page = self.open_logs("2026-10-14-dl")
+        with page.expect_download() as d:
+            page.click(f"[data-ldl='{self.LOG_ODD}']")
+        self.assertEqual(d.value.suggested_filename, self.LOG_ODD)   # from the link's download attribute: also a 404's
+        self.assertIsNone(d.value.failure())
+        self.assertEqual(Path(d.value.path()).read_bytes(), self.ODD_BYTES)
+
+    def test_a_log_whose_file_is_gone(self):
+        """No ⤓ for a log the server no longer has; the head says so."""
+        (self.data / "blackbox" / "gone.bbl").write_bytes(b"")
+        self.api.attach("2026-10-14-gone", "gone.bbl")
+        (self.data / "blackbox" / "gone.bbl").unlink()
+        page = self.open_logs("2026-10-14-gone")
+        self.assertEqual(page.locator("[data-ldl='gone.bbl']").count(), 0)
+        self.assertIn("file gone", page.locator("#logs .log").first.inner_text())
+
+    def test_log_move_refuses_a_session_that_does_not_exist(self):
+        self.api.attach("2026-10-14-typo-src", self.LOG_A)
+        page = self.open_logs("2026-10-14-typo-src")
+        said = []
+        page.on("dialog", lambda d: (said.append(d.message), d.accept()))
+        page.click(f"[data-lmv='{self.LOG_A}']")
+        page.fill("#askInput", "2026-10-14-typo")
+        page.click("#askOk")
+        page.wait_for_timeout(300)
+        self.assertIn("no such session", said[0])
+        self.assertIn(self.LOG_A, self.api.load("2026-10-14-typo-src")["blackbox"])
+        self.assertNotIn("2026-10-14-typo", [s["session"] for s in self.api.sessions()])
+
+    def test_log_buttons_on_the_phone(self):
+        """On the phone the buttons are there without a hover and big enough to hit, inside the screen."""
+        self.api.attach("2026-10-13-phone", self.LOG_A)
+        page = self.open_logs("2026-10-13-phone", PHONE)
+        for k in ("logsAutomatch", "lmv", "lrm", "ldl"):
+            sel = "#" + k if k == "logsAutomatch" else f"[data-{k}='{self.LOG_A}']"
+            b = page.locator(sel).bounding_box()
+            self.assertIsNotNone(b, k)
+            self.assertGreaterEqual(b["height"], 28, k)
+            self.assertLessEqual(b["x"] + b["width"], 412, k)
+            self.assertEqual(page.eval_on_selector(sel, "e => getComputedStyle(e).opacity"), "1", k)
 
 
 if __name__ == "__main__":

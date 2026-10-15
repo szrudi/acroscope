@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS videos (
 CREATE TABLE IF NOT EXISTS blackbox (
   session TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE, file TEXT NOT NULL, pos INTEGER NOT NULL,
   PRIMARY KEY (session, file));
+-- logs taken out of a session by hand: the refresh does not attach them back by their date
+CREATE TABLE IF NOT EXISTS detached (
+  session TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE, file TEXT NOT NULL,
+  PRIMARY KEY (session, file));
 CREATE TABLE IF NOT EXISTS matches (
   session TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE, video TEXT NOT NULL, bbl TEXT NOT NULL,
   arm INTEGER NOT NULL, offset REAL NOT NULL, note TEXT NOT NULL DEFAULT '',
@@ -214,14 +218,61 @@ class Db:
         self._touch(session)
 
     def attach(self, session: str, bbl: str) -> list[str]:
+        self.c.execute("DELETE FROM detached WHERE session = ? AND file = ?", (session, bbl))
         files = self._blackbox(session)
         if bbl not in files:
             self.set_blackbox(session, files + [bbl])
         return self._blackbox(session)
 
     def detach(self, session: str, bbl: str) -> list[str]:
-        self.set_blackbox(session, [f for f in self._blackbox(session) if f != bbl])
+        """The log out of the session, with its matches there (they would point at a log the session has not), and
+        remembered as taken out, so the refresh does not attach it back by its date."""
+        self.c.execute("BEGIN IMMEDIATE")
+        try:
+            self._detach(session, bbl)
+            self.c.execute("COMMIT")
+        except Exception:
+            self.c.execute("ROLLBACK")
+            raise
+        self._touch(session)
         return self._blackbox(session)
+
+    def _detach(self, session: str, bbl: str) -> None:
+        self.c.execute("DELETE FROM matches WHERE session = ? AND bbl = ?", (session, bbl))
+        self.c.execute("DELETE FROM blackbox WHERE session = ? AND file = ?", (session, bbl))
+        if self.exists(session):
+            self.c.execute("INSERT OR IGNORE INTO detached (session, file) VALUES (?, ?)", (session, bbl))
+
+    def carry_detached(self, session: str, into: str) -> None:
+        """A merge: the logs taken out of `session` stay out of `into`, unless `into` has them."""
+        self.c.execute("""INSERT OR IGNORE INTO detached (session, file) SELECT ?, file FROM detached WHERE session = ?
+            AND file NOT IN (SELECT file FROM blackbox WHERE session = ?)""", (into, session, into))
+
+    def detached(self, session: str) -> set[str]:
+        return {r["file"] for r in self.c.execute("SELECT file FROM detached WHERE session = ?", (session,))}
+
+    def move_log(self, session: str, bbl: str, to: str) -> None:
+        """A log out of one session (as detach) and into another, in one transaction; `to` must exist."""
+        if not self.exists(session):
+            raise ValueError(f"{session}: no such session")
+        if to == session:
+            return
+        self.c.execute("BEGIN IMMEDIATE")
+        try:
+            if not self.exists(to):
+                raise ValueError(f"{to}: no such session")
+            if bbl not in self._blackbox(session):
+                raise ValueError(f"{session}: no log {bbl}")
+            if bbl not in self._blackbox(to):
+                pos = self.c.execute("SELECT COALESCE(MAX(pos) + 1, 0) FROM blackbox WHERE session = ?", (to,)).fetchone()[0]
+                self.c.execute("INSERT INTO blackbox (session, file, pos) VALUES (?, ?, ?)", (to, bbl, pos))
+            self.c.execute("DELETE FROM detached WHERE session = ? AND file = ?", (to, bbl))
+            self._detach(session, bbl)
+            self.c.execute("COMMIT")
+        except Exception:
+            self.c.execute("ROLLBACK")
+            raise
+        self._touch(session); self._touch(to)
 
     # ---- matches ----------------------------------------------------------------------------------------------
 
@@ -232,6 +283,19 @@ class Db:
                        (session, video, bbl, arm, round(offset, 2), note))
         self.attach(session, bbl)
         return {"video": video, "bbl": bbl, "arm": arm, "offset": round(offset, 2), "note": note}
+
+    def add_match_if_attached(self, session: str, video: str, bbl: str, arm: int, offset: float, note: str = "",
+                              replace: bool = False) -> bool:
+        """automatch's write: the match goes in only while the log is in the session, checked in the same statement
+        (set_match would attach a log taken out meanwhile back); an existing match stays unless replace. True if
+        written."""
+        cur = self.c.execute(f"""INSERT INTO matches (session, video, bbl, arm, offset, note)
+            SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM blackbox WHERE session = ? AND file = ?)
+            ON CONFLICT (session, video, bbl, arm) DO {"UPDATE SET offset = excluded.offset, note = excluded.note" if replace else "NOTHING"}""",
+                             (session, video, bbl, arm, round(offset, 2), note, session, bbl))
+        if cur.rowcount:
+            self._touch(session)
+        return cur.rowcount > 0
 
     def unmatch(self, session: str, video: str, arm: int | None = None) -> int:
         if arm is None:
@@ -314,7 +378,7 @@ class Db:
         try:
             self.c.execute("INSERT INTO sessions (name, date, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                            (new, new[:10], row["note"], row["created_at"], now()))
-            for t in ("videos", "blackbox", "matches", "moments", "batch_clips"):
+            for t in ("videos", "blackbox", "detached", "matches", "moments", "batch_clips"):
                 self.c.execute(f"UPDATE {t} SET session = ? WHERE session = ?", (new, old))
             self.c.execute("UPDATE videos SET original = replace(original, ?, ?) WHERE session = ? AND original LIKE ?",
                            (f"originals/{old}/", f"originals/{new}/", new, f"originals/{old}/%"))   # the folder moves too
