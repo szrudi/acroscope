@@ -331,7 +331,7 @@ class ApiTest(unittest.TestCase):
 
     def test_file_routes_stay_inside_their_dirs(self):
         # an encoded slash in a path segment must not walk out of videos/ or static/ (the database sits two up)
-        for path in ("/video/..%2F../t.db", "/frame/..%2F../t.db/0", "/static/..%2F..%2Fpyproject.toml"):
+        for path in ("/video/..%2F../t.db", "/frame/..%2F../t.db/0", "/static/..%2F..%2Fpyproject.toml", "/blackbox/..%2F..%2Ft.db"):
             with self.assertRaises(urllib.error.HTTPError, msg=path) as cm:
                 urllib.request.urlopen(self.url + path)
             self.assertEqual(cm.exception.code, 404, path)
@@ -341,6 +341,14 @@ class ApiTest(unittest.TestCase):
         (elsewhere / "2026-10-04_001.mp4").write_bytes(b"")
         (Path(self.tmp.name) / "data" / "videos" / "2026-10-04-link").symlink_to(elsewhere)
         self.assertEqual(urllib.request.urlopen(self.url + "/video/2026-10-04-link/2026-10-04_001.mp4").status, 200)
+
+    def test_a_log_downloads_as_itself(self):
+        """The player's ⤓ on a log: the .bbl as it is, saved under its own name (for Blackbox Explorer)."""
+        r = urllib.request.urlopen(self.url + "/blackbox/x.bbl")
+        self.assertEqual((r.status, r.headers["Content-Disposition"], r.read()), (200, 'attachment; filename="x.bbl"', b""))
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(self.url + "/blackbox/nope.bbl")
+        self.assertEqual(cm.exception.code, 404)
 
     def test_tags_api(self):
         r = self.r

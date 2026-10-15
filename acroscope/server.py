@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import blackbox, events as ev, ingest, metrics, sessions, video
-from .config import CACHE_DIR, VIDEOS_DIR
+from .config import BLACKBOX_DIR, CACHE_DIR, VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -268,7 +268,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":           # a HEAD with a body corrupts the next request on a keep-alive connection
             self.wfile.write(body)
 
-    def _file(self, path: Path, ctype=None, cache="no-store"):
+    def _file(self, path: Path, ctype=None, cache="no-store", download=False):
         if not path.is_file():
             return self._json({"error": f"{path.name}: not found"}, 404)
         size = path.stat().st_size
@@ -298,6 +298,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", cache)
+        if download:                         # saved under its own name, not shown
+            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
         self.end_headers()
         if self.command == "HEAD":
             return
@@ -333,6 +335,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file(_under(STATIC, *parts[1:]), cache="max-age=3600")
             if parts[0] == "video" and len(parts) == 3:
                 return self._file(video.playable(_under(VIDEOS_DIR, parts[1], parts[2])), "video/mp4", "max-age=3600")
+            if parts[0] == "blackbox" and len(parts) == 2:              # a log as it is, for Blackbox Explorer
+                return self._file(_under(BLACKBOX_DIR, parts[1]), "application/octet-stream", download=True)
             if parts[0] == "frame" and len(parts) == 4:
                 return self._file(video.frame(_under(VIDEOS_DIR, parts[1], parts[2]), float(parts[3])), "image/jpeg", "max-age=86400")
             if parts[:2] == ["api", "sessions"]:

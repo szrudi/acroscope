@@ -66,6 +66,7 @@
   button { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:5px 10px; cursor:pointer; font:inherit }
   button:hover { background:#343a46 } button.primary { background:var(--acc); color:#1a1200; border-color:var(--acc); font-weight:600 }
   button.small { padding:2px 7px; font-size:12px }
+  a.btn { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:2px 7px; font-size:12px; line-height:1.4; text-decoration:none } a.btn:hover { background:#343a46 }   /* a link that looks like button.small (a download needs a link) */
   .chip { display:inline-block; padding:2px 9px; border-radius:12px; border:1px solid var(--c, var(--line)); cursor:pointer; font-size:12px; user-select:none }
   .chip.on { background:var(--c, var(--acc2)); color:#111; border-color:var(--c, var(--acc2)) }
   .chip .n { opacity:.7; margin-left:4px; font-size:11px }
@@ -129,7 +130,7 @@
   body.phone .snote { display:none } body.phone #editor { position:fixed; left:0; right:0; bottom:46px; max-height:60vh; overflow:auto; z-index:4; border-radius:8px 8px 0 0 }
   @media (pointer: coarse) {
     .clip { padding:12px 14px } .m { padding:10px 12px } .arm { padding:7px 12px 7px 18px; font-size:13px }
-    button.small { padding:6px 10px; font-size:13px } .chip { padding:6px 12px; font-size:13px } .tagbar { gap:6px 8px }
+    button.small, a.btn { padding:6px 10px; font-size:13px } .chip { padding:6px 12px; font-size:13px } .tagbar { gap:6px 8px }
     input, textarea, select { font-size:16px }   /* 16 px: iOS does not zoom in on focus */
     .clip .mv { opacity:.8 }
   }
@@ -345,11 +346,12 @@ setInterval(() => { if ($('#inbox').style.display !== 'none') renderInbox(); }, 
 renderInbox();
 
 // ---- the logs tab: every log of the session by power cycle, each arm with the clip that covers it, or without one;
-// on each log: automatch the session's clips without a match, move the log to another session, take it out of this one
+// on each log: automatch the session's clips without a match, download the .bbl, move the log to another session, take it out of this one
 const logShort = b => b.length > 40 ? b.slice(25, 40) : b;
 function logHead(b) {
   return `<div class="f" title="${esc(b)}"><span class="nm">${esc(logShort(b))}</span>` +
     `<button class="small" data-lam="${esc(b)}" title="automatch: match the session's clips without a match to its logs from the OSD timers (clips with a match, by hand or not, are left alone)">🎯</button>` +
+    `<a class="small btn" data-ldl="${esc(b)}" href="/blackbox/${encodeURIComponent(b)}" download="${esc(b)}" title="download the .bbl (for Blackbox Explorer)">⤓</a>` +
     `<button class="small" data-lmv="${esc(b)}" title="move this log to another session">⇄</button>` +
     `<button class="small" data-lrm="${esc(b)}" title="take this log out of the session (its matches here go; the file stays on the server)">🗑</button></div>`;
 }

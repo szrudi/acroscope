@@ -19,7 +19,7 @@ numbers.*
 
 The logs tab lists a session's logs by power cycle, each arm with the clip that covers it. On each log: 🎯 runs
 automatch on the session's clips without a match (a log that came after its clips; matches made by hand are left
-alone), ⇄ moves the log to another session, 🗑 takes it out of this one (its matches here go, the file stays).
+alone), ⤓ downloads the .bbl (for Blackbox Explorer), ⇄ moves the log to another session, 🗑 takes it out of this one (its matches here go, the file stays).
 
 The blackbox is a supporting layer: it shows which flights the clips cover and feeds the metrics. Deep log reading
 stays in the Betaflight App's blackbox viewer.

@@ -342,6 +342,14 @@ class PlayerTest(unittest.TestCase):
         page.wait_for_function("() => S.blackbox.length === 0")
         self.assertEqual(self.api.load("2026-10-14-other")["blackbox"], [self.LOG_B])
 
+    def test_log_download(self):
+        """⤓ saves the .bbl from the server under its own name."""
+        self.api.attach("2026-10-14-typo-src", self.LOG_B)
+        page = self.open_logs("2026-10-14-typo-src")
+        with page.expect_download() as d:
+            page.click(f"[data-ldl='{self.LOG_B}']")
+        self.assertEqual(d.value.suggested_filename, self.LOG_B)
+
     def test_log_move_refuses_a_session_that_does_not_exist(self):
         self.api.attach("2026-10-14-typo-src", self.LOG_A)
         page = self.open_logs("2026-10-14-typo-src")
@@ -359,7 +367,7 @@ class PlayerTest(unittest.TestCase):
         """On the phone the buttons are there without a hover and big enough to hit, inside the screen."""
         self.api.attach("2026-10-13-phone", self.LOG_A)
         page = self.open_logs("2026-10-13-phone", PHONE)
-        for k in ("lam", "lmv", "lrm"):
+        for k in ("lam", "lmv", "lrm", "ldl"):
             b = page.locator(f"[data-{k}='{self.LOG_A}']").bounding_box()
             self.assertIsNotNone(b, k)
             self.assertGreaterEqual(b["height"], 28, k)
