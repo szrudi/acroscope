@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -35,6 +36,9 @@ def fake_arm(cache: Path, stem: str, length: float, rate: float, cols: dict):
                                                                  "arms": [{k: v for k, v in meta.items() if k != "fields"}], "boots": []}))
 
 
+LOG_BYTES = b"H Product:Blackbox flight data recorder by Nicholas Sherlock\n" + bytes(range(256)) * 4
+
+
 class ApiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -46,6 +50,9 @@ class ApiTest(unittest.TestCase):
         (root / "data" / "videos" / "2026-10-05-tags" / "2026-10-05_001.mp4").write_bytes(b"")
         (root / "data" / "blackbox").mkdir()
         (root / "data" / "blackbox" / "x.bbl").write_bytes(b"")          # a log the server has (empty: no arms)
+        (root / "data" / "blackbox" / "dump #2.bbl").write_bytes(LOG_BYTES)   # one to download (an odd name on purpose)
+        (root / "data" / "blackbox" / "x.csv").write_bytes(b"time,gyro")     # what blackbox_decode leaves next to a log
+        (root / "data" / "blackbox" / "db.bbl").symlink_to(root / "t.db")    # a link out of blackbox/
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"),
                    ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="")
@@ -344,11 +351,45 @@ class ApiTest(unittest.TestCase):
 
     def test_a_log_downloads_as_itself(self):
         """The player's ⤓ on a log: the .bbl as it is, saved under its own name (for Blackbox Explorer)."""
-        r = urllib.request.urlopen(self.url + "/blackbox/x.bbl")
-        self.assertEqual((r.status, r.headers["Content-Disposition"], r.read()), (200, 'attachment; filename="x.bbl"', b""))
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            urllib.request.urlopen(self.url + "/blackbox/nope.bbl")
-        self.assertEqual(cm.exception.code, 404)
+        r = urllib.request.urlopen(self.url + "/blackbox/" + urllib.parse.quote("dump #2.bbl"))
+        self.assertEqual((r.status, r.headers["Content-Type"], r.headers["Content-Length"], r.headers["Content-Disposition"]),
+                         (200, "application/octet-stream", str(len(LOG_BYTES)), "attachment; filename*=UTF-8''dump%20%232.bbl"))
+        self.assertEqual(r.read(), LOG_BYTES)
+        # only logs, only in blackbox/ itself, never through a link: a missing one, a CSV beside them, a symlink
+        # to the database, a subfolder
+        for path in ("nope.bbl", "x.csv", "db.bbl", "sub%2Fx.bbl", "x.bbl/more"):
+            with self.assertRaises(urllib.error.HTTPError, msg=path) as cm:
+                urllib.request.urlopen(self.url + "/blackbox/" + path)
+            self.assertEqual(cm.exception.code, 404, path)
+
+    def session(self, name):
+        d = Path(self.tmp.name) / "data" / "videos" / name
+        d.mkdir()
+        (d / f"{name[:10]}_001.mp4").write_bytes(b"")
+        self.r.refresh(name, probe_videos=False)
+
+    def test_move_a_log(self):
+        """⇄ in one request: into an existing session only, out of this one with its matches."""
+        for s in ("2026-10-08-a", "2026-10-08-b"):
+            self.session(s)
+        self.r.attach("2026-10-08-a", "x.bbl")
+        self.r.set_match("2026-10-08-a", "001", "x.bbl", 1, 2.0)
+        with self.assertRaises(RemoteError):
+            self.r.move_log("2026-10-08-a", "x.bbl", "2026-10-08-typo")
+        with self.assertRaises(RemoteError):                          # nor a session made by attaching to a typo
+            self.r.attach("2026-10-08-typo", "x.bbl")
+        self.assertFalse(self.r.exists("2026-10-08-typo"))
+        self.assertEqual(self.r.move_log("2026-10-08-a", "x.bbl", "2026-10-08-b"), ["x.bbl"])
+        a = self.r.load("2026-10-08-a")
+        self.assertEqual((a["blackbox"], a["matches"]), ([], []))
+
+    def test_overview_names_a_log_whose_file_is_gone(self):
+        self.session("2026-10-06-gone")
+        (Path(self.tmp.name) / "data" / "blackbox" / "gone.bbl").write_bytes(b"")
+        self.r.attach("2026-10-06-gone", "gone.bbl")
+        (Path(self.tmp.name) / "data" / "blackbox" / "gone.bbl").unlink()
+        o = self.r._call("GET", "/api/session/2026-10-06-gone")
+        self.assertEqual(o["blackbox_gone"], ["gone.bbl"])
 
     def test_tags_api(self):
         r = self.r

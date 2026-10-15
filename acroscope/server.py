@@ -16,7 +16,7 @@ import uuid
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import blackbox, events as ev, ingest, metrics, sessions, video
 from .config import BLACKBOX_DIR, CACHE_DIR, VIDEOS_DIR
@@ -298,8 +298,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", cache)
-        if download:                         # saved under its own name, not shown
-            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        if download:                         # saved under its own name, not shown (RFC 5987: any name, no header injection)
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(path.name, safe='')}")
         self.end_headers()
         if self.command == "HEAD":
             return
@@ -336,7 +336,11 @@ class Handler(BaseHTTPRequestHandler):
             if parts[0] == "video" and len(parts) == 3:
                 return self._file(video.playable(_under(VIDEOS_DIR, parts[1], parts[2])), "video/mp4", "max-age=3600")
             if parts[0] == "blackbox" and len(parts) == 2:              # a log as it is, for Blackbox Explorer
-                return self._file(_under(BLACKBOX_DIR, parts[1]), "application/octet-stream", download=True)
+                p = _under(BLACKBOX_DIR, parts[1])
+                # only a log, only in blackbox/ itself, never through a link (_under is lexical)
+                if not parts[1].lower().endswith(".bbl") or "/" in parts[1] or p.is_symlink():
+                    return self._json({"error": f"{parts[1]}: not a log"}, 404)
+                return self._file(p, "application/octet-stream", download=True)
             if parts[0] == "frame" and len(parts) == 4:
                 return self._file(video.frame(_under(VIDEOS_DIR, parts[1], parts[2]), float(parts[3])), "image/jpeg", "max-age=86400")
             if parts[:2] == ["api", "sessions"]:
@@ -365,6 +369,7 @@ class Handler(BaseHTTPRequestHandler):
                             return self._json({"error": f"{name}: no such session"}, 404)
                         sessions.refresh(name, probe_videos=False)
                     o = sessions.overview(name, cached_only=True)
+                    o["blackbox_gone"] = [b for b in o["blackbox"] if not (BLACKBOX_DIR / b).is_file()]   # the player offers no download
                     for b in o["arms_pending"]:
                         _decode_async(b)
                     for v in o["videos"]:
@@ -455,6 +460,8 @@ class Handler(BaseHTTPRequestHandler):
                 if what == "match":                     # resolves the clip and the log like the CLI does
                     return self._json(sessions.set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", ""))[0])
                 if what == "blackbox":
+                    if b.get("add") and not sessions.store().exists(name):     # attaching makes no session
+                        raise FileNotFoundError(f"{name}: no such session")
                     for f in b.get("add", []):
                         sessions.attach(name, f)
                     for f in b.get("remove", []):
@@ -466,6 +473,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(sessions.rename_session(name, b["name"]))
                 if what == "date":
                     return self._json(sessions.set_date(name, b["date"]))
+                if what == "move-log":
+                    return self._json(sessions.move_log(name, b["bbl"], b["to"]))
                 if what == "move":
                     return self._json(sessions.move_clip(name, b["video"], b["to"]))
                 if what == "merge":

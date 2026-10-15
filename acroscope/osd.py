@@ -723,8 +723,9 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
     unmatched = [v for k, v in enumerate(varms) if k not in {vi for vi, _ in pairs}]
     if write:
         have = {(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] == path.name}
+        logs = sessions.load(session)["blackbox"]      # now: a log taken out while the clip was read gets no match (and is not attached back)
         for m in matches:
-            if overwrite or (m["bbl"], m["arm"]) not in have:
+            if m["bbl"] in logs and (overwrite or (m["bbl"], m["arm"]) not in have):
                 sessions.set_match(session, m["video"], m["bbl"], m["arm"], m["offset"], m["note"])
                 m["written"] = True
     return {"clip": path.name, "name": name, "layout": rt["layout"], "readings": len(rows), "boot_fits": fits,

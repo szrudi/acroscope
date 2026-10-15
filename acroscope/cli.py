@@ -427,8 +427,9 @@ def cmd_automatch(a):
     s = _session(a.session)
     loaded = sessions.load(s)
     clips = a.videos or [v["file"] for v in loaded["videos"] if v.get("duration")]     # in name order: chronological
-    if a.unmatched:            # the player's button on a log: never a clip with a match (by hand or not), never a missing one
-        matched = {m["video"] for m in loaded["matches"]}
+    if a.unmatched and clips:  # the player's automatch button: never a clip with a match (by hand or not), never a missing one
+        clips = [sessions.resolve_clip(s, c) for c in clips]
+        matched = {m["video"] for m in loaded["matches"] if m["bbl"] in loaded["blackbox"]}   # a match to a log taken out is none
         gone = {v["file"] for v in loaded["videos"] if v.get("missing_since")}
         clips = [c for c in clips if c not in matched and c not in gone]
         if not clips:

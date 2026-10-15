@@ -51,6 +51,17 @@ class AutomatchTest(unittest.TestCase):
     def arms(self, r):
         return sorted(m["arm"] for m in r["matches"])
 
+    def test_writes_nothing_to_a_log_taken_out_meanwhile(self):
+        """A log taken out of the session while automatch read the clip (🗑 or ⇄ during a 🎯 job): no match is
+        written to it, so it is not attached back."""
+        def timers(p, fps=2.0):                                         # the OSD read, minutes in real life
+            self.db.detach("2026-10-03", BBL)
+            return {"layout": "air65f", "rows": []}
+        with mock.patch.object(osd, "read_timers", timers):
+            r = osd.automatch("2026-10-03", "2026-10-03_001.mp4", write=True)
+        self.assertEqual(self.arms(r), [2, 6])                        # proposed all the same
+        self.assertEqual((self.db.load("2026-10-03")["blackbox"], self.db.load("2026-10-03")["matches"]), ([], []))
+
     def test_alone_the_lengths_decide(self):
         self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
 
