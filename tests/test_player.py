@@ -48,9 +48,12 @@ def browser_available() -> bool:
 
 @unittest.skipUnless(browser_available(), "no headless browser: run scripts/browser-setup.sh")
 class PlayerTest(unittest.TestCase):
+    LOG_A, LOG_B = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", "BTFL_BLACKBOX_LOG_OTTOJR_20261015_094754_BETAFPVG473_V2.bbl"
     SESSIONS = {"2026-10-11-unsorted": ["2026-10-11_001.mp4", "2026-10-11_002.mp4"], "2026-10-11-bea": ["2026-10-11_005.mp4"],
                 "2026-10-12-del": ["2026-10-12_001.mp4", "2026-10-12_002.mp4"], "2026-10-13-phone": ["2026-10-13_001.mp4"],
-                "2026-10-09-attick-is-the-limit": ["2026-10-09_001.mp4"]}
+                "2026-10-09-attick-is-the-limit": ["2026-10-09_001.mp4"],
+                "2026-10-14-logs": ["2026-10-14_001.mp4", "2026-10-14_002.mp4"], "2026-10-14-other": ["2026-10-14_005.mp4"],
+                "2026-10-14-typo-src": ["2026-10-14_007.mp4"]}
 
     @classmethod
     def setUpClass(cls):
@@ -62,6 +65,8 @@ class PlayerTest(unittest.TestCase):
             for c in clips:
                 (cls.data / "videos" / s / c).write_bytes(b"")      # not playable, which the player says; enough here
         (cls.data / "blackbox").mkdir()
+        for b in (cls.LOG_A, cls.LOG_B):
+            (cls.data / "blackbox" / b).write_bytes(b"")              # decodes to nothing; the logs tab lists it all the same
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(cls.root / "t.db"), ACROSCOPE_DATA=str(cls.data),
                    ACROSCOPE_CACHE=str(cls.root / "cache"), ACROSCOPE_URL="")
@@ -284,6 +289,82 @@ class PlayerTest(unittest.TestCase):
         page.wait_for_function("() => S.videos.length === 1")
         self.assertEqual(page.locator(".clip").count(), 1)
         self.assertEqual([p.name for p in (self.data / "trash").rglob("*.mp4")], ["2026-10-12_002.mp4"])
+
+
+    # ---- the logs tab: automatch, move, remove -------------------------------------------------------------------
+
+    def logs_session(self, name):
+        """A session holding both logs, 001 matched by hand to log A's arm 1."""
+        self.api.attach(name, self.LOG_A)
+        self.api.attach(name, self.LOG_B)
+        self.api.set_match(name, "2026-10-14_001.mp4", self.LOG_A, 1, 5.0)
+
+    def open_logs(self, session, size=DESKTOP):
+        page = self.open(session, size)
+        if size is PHONE:
+            page.click("#mtabs [data-mtab=logs]")
+        else:
+            page.click("aside .tab[data-tab=logs]")
+        return page
+
+    def test_log_automatch_runs_on_the_clips_without_a_match(self):
+        """The log's automatch button runs `automatch <session> --unmatched --write` on the server as a job, waits for
+        it, says what it found and reloads the session (new matches, their suggestions)."""
+        self.logs_session("2026-10-14-logs")
+        page = self.open_logs("2026-10-14-logs")
+        posted = []
+        page.route("**/api/cli", lambda r: (posted.append(r.request.post_data_json), r.fulfill(json={"job": "j1"})))
+        page.route("**/api/cli/j1", lambda r: r.fulfill(json={"done": True, "code": 0, "stderr": "",
+                                                               "stdout": "2026-10-14_002.mp4: 40/50 frames readable, 1 arm runs, 1 matched (written)\n"}))
+        page.click(f"[data-lam='{self.LOG_B}']")
+        page.wait_for_function("() => /1 matched/.test(document.getElementById('status').textContent)")
+        self.assertEqual(posted, [{"args": ["automatch", "2026-10-14-logs", "--unmatched", "--write"], "async": True}])
+
+    def test_log_remove_and_move(self):
+        """🗑 on a log asks and takes it out of the session with its matches here (the file stays in blackbox/);
+        ⇄ moves it to another session, its matches here dropped the same way."""
+        self.logs_session("2026-10-14-logs")
+        page = self.open_logs("2026-10-14-logs")
+        asked = []
+        page.once("dialog", lambda d: (asked.append(d.message), d.dismiss()))
+        page.click(f"[data-lrm='{self.LOG_A}']")
+        page.wait_for_timeout(300)
+        self.assertIn("1 match", asked[0])
+        self.assertEqual(len(self.api.load("2026-10-14-logs")["blackbox"]), 2)
+        page.once("dialog", lambda d: d.accept())
+        page.click(f"[data-lrm='{self.LOG_A}']")
+        page.wait_for_function("() => S.blackbox.length === 1")
+        s = self.api.load("2026-10-14-logs")
+        self.assertEqual((s["blackbox"], s["matches"]), ([self.LOG_B], []))
+        page.click(f"[data-lmv='{self.LOG_B}']")
+        page.fill("#askInput", "2026-10-14-other")
+        page.click("#askOk")
+        page.wait_for_function("() => S.blackbox.length === 0")
+        self.assertEqual(self.api.load("2026-10-14-other")["blackbox"], [self.LOG_B])
+
+    def test_log_move_refuses_a_session_that_does_not_exist(self):
+        self.api.attach("2026-10-14-typo-src", self.LOG_A)
+        page = self.open_logs("2026-10-14-typo-src")
+        said = []
+        page.on("dialog", lambda d: (said.append(d.message), d.accept()))
+        page.click(f"[data-lmv='{self.LOG_A}']")
+        page.fill("#askInput", "2026-10-14-typo")
+        page.click("#askOk")
+        page.wait_for_timeout(300)
+        self.assertIn("no session", said[0])
+        self.assertIn(self.LOG_A, self.api.load("2026-10-14-typo-src")["blackbox"])
+        self.assertNotIn("2026-10-14-typo", [s["session"] for s in self.api.sessions()])
+
+    def test_log_buttons_on_the_phone(self):
+        """On the phone the buttons are there without a hover and big enough to hit, inside the screen."""
+        self.api.attach("2026-10-13-phone", self.LOG_A)
+        page = self.open_logs("2026-10-13-phone", PHONE)
+        for k in ("lam", "lmv", "lrm"):
+            b = page.locator(f"[data-{k}='{self.LOG_A}']").bounding_box()
+            self.assertIsNotNone(b, k)
+            self.assertGreaterEqual(b["height"], 28, k)
+            self.assertLessEqual(b["x"] + b["width"], 412, k)
+            self.assertEqual(page.eval_on_selector(f"[data-{k}='{self.LOG_A}']", "e => getComputedStyle(e).opacity"), "1", k)
 
 
 if __name__ == "__main__":

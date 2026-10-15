@@ -30,6 +30,7 @@
   .log { padding:8px 12px 4px; border-bottom:1px solid var(--line) }
   .log .f { font-weight:600; font-size:12px } .log .cov { color:var(--dim); font-size:12px }
   .log .cov b { color:var(--acc2); font-weight:500 } .log .cov .miss { color:var(--bad) }
+  .log .f { display:flex; align-items:center; gap:4px } .log .f .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   .boot { padding:6px 12px 2px; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px }
   .arm { padding:3px 12px 3px 18px; display:grid; grid-template-columns:52px 46px 1fr; gap:0 8px; font-size:12px; font-variant-numeric:tabular-nums; cursor:default }
   .arm.has { cursor:pointer } .arm.has:hover { background:#232832 }
@@ -202,6 +203,7 @@ const pill = t => `<span class="tag" style="--c:${esc(tagColor(t))}">${esc(t)}</
 const fmt = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); };
 const parse = s => { s = String(s).trim(); if (s.includes(':')) { const [m, x] = s.split(':'); return +m * 60 + +x; } return +s; };
 const api = (p, o) => fetch(p, o).then(r => r.json());
+const asList = x => Array.isArray(x) ? x : [];   // a list endpoint that answered {error} (a log that will not decode): nothing to show
 // a clip's readable name ("2026-10-07_007") and its short form ("007"); the file name on disk is its id
 const clipName = f => (S && S.videos.find(x => x.file === f)?.name) || f.replace(/\.[^.]+$/, '');
 const clipNum = f => { const n = clipName(f); const m = n.match(/_(\d{3})$/); return m ? m[1] : n; };
@@ -265,7 +267,7 @@ async function refreshSession() {
   $('#status').textContent = pending ? 'decoding blackbox in the background…' : '';
   $('#snote').textContent = S.note || '';
   renderClips(); drawStrip();
-  if (keep && !pending) { loadSticks(keep); series = await api(`/api/session/${encodeURIComponent(name)}/series?video=${encodeURIComponent(keep)}`); sugg = await api(`/api/session/${encodeURIComponent(name)}/events?video=${encodeURIComponent(keep)}`); renderSugg(); drawStrip(); }
+  if (keep && !pending) { loadSticks(keep); series = asList(await api(`/api/session/${encodeURIComponent(name)}/series?video=${encodeURIComponent(keep)}`)); sugg = asList(await api(`/api/session/${encodeURIComponent(name)}/events?video=${encodeURIComponent(keep)}`)); renderSugg(); drawStrip(); }
   if (pending) window._poll = setTimeout(refreshSession, 8000);
 }
 
@@ -342,18 +344,25 @@ async function renderInbox() {
 setInterval(() => { if ($('#inbox').style.display !== 'none') renderInbox(); }, 10000);
 renderInbox();
 
-// ---- the logs tab: every log of the session by power cycle, each arm with the clip that covers it, or without one
+// ---- the logs tab: every log of the session by power cycle, each arm with the clip that covers it, or without one;
+// on each log: automatch the session's clips without a match, move the log to another session, take it out of this one
+const logShort = b => b.length > 40 ? b.slice(25, 40) : b;
+function logHead(b) {
+  return `<div class="f" title="${esc(b)}"><span class="nm">${esc(logShort(b))}</span>` +
+    `<button class="small" data-lam="${esc(b)}" title="automatch: match the session's clips without a match to its logs from the OSD timers (clips with a match, by hand or not, are left alone)">🎯</button>` +
+    `<button class="small" data-lmv="${esc(b)}" title="move this log to another session">⇄</button>` +
+    `<button class="small" data-lrm="${esc(b)}" title="take this log out of the session (its matches here go; the file stays on the server)">🗑</button></div>`;
+}
 function renderLogs() {
   const arms = S.arms || [], boots = S.boots || {};
   let h = '';
   for (const b of S.blackbox || []) {
     const rows = arms.filter(a => a.bbl === b);
-    const short = b.length > 40 ? b.slice(25, 40) : b;
-    if ((S.arms_pending || []).includes(b)) { h += `<div class="log"><div class="f">${esc(short)}</div><div class="cov">decoding in the background…</div></div>`; continue; }
-    if (!rows.length) { h += `<div class="log"><div class="f">${esc(short)}</div><div class="cov">no arms</div></div>`; continue; }
+    if ((S.arms_pending || []).includes(b)) { h += `<div class="log">${logHead(b)}<div class="cov">decoding in the background…</div></div>`; continue; }
+    if (!rows.length) { h += `<div class="log">${logHead(b)}<div class="cov">no arms</div></div>`; continue; }
     const flown = rows.filter(a => a.motors_spun !== false), covered = flown.filter(a => a.videos.length);
     const secs = xs => xs.reduce((t, a) => t + (a.length || 0), 0);
-    h += `<div class="log"><div class="f" title="${esc(b)}">${esc(short)}</div><div class="cov">${rows.length} arms · <b>${covered.length}</b> with a clip` +
+    h += `<div class="log">${logHead(b)}<div class="cov">${rows.length} arms · <b>${covered.length}</b> with a clip` +
       (flown.length - covered.length ? ` · <span class="miss">${flown.length - covered.length} without</span> (${fmt(secs(flown) - secs(covered))} of flight)` : '') + `</div></div>`;
     const groups = (boots[b] && boots[b].length) ? boots[b] : [{first: rows[0].index, last: rows[rows.length - 1].index, arms: rows.map(a => a.index)}];
     for (const g of groups) {
@@ -372,6 +381,63 @@ function renderLogs() {
     if (clip !== el.dataset.v) await loadClip(el.dataset.v);
     v.currentTime = t; v.play();
   });
+  $('#logs').querySelectorAll('[data-lam]').forEach(el => el.onclick = () => automatchSession());
+  $('#logs').querySelectorAll('[data-lmv]').forEach(el => el.onclick = () => moveLog(el.dataset.lmv));
+  $('#logs').querySelectorAll('[data-lrm]').forEach(el => el.onclick = () => removeLog(el.dataset.lrm));
+}
+// automatch on the server as a job (a session's worth of OSD reading takes minutes): only the clips without a match,
+// so matches placed by hand stay as they are; then the session again, with the new matches and their suggestions
+let automatching = false;
+async function automatchSession() {
+  if (automatching) return;
+  automatching = true;
+  const name = S.session;
+  try {
+    $('#status').textContent = 'automatch: reading the OSD of the clips without a match…';
+    const {job, error} = await api('/api/cli', {method: 'POST', body: JSON.stringify({args: ['automatch', name, '--unmatched', '--write'], async: true})});
+    if (error) throw new Error(error);
+    let r;
+    for (;;) {
+      r = await api('/api/cli/' + job);
+      if (r.error) throw new Error(r.error);
+      if (r.done) break;
+      if (S.session === name) $('#status').textContent = `automatch: reading the OSD of the clips without a match… ${r.seconds} s`;
+      await new Promise(res => setTimeout(res, 3000));
+    }
+    const got = [...(r.stdout || '').matchAll(/(\d+) matched/g)].reduce((t, m) => t + +m[1], 0);
+    const clips = (r.stdout || '').split('\n').filter(l => / matched/.test(l)).length;
+    const msg = r.code ? `automatch failed: ${(r.stderr || '').trim().split('\n').pop()}`
+      : clips ? `automatch: ${got} matched over ${clips} clip${clips === 1 ? '' : 's'}` : `automatch: ${(r.stderr || 'nothing to do').trim().split('\n').pop()}`;
+    if (S.session === name) await refreshSession();
+    $('#status').textContent = msg; setTimeout(() => { if ($('#status').textContent === msg) $('#status').textContent = ''; }, 8000);
+  } catch (e) {
+    $('#status').textContent = `automatch: ${e.message}`;
+  } finally { automatching = false; }
+}
+function logMatchNote(b) {
+  const n = S.matches.filter(m => m.bbl === b).length;
+  return n ? `\n\nIts ${n} match${n === 1 ? '' : 'es'} to clips here go${n === 1 ? 'es' : ''} with it.` : '';
+}
+async function moveLog(b) {
+  const others = [...$('#session').options].map(o => o.value).filter(n => n !== S.session);
+  const to = await ask(`move ${logShort(b)} to session (${others.slice(0, 6).join(', ')}${others.length > 6 ? ', …' : ''})`, S.session);
+  if (!to || to === S.session) return;
+  if (!others.includes(to)) { alert(`${to}: no session of that name`); return; }
+  const note = logMatchNote(b);
+  if (note && !confirm(`Move ${logShort(b)} to ${to}?${note}`)) return;
+  for (const [s, body] of [[to, {add: [b]}], [S.session, {remove: [b]}]]) {
+    const r = await api(`/api/session/${encodeURIComponent(s)}/blackbox`, {method: 'POST', body: JSON.stringify(body)});
+    if (r.error) { alert(r.error); return; }
+  }
+  flash(`${logShort(b)} moved to ${to}`);
+  await refreshSession();
+}
+async function removeLog(b) {
+  if (!confirm(`Take ${logShort(b)} out of ${S.session}?${logMatchNote(b)}\n\nThe file stays in blackbox/ on the server.`)) return;
+  const r = await api(`/api/session/${encodeURIComponent(S.session)}/blackbox`, {method: 'POST', body: JSON.stringify({remove: [b]})});
+  if (r.error) { alert(r.error); return; }
+  flash(`${logShort(b)} taken out of ${S.session}`);
+  await refreshSession();
 }
 document.querySelectorAll('aside .tab').forEach(tb => tb.onclick = () => {
   document.querySelectorAll('aside .tab').forEach(x => x.classList.toggle('on', x === tb));
@@ -389,8 +455,8 @@ async function loadClip(file) {
   renderClips(); renderMoments(); drawStrip();
   if (gone) $('#readout').innerHTML = `<b style="color:var(--bad)">file missing since ${gone.slice(0, 10)}</b> its moments and matches are kept until purged`;
   sticks = []; drawSticks(); loadSticks(file);
-  series = await api(`/api/session/${encodeURIComponent(S.session)}/series?video=${encodeURIComponent(file)}`);
-  sugg = await api(`/api/session/${encodeURIComponent(S.session)}/events?video=${encodeURIComponent(file)}`);
+  series = asList(await api(`/api/session/${encodeURIComponent(S.session)}/series?video=${encodeURIComponent(file)}`));
+  sugg = asList(await api(`/api/session/${encodeURIComponent(S.session)}/events?video=${encodeURIComponent(file)}`));
   renderSugg(); drawStrip();
 }
 
