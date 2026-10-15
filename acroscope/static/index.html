@@ -30,6 +30,7 @@
   .log { padding:8px 12px 4px; border-bottom:1px solid var(--line) }
   .log .f { font-weight:600; font-size:12px } .log .cov { color:var(--dim); font-size:12px }
   .log .cov b { color:var(--acc2); font-weight:500 } .log .cov .miss { color:var(--bad) }
+  .logbar { padding:8px 12px; border-bottom:1px solid var(--line) } .log .f .flag { color:var(--bad); font-weight:400 }
   .log .f { display:flex; align-items:center; gap:4px } .log .f .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   .boot { padding:6px 12px 2px; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px }
   .arm { padding:3px 12px 3px 18px; display:grid; grid-template-columns:52px 46px 1fr; gap:0 8px; font-size:12px; font-variant-numeric:tabular-nums; cursor:default }
@@ -194,7 +195,7 @@
 <script>
 const $ = s => document.querySelector(s);
 const v = $('#v'), strip = $('#strip'), ctx = strip.getContext('2d');
-let S = null, clip = null, series = [], sugg = [], TAGS = {categories: [], tags: []}, cur = null, loopM = null, armLen = {};
+let S = null, clip = null, series = [], sugg = [], suggErr = '', TAGS = {categories: [], tags: []}, cur = null, loopM = null, armLen = {};
 let filter = new Set();   // tags selected in the bar under the strip; empty = everything. The list and the markers follow it.
 const tagDef = t => TAGS.tags.find(x => x.name === t);
 const catDef = c => TAGS.categories.find(x => x.name === c);
@@ -268,7 +269,7 @@ async function refreshSession() {
   $('#status').textContent = pending ? 'decoding blackbox in the background…' : '';
   $('#snote').textContent = S.note || '';
   renderClips(); drawStrip();
-  if (keep && !pending) { loadSticks(keep); series = asList(await api(`/api/session/${encodeURIComponent(name)}/series?video=${encodeURIComponent(keep)}`)); sugg = asList(await api(`/api/session/${encodeURIComponent(name)}/events?video=${encodeURIComponent(keep)}`)); renderSugg(); drawStrip(); }
+  if (keep && !pending) { loadSticks(keep); series = asList(await api(`/api/session/${encodeURIComponent(name)}/series?video=${encodeURIComponent(keep)}`)); await loadSugg(name, keep); renderSugg(); drawStrip(); }
   if (pending) window._poll = setTimeout(refreshSession, 8000);
 }
 
@@ -346,18 +347,19 @@ setInterval(() => { if ($('#inbox').style.display !== 'none') renderInbox(); }, 
 renderInbox();
 
 // ---- the logs tab: every log of the session by power cycle, each arm with the clip that covers it, or without one;
-// on each log: automatch the session's clips without a match, download the .bbl, move the log to another session, take it out of this one
+// at the top, automatch for the session's clips without a match (all its logs at once); on each log: download the
+// .bbl, move the log to another session, take it out of this one
 const logShort = b => b.length > 40 ? b.slice(25, 40) : b;
 function logHead(b) {
+  const gone = (S.blackbox_gone || []).includes(b);
   return `<div class="f" title="${esc(b)}"><span class="nm">${esc(logShort(b))}</span>` +
-    `<button class="small" data-lam="${esc(b)}" title="automatch: match the session's clips without a match to its logs from the OSD timers (clips with a match, by hand or not, are left alone)">🎯</button>` +
-    `<a class="small btn" data-ldl="${esc(b)}" href="/blackbox/${encodeURIComponent(b)}" download="${esc(b)}" title="download the .bbl (for Blackbox Explorer)">⤓</a>` +
+    (gone ? '<span class="flag">file gone</span>' : `<a class="small btn" data-ldl="${esc(b)}" href="/blackbox/${encodeURIComponent(b)}" download="${esc(b)}" title="download the .bbl (for Blackbox Explorer)">⤓</a>`) +
     `<button class="small" data-lmv="${esc(b)}" title="move this log to another session">⇄</button>` +
-    `<button class="small" data-lrm="${esc(b)}" title="take this log out of the session (its matches here go; the file stays on the server)">🗑</button></div>`;
+    `<button class="small" data-lrm="${esc(b)}" title="take this log out of the session (its matches here are deleted; the file stays on the server)">🗑</button></div>`;
 }
 function renderLogs() {
   const arms = S.arms || [], boots = S.boots || {};
-  let h = '';
+  let h = (S.blackbox || []).length ? `<div class="logbar"><button class="small" id="logsAutomatch" ${automatching ? 'disabled' : ''} title="match the clips without a match to the session's logs from the OSD timers; clips with a match, by hand or not, are left alone">🎯 automatch the clips without a match</button></div>` : '';
   for (const b of S.blackbox || []) {
     const rows = arms.filter(a => a.bbl === b);
     if ((S.arms_pending || []).includes(b)) { h += `<div class="log">${logHead(b)}<div class="cov">decoding in the background…</div></div>`; continue; }
@@ -377,13 +379,13 @@ function renderLogs() {
       }
     }
   }
-  $('#logs').innerHTML = h || '<div class="empty">no blackbox file in this session</div>';
+  $('#logs').innerHTML = (S.blackbox || []).length ? h : '<div class="empty">no blackbox file in this session</div>';
   $('#logs').querySelectorAll('.arm.has').forEach(el => el.onclick = async () => {
     const t = Math.max(0, +el.dataset.t - 1.0);   // a second before the arm, so the ARMED moment is on screen
     if (clip !== el.dataset.v) await loadClip(el.dataset.v);
     v.currentTime = t; v.play();
   });
-  $('#logs').querySelectorAll('[data-lam]').forEach(el => el.onclick = () => automatchSession());
+  if ($('#logsAutomatch')) $('#logsAutomatch').onclick = automatchSession;
   $('#logs').querySelectorAll('[data-lmv]').forEach(el => el.onclick = () => moveLog(el.dataset.lmv));
   $('#logs').querySelectorAll('[data-lrm]').forEach(el => el.onclick = () => removeLog(el.dataset.lrm));
 }
@@ -392,7 +394,7 @@ function renderLogs() {
 let automatching = false;
 async function automatchSession() {
   if (automatching) return;
-  automatching = true;
+  automatching = true; renderLogs();
   const name = S.session;
   try {
     $('#status').textContent = 'automatch: reading the OSD of the clips without a match…';
@@ -414,32 +416,33 @@ async function automatchSession() {
     $('#status').textContent = msg; setTimeout(() => { if ($('#status').textContent === msg) $('#status').textContent = ''; }, 8000);
   } catch (e) {
     $('#status').textContent = `automatch: ${e.message}`;
-  } finally { automatching = false; }
+  } finally { automatching = false; if (S.session === name) renderLogs(); }
 }
 function logMatchNote(b) {
   const n = S.matches.filter(m => m.bbl === b).length;
-  return n ? `\n\nIts ${n} match${n === 1 ? '' : 'es'} to clips here go${n === 1 ? 'es' : ''} with it.` : '';
+  return n ? `\n\nIts ${n} match${n === 1 ? '' : 'es'} to clips here ${n === 1 ? 'is' : 'are'} deleted.` : '';
 }
+// while automatch runs, a log taken out could get matches written to it (and come back): wait for it
+const busy = () => automatching && (alert('automatch is running on this session: wait for it to finish'), true);
 async function moveLog(b) {
+  if (busy()) return;
   const others = [...$('#session').options].map(o => o.value).filter(n => n !== S.session);
   const to = await ask(`move ${logShort(b)} to session (${others.slice(0, 6).join(', ')}${others.length > 6 ? ', …' : ''})`, S.session);
   if (!to || to === S.session) return;
-  if (!others.includes(to)) { alert(`${to}: no session of that name`); return; }
   const note = logMatchNote(b);
   if (note && !confirm(`Move ${logShort(b)} to ${to}?${note}`)) return;
-  for (const [s, body] of [[to, {add: [b]}], [S.session, {remove: [b]}]]) {
-    const r = await api(`/api/session/${encodeURIComponent(s)}/blackbox`, {method: 'POST', body: JSON.stringify(body)});
-    if (r.error) { alert(r.error); return; }
-  }
-  flash(`${logShort(b)} moved to ${to}`);
+  const r = await api(`/api/session/${encodeURIComponent(S.session)}/move-log`, {method: 'POST', body: JSON.stringify({bbl: b, to})});
+  if (r.error) { alert(r.error); return; }
   await refreshSession();
+  flash(`${logShort(b)} moved to ${to}`);
 }
 async function removeLog(b) {
+  if (busy()) return;
   if (!confirm(`Take ${logShort(b)} out of ${S.session}?${logMatchNote(b)}\n\nThe file stays in blackbox/ on the server.`)) return;
   const r = await api(`/api/session/${encodeURIComponent(S.session)}/blackbox`, {method: 'POST', body: JSON.stringify({remove: [b]})});
   if (r.error) { alert(r.error); return; }
-  flash(`${logShort(b)} taken out of ${S.session}`);
   await refreshSession();
+  flash(`${logShort(b)} taken out of ${S.session}`);
 }
 document.querySelectorAll('aside .tab').forEach(tb => tb.onclick = () => {
   document.querySelectorAll('aside .tab').forEach(x => x.classList.toggle('on', x === tb));
@@ -458,7 +461,7 @@ async function loadClip(file) {
   if (gone) $('#readout').innerHTML = `<b style="color:var(--bad)">file missing since ${gone.slice(0, 10)}</b> its moments and matches are kept until purged`;
   sticks = []; drawSticks(); loadSticks(file);
   series = asList(await api(`/api/session/${encodeURIComponent(S.session)}/series?video=${encodeURIComponent(file)}`));
-  sugg = asList(await api(`/api/session/${encodeURIComponent(S.session)}/events?video=${encodeURIComponent(file)}`));
+  await loadSugg(S.session, file);
   renderSugg(); drawStrip();
 }
 
@@ -542,6 +545,12 @@ function renderMoments() {
 function metricLine(k) { const r = k.rotation_deg || {}; return `r${r.roll ?? 0} p${r.pitch ?? 0} y${r.yaw ?? 0}° · thr ${k.throttle_pct?.min}–${k.throttle_pct?.max}% · ${k.vbat?.min} V`; }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+// the detectors' suggestions for a clip; an {error} from the server (a log that will not decode, one not decoded
+// yet) is said in the pane rather than passed off as "no match"
+async function loadSugg(name, file) {
+  const r = await api(`/api/session/${encodeURIComponent(name)}/events?video=${encodeURIComponent(file)}`);
+  sugg = asList(r); suggErr = Array.isArray(r) ? '' : (r.error || 'no answer');
+}
 function renderSugg() {
   const ms = S.moments.filter(m => m.video === clip);
   const open = sugg.filter(e => !ms.some(m => e.start < m.end + 1 && e.end > m.start - 1 && (m.tags || []).includes(e.tag)))
@@ -549,7 +558,7 @@ function renderSugg() {
   $('#scount').textContent = `(${open.length})`;
   $('#sugg').innerHTML = open.map((e, i) => `<div class="m" data-i="${i}"><span style="grid-row:1/3;color:${esc(tagColor(e.tag))}">◇</span>
     <span class="ttl">${esc(e.title)} ${pill(e.tag)}</span><span class="act"><button class="small" data-acc="${i}">accept</button></span>
-    <span class="t">${fmt(e.start)}–${fmt(e.end)}</span><span class="why">${esc(e.why)}</span></div>`).join('') || '<div class="empty">' + (series.length ? 'nothing untagged' : 'no blackbox match for this clip') + '</div>';
+    <span class="t">${fmt(e.start)}–${fmt(e.end)}</span><span class="why">${esc(e.why)}</span></div>`).join('') || '<div class="empty">' + (suggErr ? `could not load the suggestions: ${esc(suggErr)}` : series.length ? 'nothing untagged' : 'no blackbox match for this clip') + '</div>';
   document.querySelectorAll('#sugg .m').forEach(el => el.onclick = e => {
     const s = open[+el.dataset.i];
     if (e.target.dataset.acc !== undefined) return openEditor({video: clip, start: s.start, end: s.end, title: s.title, tags: [s.tag], note: '', why: s.why, metrics: s.numbers});
