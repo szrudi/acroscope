@@ -595,7 +595,7 @@ function renderSugg() {
 function playMoment(id) {
   const m = S.moments.find(x => x.id === id); if (!m) return;
   if (m.video !== clip) {   // load it, then play (unless moved on meanwhile); the moment is where ◀◀ ▶▶ step from already
-    loadClip(m.video).then(() => { if (clip === m.video) playMoment(id); }); cur = id; return;
+    loadClip(m.video).then(() => { if (clip === m.video && cur === id) playMoment(id); }); cur = id; return;   // not if stepped on meanwhile
   }
   cur = id; v.currentTime = m.start; v.play().catch(() => {}); renderMoments(); setUrl();   // a refused play (a clip that will not load, autoplay rules) leaves it paused there
   document.querySelector(`.m[data-id="${id}"]`)?.scrollIntoView({block: 'nearest'});

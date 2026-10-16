@@ -64,7 +64,8 @@ class PlayerTest(unittest.TestCase):
                 "2026-10-16-all": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"],
                 "2026-10-16-step": ["2026-10-16_001.mp4", "2026-10-16_002.mp4", "2026-10-16_003.mp4"],
                 "2026-10-16-zero": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"],
-                "2026-10-16-quick": ["2026-10-16_001.mp4", "2026-10-16_002.mp4", "2026-10-16_003.mp4"]}
+                "2026-10-16-quick": ["2026-10-16_001.mp4", "2026-10-16_002.mp4", "2026-10-16_003.mp4"],
+                "2026-10-16-two": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"]}
 
     @classmethod
     def setUpClass(cls):
@@ -520,6 +521,26 @@ class PlayerTest(unittest.TestCase):
         page.click(".mctl [data-act=next]")
         page.wait_for_timeout(1500)
         self.assertEqual((page.evaluate("() => clip"), self.title(page)), ("2026-10-16_003.mp4", "q3"))
+
+    def test_quick_steps_into_a_clip_with_two_moments(self):
+        """▶▶ ▶▶ fast into a clip holding both next moments: the second press plays the later one at once, and the
+        first press's load, finishing after, does not play its moment over it."""
+        S = "2026-10-16-two"
+        if not self.api.load(S)["moments"]:
+            self.api.tag(S, "2026-10-16_001.mp4", 10, 12, "w1", [])
+            self.api.tag(S, "2026-10-16_002.mp4", 5, 7, "w2", [])
+            self.api.tag(S, "2026-10-16_002.mp4", 20, 22, "w3", [])
+        page = self.open(S, PHONE)
+        self.all_clips_on(page)
+        page.evaluate("() => playMoment(S.moments.find(m => m.title === 'w1').id)")
+        page.wait_for_function("() => clip === '2026-10-16_001.mp4' && cur")
+        page.evaluate("""() => { const f = window.fetch;   // 002's series answers 1 s late
+          window.fetch = (u, o) => String(u).includes('series?video=2026-10-16_002') ? new Promise(r => setTimeout(() => r(f(u, o)), 1000)) : f(u, o); }""")
+        page.click(".mctl [data-act=next]")
+        page.click(".mctl [data-act=next]")
+        page.wait_for_timeout(1500)
+        self.assertEqual(self.title(page), "w3")
+        self.assertGreaterEqual(page.evaluate("() => v.currentTime"), 20)
 
     def test_a_steep_start_is_still_a_swipe(self):
         """A thumb arc that starts more up than sideways and ends as a swipe changes clip and leaves the header;
