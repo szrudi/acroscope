@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS videos (
   session TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE, file TEXT NOT NULL,
   name TEXT, duration REAL, codec TEXT, note TEXT NOT NULL DEFAULT '', missing_since TEXT,
-  cuts TEXT, original TEXT, original_until TEXT,
+  cuts TEXT, original TEXT, original_until TEXT, timescale REAL,
   PRIMARY KEY (session, file));
 CREATE TABLE IF NOT EXISTS blackbox (
   session TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE, file TEXT NOT NULL, pos INTEGER NOT NULL,
@@ -96,7 +96,7 @@ class Db:
     def _migrate(self) -> None:
         """Columns added after a table first shipped (CREATE TABLE IF NOT EXISTS does not add them)."""
         have = {r["name"] for r in self.c.execute("PRAGMA table_info(videos)")}
-        for col, decl in (("name", "TEXT"), ("cuts", "TEXT"), ("original", "TEXT"), ("original_until", "TEXT")):
+        for col, decl in (("name", "TEXT"), ("cuts", "TEXT"), ("original", "TEXT"), ("original_until", "TEXT"), ("timescale", "REAL")):
             if col not in have:
                 self.c.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
         if "result" not in {r["name"] for r in self.c.execute("PRAGMA table_info(batches)")}:
@@ -148,7 +148,7 @@ class Db:
             return out
         for r in self.c.execute("SELECT * FROM videos WHERE session = ? ORDER BY name, file", (session,)):
             v = {"file": r["file"], "name": r["name"] or r["file"], "duration": r["duration"], "codec": r["codec"], "note": r["note"]}
-            for k in ("missing_since", "cuts", "original", "original_until"):
+            for k in ("missing_since", "cuts", "original", "original_until", "timescale"):
                 if r[k]:
                     v[k] = json.loads(r[k]) if k == "cuts" else r[k]
             out["videos"].append(v)
@@ -198,8 +198,9 @@ class Db:
         self._touch(session)
 
     def set_video_fields(self, session: str, file: str, **fields) -> None:
-        """Set name, cuts (a list), original, original_until on a clip."""
-        allowed = {"name", "cuts", "original", "original_until", "codec", "duration"}
+        """Set name, cuts (a list), original, original_until, codec, duration, timescale (the factor a mis-stamped clip
+        was re-timed by; None = on time) on a clip."""
+        allowed = {"name", "cuts", "original", "original_until", "codec", "duration", "timescale"}
         cols = {k: (json.dumps(v) if k == "cuts" and v is not None else v) for k, v in fields.items() if k in allowed}
         if cols:
             self.c.execute(f"UPDATE videos SET {', '.join(k + ' = ?' for k in cols)} WHERE session = ? AND file = ?",

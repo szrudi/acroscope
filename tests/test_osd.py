@@ -1,5 +1,6 @@
 """The aligner's pure parts on made-up runs and arms (no video, no log)."""
 import unittest
+from pathlib import Path
 
 from acroscope import osd
 
@@ -90,6 +91,32 @@ class AlignerTest(unittest.TestCase):
         self.assertEqual(osd.stats_value([("0", .8), ("2", .91), ("1", .73), ("9", .79)], "mmss"), 139)
         self.assertIsNone(osd.stats_value([("3", .26), ("2", .29), ("2", .28), (None, 0)], "mmss"))
         self.assertIsNone(osd.stats_value([("0", .8), ("2", .91), ("7", .73), ("9", .79)], "mmss"))     # 02:79
+
+
+
+class DetectLayoutRateTest(unittest.TestCase):
+    """Review on #30: detect_layout scored a layout by readings that count on at 1 s/s (a step of 2 +- 0.6 s at
+    0.5 fps); a clock running 2.2x the clip (2026-10-14 007) steps about 4.4 s, so no layout scored and 007's
+    layout won 2 to 0 by chance. When nothing counts at 1 s/s, other rates are tried."""
+
+    def detect(self, readings):
+        from unittest import mock
+        from acroscope import osd
+        frames = lambda path, fps, layout=None: ((i * 2.0, layout) for i in range(len(readings["A"])))
+        seq = {n: iter(r) for n, r in readings.items()}
+        with mock.patch.object(osd, "LAYOUTS", {"A": {}, "B": {}}), mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
+                mock.patch.object(osd, "_frames", frames), mock.patch.object(osd, "read_frame", lambda buf, tpl, name: next(seq[name])):
+            return osd.detect_layout(Path("clip.mp4"))
+
+    def test_a_fast_clock_finds_its_layout(self):
+        fast = [(round(i * 4.4, 1), round(i * 4.4, 1), 1.0) for i in range(30)]                  # 2.2x: 4.4 s a sample
+        junk = [(7.0, 3.0, 1.0)] * 30                                                            # static text read as digits
+        self.assertEqual(self.detect({"A": junk, "B": fast}), "B")
+
+    def test_counting_at_one_rate_still_wins(self):
+        on_time = [(i * 2.0, i * 2.0, 1.0) for i in range(30)]
+        fast = [(round(i * 4.4, 1), round(i * 4.4, 1), 1.0) for i in range(30)]
+        self.assertEqual(self.detect({"A": on_time, "B": fast}), "A")                          # 1 s/s first
 
 
 if __name__ == "__main__":
