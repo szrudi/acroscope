@@ -404,6 +404,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(o)
                 if parts[3] == "data":
                     return self._json(sessions.load(name))
+                if parts[3] in ("events", "series", "sticks", "metrics") and q.get("video"):
+                    # a clip as the CLI takes one: its file, readable name or number (#27: a name gave []); one that
+                    # is not there is a 404, not an empty answer
+                    q["video"] = sessions.resolve_clip(name, q["video"])
                 if parts[3] == "events":
                     s = sessions.load(name)
                     rows = []

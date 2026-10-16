@@ -211,6 +211,35 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(at(75), {"throttle": 100, "yaw": 50, "pitch": 100, "roll": -100})
         self.assertEqual(get("2026-10-08_002.mp4"), [])                       # no match, no sticks
 
+    def test_a_clip_by_its_name_or_number(self):
+        """#27: the clip-data calls take a clip as the CLI does, by file, readable name or number; `video=2026-10-14_010`
+        gave [] where the file id gave the clip's suggestions. A clip that is not there is an error, not []."""
+        root = Path(self.tmp.name)
+        S = "2026-10-08-names"
+        (root / "data" / "videos" / S).mkdir()
+        (root / "data" / "videos" / S / "2026-10-08_001.mp4").write_bytes(b"")
+        (root / "data" / "blackbox" / "names.bbl").write_bytes(b"")
+        # what the detectors, the series, the sticks and the metrics read
+        cols = {f"{f}[{i}]": (lambda t: 0.0) for f in ("accSmooth", "gyroADC", "gyroUnfilt") for i in range(3)}
+        cols |= {f"rcCommand[{i}]": (lambda t: 0.0) for i in range(3)} | {"rcCommand[3]": lambda t: 1500.0, "vbatLatest": lambda t: 4.0}
+        cols |= {f"imuQuaternion[{i}]": (lambda t: 0.0) for i in range(3)}
+        fake_arm(root / "cache", "names", 2.0, 200, cols)
+        self.r.refresh(S, probe_videos=False)
+        self.r.set_match(S, "2026-10-08_001.mp4", "names.bbl", 1, 3.0)
+        get = lambda what, clip: json.loads(urllib.request.urlopen(f"{self.url}/api/session/{S}/{what}?video={clip}").read())
+        for what in ("events", "series", "sticks"):
+            by_file = get(what, "2026-10-08_001.mp4")
+            if what != "events":
+                self.assertTrue(by_file, what)                                        # the arm is there
+            self.assertEqual(get(what, "001"), by_file, what)
+            self.assertEqual(get(what, "2026-10-08_001"), by_file, what)
+        m = lambda clip: json.loads(urllib.request.urlopen(f"{self.url}/api/session/{S}/metrics?video={clip}&from=3.5&to=4.5").read())
+        self.assertEqual(m("001"), m("2026-10-08_001.mp4"))
+        for what in ("events", "series", "sticks"):
+            with self.assertRaises(urllib.error.HTTPError, msg=what) as cm:
+                urllib.request.urlopen(f"{self.url}/api/session/{S}/{what}?video=999")
+            self.assertEqual(cm.exception.code, 404, what)
+
     def test_moment_times_are_checked(self):
         self.r.refresh("2026-10-07-s", probe_videos=False)
         for start, end in ((1e400, 2), (float("nan"), 2), (5, 1)):
