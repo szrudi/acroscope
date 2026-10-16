@@ -307,17 +307,24 @@ def _stretch(t: float, cuts: list) -> int:
     return len(cuts) - 1
 
 
-def clock_fit(rows: list[dict]) -> float | None:
+CLOCK_EVEN = 0.03          # clock_fit: each third's slope within this of the whole fit's (frames dropped evenly; 007's
+                           # thirds are within 1.3 % of its 2.2001)
+
+
+def clock_fit(rows: list[dict], kept: list | None = None) -> float | None:
     """How fast the OSD arm clock runs against the clip's own time, from read_timers rows: only readings where both
     timers agree (a second arm's total and arm timers differ) and that advanced since the last one (a disarmed timer
-    stands still), misreads trimmed. None on less than 20 readings over 15 s, or a fit worse than 1 s rms."""
+    stands still), misreads trimmed. Fitted in the original's time (each reading back through the kept stretches): a
+    cut inside an arm is not a fast clock. None (cannot tell) on less than 20 readings over 15 s, a fit worse than
+    1 s rms, a third with too few readings, or a third whose rate is not the whole fit's: an off clock is only fixed when the
+    frames were dropped evenly (2026-10-14 007: 2.200 / 2.183 / 2.207), not for one DVR stall."""
     pts, prev = [], None
     for x in rows:
         top, bot = x.get("top"), x.get("bottom")
         if top is None or bot is None or abs(top - bot) > 1.2 or top <= 1:
             continue
         if prev is not None and top > prev:
-            pts.append((x["t"], top))
+            pts.append((_to_source(x["t"], kept) if kept else x["t"], top))
         prev = top
 
     def fit(p):
@@ -336,26 +343,40 @@ def clock_fit(rows: list[dict]) -> float | None:
         return None
     a, b = fit(pts)
     rms = (sum((y - a * t - b) ** 2 for t, y in pts) / len(pts)) ** 0.5
-    return a if rms < 1.0 and a > 0 else None
+    if not (rms < 1.0 and a > 0):
+        return None
+    t0, t1 = pts[0][0], pts[-1][0]
+    thirds = [[p for p in pts if t0 + k * (t1 - t0) / 3 <= p[0] <= t0 + (k + 1) * (t1 - t0) / 3] for k in range(3)]
+    if any(len(th) < 5 for th in thirds):
+        return None
+    # each third runs at the whole fit's rate: a stall between two thirds leaves them all at 1.0 against a fit of 1.06
+    return a if all(abs(fit(th)[0] - a) <= CLOCK_EVEN * a for th in thirds) else None
 
 
 def retime(path: Path, k: float) -> None:
     """Stretch a clip's clock by k: the video's timestamps scaled, no re-encode. The audio goes (the DVR stamped it as
     wrongly). Built beside the clip as .part (not a video suffix: the scan leaves it alone), then put in place."""
     tmp = path.with_name(path.name + ".retime.part")
-    subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-itsscale", f"{k:.5f}", "-i", str(path), "-map", "0:v", "-c", "copy",
-                    "-movflags", "+faststart", "-f", "mp4", str(tmp)], check=True)
+    try:
+        subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-itsscale", f"{k:.5f}", "-i", str(path), "-map", "0:v", "-c", "copy",
+                        "-movflags", "+faststart", "-f", "mp4", str(tmp)], check=True)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     os.replace(tmp, path)
 
 
-def fix_clock(path: Path, log=print) -> float:
-    """1.0, or the factor a clip was re-timed by: the OSD's arm clock against the clip's (read at automatch's 2 fps,
-    so automatch reuses the reading when the clip stays as it is). A clip the reader cannot read stays as it is."""
+def fix_clock(path: Path, kept: list, log=print) -> float | None:
+    """1.0 (on time), the factor a clip was re-timed by, or None when it cannot tell (an OSD the reader cannot read, no
+    arm long enough, an uneven clock): the clip then stays as it is. The OSD's arm clock against the clip's, in the
+    original's time (`kept`: the stretches compress kept), read at automatch's 2 fps."""
     try:
-        k = clock_fit(osd.read_timers(path, 2.0)["rows"])
+        k = clock_fit(osd.read_timers(path, 2.0)["rows"], kept)
     except Exception:  # noqa: BLE001  (an OSD the reader has no layout for: nothing to go by)
-        return 1.0
-    if k is None or abs(k - 1) <= CLOCK_TOL:
+        return None
+    if k is None:
+        return None
+    if abs(k - 1) <= CLOCK_TOL:
         return 1.0
     k = round(k, 4)
     log(f"{path.name}: the OSD clock runs {k}x the clip's (a mis-stamped frame rate): re-timed to {video.probe(path)['duration'] * k:.1f} s")
@@ -392,7 +413,11 @@ def recut(session: str, vid: str, log=print) -> dict:
         work.unlink(missing_ok=True)
         raise
     new = res["kept"]
-    k_new = fix_clock(work, log)
+    k_new = fix_clock(work, new, log)
+    if k_new is None:                       # cannot tell from the new encode: the clock is the original's, as it was
+        k_new = k_old
+        if k_old != 1.0:
+            retime(work, k_old)
     move = lambda t: move_time(t, old, k_old, new, k_new)
     reclocked = abs(k_new / k_old - 1) > 0.01
     moments, matches, check = [], [], []
@@ -505,9 +530,14 @@ def process_batch(batch: str, log=print) -> dict:
                 db.set_batch(batch, progress=prog)
             try:
                 res = compress(taken, part, pct)
+                # the clock on the encode, before the clip is recorded: a crash here is redone by the retry
+                db.set_batch(batch, progress={**prog, "step": "clock"})
+                k = fix_clock(part, res["kept"], lambda m: log(f"{batch}: {m}"))
+                k = None if k in (None, 1.0) else k
+                duration = video.probe(part)["duration"] if k else res["duration"]
                 if os.geteuid() == 0:
                     os.chown(part, 0, 0)
-                db.record_ingested(batch, source, session, dst.name, name, res["duration"], res["codec"], cuts=res["kept"],
+                db.record_ingested(batch, source, session, dst.name, name, duration, res["codec"], cuts=res["kept"], timescale=k,
                                    original=str(orig.relative_to(DATA_DIR)),
                                    original_until=(now() + timedelta(days=ORIGINAL_DAYS)).isoformat() if res["verified"] else None)
             except Exception:
@@ -516,10 +546,8 @@ def process_batch(batch: str, log=print) -> dict:
                     os.rename(taken, src)           # back into the batch: the retry takes it again (or a good copy pushed over it)
                 raise
             _place(taken, part, dst, orig)
-            db.set_batch(batch, progress={**prog, "step": "clock"})
-            k = fix_clock(dst, lambda m: log(f"{batch}: {m}"))
-            if k != 1.0:
-                db.set_video_fields(session, dst.name, timescale=k, duration=video.probe(dst)["duration"])
+            if not k:
+                osd.carry_reading(part, dst)        # the reading was taken on the encode: automatch reuses it there
             if not res["verified"]:
                 log(f"{batch}: {name}: compressed clip is {res['duration']} s, kept stretches add up to {sum(e - s for s, e in res['kept']):.1f} s: original kept")
             imported.append(dst.name)

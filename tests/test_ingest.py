@@ -110,6 +110,54 @@ class IngestTest(_Scratch):
         self.assertIsNone(ingest.clock_fit(rows(2.2, n=12)))                                  # 6 s of readings: too few
         self.assertIsNone(ingest.clock_fit([]))
 
+    @staticmethod
+    def arm_rows(rate=1.0, start=10.0, length=120.0, skip=None, cut=None):
+        """read_timers rows for one arm at `rate` x the clip's clock, every 0.5 s of the original; `skip` (at, s): a DVR
+        stall where the OSD jumps s ahead; `cut` [a, b]: original time cut from the compressed clip (1 s padding
+        kept, as compress leaves it), rows in compressed time. Returns (rows, kept)."""
+        kept = [[0.0, cut[0]], [cut[1], start + length + 10]] if cut else [[0.0, start + length + 10]]
+        rows = []
+        for i in range(int((start + length + 10) * 2)):
+            o = i / 2                                                               # original's time
+            if cut and cut[0] < o < cut[1]:
+                continue
+            v = round(max(0.0, (o - start) * rate + (skip[1] if skip and o >= skip[0] else 0)), 2) if start <= o <= start + length else 0.0
+            rows.append({"t": round(ingest._to_clip(o, kept), 2), "top": v, "bottom": int(v)})
+        return rows, kept
+
+    def test_a_cut_inside_an_arm_is_not_a_fast_clock(self):
+        """Review on #30 (blocker): fitted against the compressed clip's time, a no-signal run cut from inside an arm
+        (5 s or more) reads as a fast clock: 7 s gave 1.062, 10 s 1.098, so a clip on time was re-timed. Fitted in the
+        original's time (each reading back through the kept stretches), it is 1.0."""
+        for gap in (7, 10):
+            rows, kept = self.arm_rows(cut=[60.0, 60.0 + gap])
+            self.assertAlmostEqual(ingest.clock_fit(rows, kept), 1.0, delta=0.01, msg=gap)
+        rows, kept = self.arm_rows(rate=2.2, cut=[60.0, 67.0])
+        self.assertAlmostEqual(ingest.clock_fit(rows, kept), 2.2, delta=0.02)
+
+    def test_an_uneven_clock_is_no_rate(self):
+        """Review on #30 (major): a clip only gets re-timed when the frames were dropped evenly (007: 2.200 / 2.183 /
+        2.207 over thirds). One DVR stall skipping 5 s fitted 1.060; that third runs faster than the rest, so it is
+        None. A stall right at a third's edge leaves every third at 1.0 against the whole fit's 1.058: None too. A
+        stall near the end is trimmed away and the clip is on time. Stray misreads (real clips: about a fifth) are
+        trimmed and the fit stands."""
+        rows, _ = self.arm_rows(skip=(70.0, 5.0))
+        self.assertIsNone(ingest.clock_fit(rows))
+        for at in (50.0, 90.0):                                                       # at a third's edge of the arm (10-130 s)
+            rows, _ = self.arm_rows(skip=(at, 5.0))
+            self.assertIsNone(ingest.clock_fit(rows), at)
+        rows, _ = self.arm_rows(skip=(125.0, 5.0))
+        self.assertAlmostEqual(ingest.clock_fit(rows), 1.0, delta=0.01)
+        rows, _ = self.arm_rows(rate=2.2)
+        self.assertAlmostEqual(ingest.clock_fit(rows), 2.2, delta=0.02)
+        rows, _ = self.arm_rows()                                                    # the middle unreadable: a third without readings
+        self.assertIsNone(ingest.clock_fit([r for r in rows if not 45 <= r["t"] <= 95]))
+        rows, _ = self.arm_rows()
+        for i, r in enumerate(rows):                                                 # one reading in six read wrong, agreeing
+            if r["top"] > 2 and i % 6 == 0:
+                r["top"] = r["bottom"] = r["top"] + 40
+        self.assertAlmostEqual(ingest.clock_fit(rows), 1.0, delta=0.01)
+
     def test_fix_clock_retimes_a_misstamped_clip(self):
         """A clip whose OSD clock runs k times its own is stretched by k (timestamps scaled, no re-encode; the audio,
         stamped as wrongly, goes); a clip on time is left alone."""
@@ -121,13 +169,26 @@ class IngestTest(_Scratch):
                                 "-i", "anullsrc=r=32000:cl=mono", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(src)], check=True)
                 rt = {"layout": "x", "rows": [{"t": t / 2, "top": round(t / 2 * k + 1.3, 2), "bottom": int(t / 2 * k + 1.3)} for t in range(8)]}
                 with mock.patch.object(ingest, "clock_fit", return_value=k), mock.patch.object(ingest.osd, "read_timers", return_value=rt):
-                    got = ingest.fix_clock(src, log=lambda m: None)
+                    got = ingest.fix_clock(src, [[0.0, 4.0]], log=lambda m: None)
                 self.assertEqual(got, want)
                 info = ingest.video.probe(src)
                 self.assertAlmostEqual(info["duration"], 4.0 * want, delta=0.1)
                 types = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(src)],
                                        capture_output=True, text=True).stdout.split()
                 self.assertEqual(types, ["video"] if want != 1.0 else ["video", "audio"])
+        with mock.patch.object(ingest.osd, "read_timers", side_effect=RuntimeError("no layout")):      # cannot tell: None
+            self.assertIsNone(ingest.fix_clock(src, [[0.0, 4.0]], log=lambda m: None))
+        with mock.patch.object(ingest, "clock_fit", return_value=None), mock.patch.object(ingest.osd, "read_timers", return_value=rt):
+            self.assertIsNone(ingest.fix_clock(src, [[0.0, 4.0]], log=lambda m: None))
+
+    def test_a_failed_retime_leaves_nothing(self):
+        """A retime that fails leaves no .retime.part (one a crash left before is gone too)."""
+        bad = self.root / "not-a-video.mp4"
+        bad.write_bytes(b"no video here")
+        (self.root / "not-a-video.mp4.retime.part").write_bytes(b"from a crash")
+        with self.assertRaises(subprocess.CalledProcessError):
+            ingest.retime(bad, 2.2)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir() if p.name.startswith("not-a-video")), ["not-a-video.mp4"])
 
     def test_times_move_through_cuts_and_clocks(self):
         # old clip time -> its original (through the old cuts, at the old clock) -> the new clip (new cuts, new clock)
@@ -267,6 +328,75 @@ class IngestTest(_Scratch):
         self.assertEqual([(c["bbl"], c["arm"]) for c in res["check"]], [("BTFL_d.bbl", 2)])
         self.assertFalse(stale.exists())
         self.assertTrue((self.data / v["original"]).exists())               # the original stays until its date
+
+    def test_recut_keeps_the_clock_it_cannot_read(self):
+        """Review on #30: a re-timed clip (timescale 2.2) recut where the OSD cannot be read keeps its clock: the new
+        encode is re-timed by the stored factor, and moments and matches stay put, instead of the clip playing 2.2x
+        fast again with every match listed under check."""
+        b = self.data / "inbox" / "slow"
+        b.mkdir(parents=True)
+        make_clip(b / "VID0001.mov", "dusk")
+        (b / "import.json").write_text(json.dumps({"date": "2026-10-14", "session": "slow"}))
+        (b / ".done").write_text("")
+        self.assertEqual(self.cli("ingest", "slow").returncode, 0)
+        S = "2026-10-14-slow"
+        db = Db(self.root / "t.db")
+        v = db.load(S)["videos"][0]
+        p = self.data / "videos" / S / v["file"]
+        ingest.retime(p, 2.2)                                                           # as ingest left a mis-stamped clip
+        db.set_video_fields(S, v["file"], timescale=2.2, duration=ingest.video.probe(p)["duration"])
+        db.tag(S, v["file"], 11.0, 13.2, "at 5-6 s of the original", [])
+        code = ("from acroscope import ingest\nimport json\ningest.fix_clock = lambda path, kept, log=print: None\n"
+                f"print(json.dumps(ingest.recut({S!r}, '001', log=lambda m: None)))")
+        r = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(res["timescale"], 2.2)
+        s = db.load(S)
+        self.assertEqual(s["videos"][0]["timescale"], 2.2)
+        self.assertAlmostEqual(s["videos"][0]["duration"], 13.0 * 2.2, delta=1.5)
+        self.assertEqual([(m["start"], m["end"]) for m in s["moments"]], [(11.0, 13.2)])
+
+    def test_the_clock_reading_goes_with_the_clip(self):
+        """The OSD reading ingest takes on the encode for the clock goes with the clip into videos/, so automatch
+        (here not run) does not read the OSD again."""
+        batch = "carry"
+        self.two_clip_batch(batch)
+        (self.data / "inbox" / batch / "import.json").write_text(json.dumps({"date": "2026-10-11", "session": "carry"}))
+        self.env["ACROSCOPE_DB"] = str(self.root / "tcarry.db")
+        r = self.run_patched(batch, "ingest._cli = lambda *a: None")              # no decode, no automatch child
+        self.assertEqual(r.returncode, 0, r.stderr)
+        vids = Db(self.root / "tcarry.db").load("2026-10-11-carry")["videos"]
+        self.assertEqual(len(vids), 2)
+        for x in vids:
+            self.assertTrue(list((self.root / "cache" / "osd" / "2026-10-11-carry").glob(x["file"] + ".*.json")), x["file"])
+
+    def test_a_crash_in_the_clock_step_is_redone_by_the_retry(self):
+        """Review on #30: the clock step ran after the clip was recorded, so a crash in it (the OSD read is the slow
+        part) left the clip done for the retry and never re-timed. It runs on the encode before the clip is recorded,
+        and what it found is recorded with it."""
+        batch = "clockcrash"
+        self.two_clip_batch(batch)
+        (self.data / "inbox" / batch / "import.json").write_text(json.dumps({"date": "2026-10-11", "session": "clock crash"}))
+        self.env["ACROSCOPE_DB"] = str(self.root / "tc.db")
+        r = self.run_patched(batch, """n = [0]
+def fix(path, kept, log=print):
+    n[0] += 1
+    if n[0] == 2:
+        os._exit(9)
+    return 1.0
+ingest.fix_clock = fix""")
+        self.assertEqual(r.returncode, 9, r.stderr)
+        r = self.run_patched(batch, """def fix(path, kept, log=print):
+    ingest.retime(path, 2.0)
+    return 2.0
+ingest.fix_clock = fix""")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_consistent(self.root / "tc.db", batch, 2)
+        db = Db(self.root / "tc.db")
+        vids = sorted(db.load(db.batches()[0]["session"])["videos"], key=lambda v: v["name"])
+        self.assertEqual([v.get("timescale") for v in vids], [None, 2.0])          # 001 done before the crash, 002 by the retry
+        self.assertGreater(vids[1]["duration"], vids[0]["duration"] * 1.8)
 
     def two_clip_batch(self, name: str) -> Path:
         b = self.data / "inbox" / name

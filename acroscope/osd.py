@@ -278,31 +278,53 @@ def read_frame(buf: bytes, templates: dict, layout: str = "otto") -> tuple[float
     return out[a], out[1 - a], conf
 
 
+MIN_COUNTING = 3                   # detect_layout: fewer counting pairs at 1 s/s than this, and other rates are tried
+RATES = (0.5, 0.75, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0)
+
+
 def detect_layout(path: Path, fps: float = 0.5) -> str:
     """The layout whose readings make sense: sampled at `fps` over the whole clip, score a layout by the pairs of
     consecutive readings of each of its timers that count on at 1 s/s. Wrong cells read like digits too, and
     static text reads the same wrong digits every time, so standing still does not count; only counting does.
     Both timers count, so two layouts that share a row are told apart by the other one."""
-    best = ("otto", 0)
     step = 1 / fps
 
-    def counting(vals):
-        return sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and step - 0.6 <= b - a <= step + 0.6)
+    def counting(vals, rate=1.0):
+        s, tol = step * rate, 0.6 * max(1.0, rate)
+        return sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and s - tol <= b - a <= s + tol)
+    reads = {}
     for name in LAYOUTS:
         tpl = _load_templates(name)   # layouts sharing templates are told apart by where the digits are
-        if not tpl:
-            continue
-        reads = [read_frame(buf, tpl, name) for _, buf in _frames(path, fps, layout=name)]
-        n = counting([r[1] for r in reads]) + counting([r[0] for r in reads])
-        if n > best[1]:
-            best = (name, n)
-    return best[0]
+        if tpl:
+            reads[name] = [read_frame(buf, tpl, name) for _, buf in _frames(path, fps, layout=name)]
+
+    def score(name, rate):
+        return counting([r[1] for r in reads[name]], rate) + counting([r[0] for r in reads[name]], rate)
+    best = max(((score(n, 1.0), n) for n in reads), default=(0, "otto"))
+    if best[0] < MIN_COUNTING:
+        # nothing counts on at 1 s/s: a clip whose clock runs off the OSD's (2026-10-14 007, a 2.2x mis-stamped frame
+        # rate, where the right layout won 2 to 0 by chance); the layout counting at its own steady rate wins
+        best = max(((max(score(n, r) for r in RATES), n) for n in reads), default=(0, "otto"))
+    return best[1] if best[0] > 0 else "otto"
+
+
+def _timers_cache(path: Path, fps: float, st=None) -> Path:
+    st = st or path.stat()
+    return video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.{fps:g}.v{OSD_VERSION}-{_templates_stamp()}.json")
+
+
+def carry_reading(was: Path, now: Path, fps: float = 2.0) -> None:
+    """A clip moved from `was` to `now` unchanged (the move keeps size and mtime): its timer reading goes with it,
+    so automatch does not read the OSD again (ingest reads it on the encode for the clock)."""
+    st = now.stat()
+    src, dst = _timers_cache(was, fps, st), _timers_cache(now, fps, st)
+    if src.exists() and not dst.exists():
+        dst.write_text(src.read_text())
 
 
 def read_timers(path: Path, fps: float = 2.0, layout: str | None = None) -> dict:
     """Read the timers through the clip: {layout, rows: [{t, top, bottom, conf}]} (cached per clip)."""
-    st = path.stat()
-    cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.{fps:g}.v{OSD_VERSION}-{_templates_stamp()}.json")
+    cp = _timers_cache(path, fps)
     if cp.exists():
         return json.loads(cp.read_text())
     layout = layout or detect_layout(path)
