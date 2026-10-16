@@ -103,6 +103,25 @@ class LeanTest(unittest.TestCase):
             rows = metrics.orbit(self.arm(q), 0.0, 0.19, step=0.1)
             self.assertEqual(rows[0]["lean_dir_vs_nose"], want, q)
 
+    def test_a_snapshot_says_its_lean_convention(self):
+        """A moment's metrics snapshot (metrics.summary) carries the lean convention it was made with: the #38
+        correction of stored snapshots flips only those without it, so it can run before or after the deploy, twice."""
+        import array
+        import math
+        from acroscope import metrics
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        n, rate = 200, 200
+        t = array.array("d", (i / rate for i in range(n)))
+        names = [f"{f}[{k}]" for f in ("gyroADC", "accSmooth") for k in range(3)] + [f"rcCommand[{k}]" for k in range(4)] + ["vbatLatest"]
+        cols = {c: array.array("f", [400.0 if c == "vbatLatest" else 0.0] * n) for c in names}
+        cols |= {f"imuQuaternion[{k}]": array.array("f", [math.sin(math.radians(15)) * 32767 if k == 0 else 0.0] * n) for k in range(3)}
+        p = Path(tmp.name) / "a.bin"
+        blackbox._save({"bbl": "x", "file": "x.bbl", "index": 1, "frames": n, "length": t[-1], "rate": rate, "fields": ["time", *cols]}, t, cols, p)
+        snap = metrics.summary(blackbox._load(p), 0.1, 0.9)
+        self.assertEqual(snap["lean_start"], [0, 30])
+        self.assertEqual(snap["lean_convention"], metrics.LEAN_CONVENTION)
+
     def test_the_conventions_say_which_side(self):
         from acroscope import metrics
         self.assertIn("right side down", metrics.CONVENTIONS["lean"])

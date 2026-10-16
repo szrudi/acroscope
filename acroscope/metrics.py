@@ -10,6 +10,8 @@ from .blackbox import Arm
 
 AXES = ("roll", "pitch", "yaw")
 
+LEAN_CONVENTION = "right + = right side down"   # in every metrics snapshot: one without it is from before #38 (right negated)
+
 # Fixed facts the agent would otherwise re-derive every session. Stated once, shipped with every metrics result.
 CONVENTIONS = {
     "roll": "+ = roll right (right stick right). In the camera view the horizon rotates anticlockwise, the right side of the picture drops",
@@ -62,6 +64,7 @@ def summary(arm: Arm, t0: float, t1: float) -> dict:
         "throttle_pct": {"min": round(min(thr)), "mean": round(_mean(thr)), "max": round(max(thr))},
         "tilt_deg": {"min": round(min(tilt)), "max": round(max(tilt)), "start": round(tilt[0]), "end": round(tilt[-1])},
         "lean_start": [round(x) for x in arm.lean(i0)], "lean_end": [round(x) for x in arm.lean(i1 - 1)],
+        "lean_convention": LEAN_CONVENTION,
         "acc_g": {"min": round(min(acc), 2), "max": round(max(acc), 2)},
         "vbat": {"min": round(min(arm.col("vbatLatest")[i] for i in r) / 100, 2),
                  "max": round(max(arm.col("vbatLatest")[i] for i in r) / 100, 2)},
