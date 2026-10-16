@@ -58,13 +58,26 @@ def _cli(*args: str):
     subprocess.run([sys.executable, "-m", "acroscope.cli", *args], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
 
+FREE_TEXT = {"title", "note", "tags"}   # a client's command may say anything here; every other value names something
+
+
 def _check_proxied(args: list[str]) -> None:
-    """Only PROXIED commands, and only names (sessions, clips, logs, times): a path would let a client point ffmpeg
-    or the decoder at any file on this host."""
+    """Only PROXIED commands, and only names (sessions, clips, logs, times) where a value names something: a path
+    would let a client point ffmpeg or the decoder at any file on this host. Free text (a moment's title, a note,
+    tags) may hold a '/' ("725 deg/s", #32): the command is parsed with the CLI's own parser to tell which is which."""
     if not args or args[0] not in PROXIED:
         raise ValueError(f"not a command a client may run here: {args[:1]}")
-    if any("/" in a for a in args[1:]):
-        raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
+    from . import cli
+    try:
+        ns = cli.parser().parse_args(args)
+    except SystemExit:                                   # argparse's own error (or --help): not a command to run
+        raise ValueError(f"not a valid command: {' '.join(args)}") from None
+    for k, v in vars(ns).items():
+        if k in FREE_TEXT:
+            continue
+        for x in v if isinstance(v, list) else [v]:
+            if isinstance(x, str) and "/" in x:
+                raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
 
 
 def run_cli(args: list[str], timeout: float = 1800) -> dict:
