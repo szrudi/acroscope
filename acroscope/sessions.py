@@ -156,7 +156,7 @@ def overview(session: str, with_arms: bool = True, cached_only: bool = False) ->
             for a in idx["arms"]:
                 matched = [m for m in s["matches"] if m["bbl"] == idx["file"] and m["arm"] == a["index"]]
                 arms.append({"bbl": idx["file"], **{k: a.get(k) for k in ("index", "length", "rate", "vbat_start",
-                             "vbat_end", "vbat_min", "motors_spun", "disarm_reason", "complete")},
+                             "vbat_end", "vbat_min", "motors_spun", "disarm_reason", "complete", "frames", "error")},
                              "videos": [{"video": m["video"], "offset": m["offset"]} for m in matched]})
         out["arms"] = arms
     return out
@@ -218,7 +218,8 @@ def refresh(session: str, probe_videos: bool = True) -> dict:
                 # ran, and the result must not make either again (#16)
                 db.set_video_fields(session, f, duration=info["duration"], codec=info["codec"])
     if not s["blackbox"] and db.exists(session):
-        db.set_blackbox(session, [b.name for b in blackbox.all_bbls() if blackbox.bbl_date(b) == session[:10] and b.stat().st_size])
+        out = db.detached(session)                      # taken out by hand: not back by their date
+        db.set_blackbox(session, [b.name for b in blackbox.all_bbls() if blackbox.bbl_date(b) == session[:10] and b.stat().st_size and b.name not in out])
     return db.load(session)
 
 
@@ -290,6 +291,14 @@ def attach(session: str, bbl: str) -> list[str]:
 def detach(session: str, bbl: str) -> list[str]:
     known = bbl in load(session)["blackbox"]          # a log that was deleted from blackbox/ can still be detached by name
     return store().detach(session, bbl if remote() or known else blackbox.resolve_bbl(bbl).name)
+
+
+def move_log(session: str, bbl: str, to: str) -> list[str]:
+    """⇄ on a log: into session `to` (which must exist), out of this one with its matches here. `to`'s logs."""
+    if remote():
+        return store().move_log(session, bbl, to)
+    store().move_log(session, bbl, to)
+    return load(to)["blackbox"]
 
 
 def purge(session: str, vid: str | None = None, days: float = 0) -> list[dict]:
@@ -425,6 +434,7 @@ def merge_sessions(session: str, into: str) -> dict:
         _move_clip(session, v, into)
     for b in s["blackbox"]:
         store().attach(into, b)
+    store().carry_detached(session, into)
     if s.get("note"):
         t = load(into).get("note", "")
         store().set_note(into, (t + "\n" + s["note"]).strip())

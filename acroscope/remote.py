@@ -63,6 +63,9 @@ class Remote:
     def detach(self, session, bbl):
         return self._call("POST", self._s(session) + "/blackbox", {"remove": [bbl]})
 
+    def move_log(self, session, bbl, to):
+        return self._call("POST", self._s(session) + "/move-log", {"bbl": bbl, "to": to})
+
     def set_match(self, session, video, bbl, arm, offset, note=""):
         return self._call("POST", self._s(session) + "/match", {"video": video, "bbl": bbl, "arm": arm, "offset": offset, "note": note})
 

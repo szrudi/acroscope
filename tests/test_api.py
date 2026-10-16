@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -35,6 +36,9 @@ def fake_arm(cache: Path, stem: str, length: float, rate: float, cols: dict):
                                                                  "arms": [{k: v for k, v in meta.items() if k != "fields"}], "boots": []}))
 
 
+LOG_BYTES = b"H Product:Blackbox flight data recorder by Nicholas Sherlock\n" + bytes(range(256)) * 4
+
+
 class ApiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -46,6 +50,13 @@ class ApiTest(unittest.TestCase):
         (root / "data" / "videos" / "2026-10-05-tags" / "2026-10-05_001.mp4").write_bytes(b"")
         (root / "data" / "blackbox").mkdir()
         (root / "data" / "blackbox" / "x.bbl").write_bytes(b"")          # a log the server has (empty: no arms)
+        (root / "data" / "blackbox" / "dump #2.bbl").write_bytes(LOG_BYTES)   # one to download (an odd name on purpose)
+        (root / "data" / "blackbox" / "x.csv").write_bytes(b"time,gyro")     # what blackbox_decode leaves next to a log
+        (root / "data" / "blackbox" / "db.bbl").symlink_to(root / "t.db")    # a link out of blackbox/
+        (root / "elsewhere-logs").mkdir()
+        (root / "elsewhere-logs" / "x.bbl").write_bytes(b"secret")
+        (root / "data" / "blackbox" / "sub").symlink_to(root / "elsewhere-logs")   # a linked folder in blackbox/
+        (root / "data" / "blackbox" / "LOUD.BBL").write_bytes(b"upper case")    # a card that shouts
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"),
                    ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="")
@@ -331,7 +342,7 @@ class ApiTest(unittest.TestCase):
 
     def test_file_routes_stay_inside_their_dirs(self):
         # an encoded slash in a path segment must not walk out of videos/ or static/ (the database sits two up)
-        for path in ("/video/..%2F../t.db", "/frame/..%2F../t.db/0", "/static/..%2F..%2Fpyproject.toml"):
+        for path in ("/video/..%2F../t.db", "/frame/..%2F../t.db/0", "/static/..%2F..%2Fpyproject.toml", "/blackbox/..%2F..%2Ft.db"):
             with self.assertRaises(urllib.error.HTTPError, msg=path) as cm:
                 urllib.request.urlopen(self.url + path)
             self.assertEqual(cm.exception.code, 404, path)
@@ -341,6 +352,49 @@ class ApiTest(unittest.TestCase):
         (elsewhere / "2026-10-04_001.mp4").write_bytes(b"")
         (Path(self.tmp.name) / "data" / "videos" / "2026-10-04-link").symlink_to(elsewhere)
         self.assertEqual(urllib.request.urlopen(self.url + "/video/2026-10-04-link/2026-10-04_001.mp4").status, 200)
+
+    def test_a_log_downloads_as_itself(self):
+        """The player's ⤓ on a log: the .bbl as it is, saved under its own name (for Blackbox Explorer)."""
+        r = urllib.request.urlopen(self.url + "/blackbox/" + urllib.parse.quote("dump #2.bbl"))
+        self.assertEqual((r.status, r.headers["Content-Type"], r.headers["Content-Length"], r.headers["Content-Disposition"]),
+                         (200, "application/octet-stream", str(len(LOG_BYTES)), "attachment; filename*=UTF-8''dump%20%232.bbl"))
+        self.assertEqual(r.read(), LOG_BYTES)
+        # only logs, only in blackbox/ itself, never through a link: a missing one, a CSV beside them, a symlink
+        # to the database, a subfolder
+        self.assertEqual(urllib.request.urlopen(self.url + "/blackbox/LOUD.BBL").read(), b"upper case")
+        for path in ("nope.bbl", "x.csv", "db.bbl", "sub%2Fx.bbl", "x.bbl/more"):
+            with self.assertRaises(urllib.error.HTTPError, msg=path) as cm:
+                urllib.request.urlopen(self.url + "/blackbox/" + path)
+            self.assertEqual(cm.exception.code, 404, path)
+
+    def session(self, name):
+        d = Path(self.tmp.name) / "data" / "videos" / name
+        d.mkdir()
+        (d / f"{name[:10]}_001.mp4").write_bytes(b"")
+        self.r.refresh(name, probe_videos=False)
+
+    def test_move_a_log(self):
+        """⇄ in one request: into an existing session only, out of this one with its matches."""
+        for s in ("2026-10-08-a", "2026-10-08-b"):
+            self.session(s)
+        self.r.attach("2026-10-08-a", "x.bbl")
+        self.r.set_match("2026-10-08-a", "001", "x.bbl", 1, 2.0)
+        with self.assertRaises(RemoteError):
+            self.r.move_log("2026-10-08-a", "x.bbl", "2026-10-08-typo")
+        with self.assertRaises(RemoteError):                          # nor a session made by attaching to a typo
+            self.r.attach("2026-10-08-typo", "x.bbl")
+        self.assertFalse(self.r.exists("2026-10-08-typo"))
+        self.assertEqual(self.r.move_log("2026-10-08-a", "x.bbl", "2026-10-08-b"), ["x.bbl"])
+        a = self.r.load("2026-10-08-a")
+        self.assertEqual((a["blackbox"], a["matches"]), ([], []))
+
+    def test_overview_names_a_log_whose_file_is_gone(self):
+        self.session("2026-10-06-gone")
+        (Path(self.tmp.name) / "data" / "blackbox" / "gone.bbl").write_bytes(b"")
+        self.r.attach("2026-10-06-gone", "gone.bbl")
+        (Path(self.tmp.name) / "data" / "blackbox" / "gone.bbl").unlink()
+        o = self.r._call("GET", "/api/session/2026-10-06-gone")
+        self.assertEqual(o["blackbox_gone"], ["gone.bbl"])
 
     def test_tags_api(self):
         r = self.r
@@ -361,3 +415,30 @@ class ApiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JobTest(unittest.TestCase):
+    """The same command started again while it runs (a reload of the player, then 🎯 again) is the same job: two
+    `automatch --write` children on one session would race each other's matches."""
+    def test_a_running_job_is_not_started_twice(self):
+        import threading
+        from unittest import mock
+        from acroscope import server
+        go, calls = threading.Event(), []
+
+        def run(args, timeout=0):
+            calls.append(args)
+            go.wait(5)
+            return {"stdout": "", "stderr": "", "code": 0}
+        with mock.patch.object(server, "run_cli", run):
+            args = ["automatch", "2026-10-15-x", "--unmatched", "--write"]
+            a, b = server.start_job(args), server.start_job(list(args))
+            c = server.start_job(["automatch", "2026-10-15-y", "--unmatched", "--write"])
+            self.assertEqual(a, b)
+            self.assertNotEqual(a, c)
+            go.set()
+            for _ in range(200):                                      # both children done
+                if all(server._jobs[j]["done"] for j in (a, c)):
+                    break
+                time.sleep(0.01)
+        self.assertEqual(len(calls), 2)

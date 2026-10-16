@@ -722,11 +722,15 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
     matches.sort(key=lambda m: m["offset"])
     unmatched = [v for k, v in enumerate(varms) if k not in {vi for vi, _ in pairs}]
     if write:
-        have = {(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] == path.name}
+        # the session as it is now, not as it was before the minutes of reading: a match set by hand meanwhile is
+        # kept, and a log taken out meanwhile gets none (the write checks it again in the same statement, and never
+        # attaches the log the way set_match does)
+        now_s = sessions.load(session)
+        have = {(m["bbl"], m["arm"]) for m in now_s["matches"] if m["video"] == path.name}
+        attached = set(now_s["blackbox"])
         for m in matches:
-            if overwrite or (m["bbl"], m["arm"]) not in have:
-                sessions.set_match(session, m["video"], m["bbl"], m["arm"], m["offset"], m["note"])
-                m["written"] = True
+            if m["bbl"] in attached and (overwrite or (m["bbl"], m["arm"]) not in have):
+                m["written"] = sessions.store().add_match_if_attached(session, m["video"], m["bbl"], m["arm"], m["offset"], m["note"], replace=overwrite)
     return {"clip": path.name, "name": name, "layout": rt["layout"], "readings": len(rows), "boot_fits": fits,
             "bbl": bbl, "arm_window": windows.get(bbl, (None, None)), "flash_full": full,
             "readable": sum(1 for r in rows if (r["top"] if not LAYOUTS[rt["layout"]]["cumulative"] else r["bottom"]) is not None),

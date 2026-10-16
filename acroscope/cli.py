@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import blackbox, events as ev, ingest, metrics, osd, sessions, video, xspf
 from .config import CACHE_DIR, DATA_DIR, DB_PATH, SERVER_URL, TAGS
+from .remote import RemoteError
 
 
 def parse_time(s: str) -> float:
@@ -425,10 +426,38 @@ def cmd_osd(a):
 
 def cmd_automatch(a):
     s = _session(a.session)
-    clips = a.videos or [v["file"] for v in sessions.load(s)["videos"] if v.get("duration")]     # in name order: chronological
-    if not clips:
-        print(f"{s}: no probed clips, nothing to match", file=sys.stderr)
+    loaded = sessions.load(s)
+    clips = a.videos or [v["file"] for v in loaded["videos"] if v.get("duration")]     # in name order: chronological
     results, pending, errors = [], [], []
+    if a.unmatched and clips:  # the player's automatch button: never a clip with a match (by hand or not), never a missing one
+        matched = {m["video"] for m in loaded["matches"] if m["bbl"] in loaded["blackbox"]}   # a match to a log taken out is none
+        gone = {v["file"] for v in loaded["videos"] if v.get("missing_since")}
+        picked = []
+        for c in clips:
+            try:
+                f = sessions.resolve_clip(s, c)
+            except Exception as e:  # noqa: BLE001  (an unknown name: an error, as without --unmatched)
+                errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
+                print(f"{c}: {errors[-1]['error']}", file=sys.stderr)
+                continue
+            if f in gone:
+                if a.videos:             # named: the file is what was asked for
+                    errors.append({"clip": c, "error": "file missing, nothing to read"})
+                    print(f"{c}: {errors[-1]['error']}", file=sys.stderr)
+                continue
+            if f in matched:
+                if a.videos:
+                    print(f"{c}: has a match, skipped (--unmatched)", file=sys.stderr)
+                continue
+            picked.append(f)
+        clips = picked
+        if not clips and not errors:
+            print(f"{s}: every clip has a match, nothing to do", file=sys.stderr)
+            if a.json:
+                out([])
+            return
+    elif not clips:
+        print(f"{s}: no probed clips, nothing to match", file=sys.stderr)
     for c in clips:
         try:
             r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending)
@@ -583,6 +612,7 @@ def main(argv=None):
     p.add_argument("session"); p.add_argument("video"); p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_osd)
     p = sp.add_parser("automatch", help="match clips to arms from the OSD timers (proposes; --write records)")
     p.add_argument("session"); p.add_argument("videos", nargs="*"); p.add_argument("--write", action="store_true"); p.add_argument("--overwrite", action="store_true", help="replace existing matches of the clip too")
+    p.add_argument("--unmatched", action="store_true", help="only the clips without a match yet (not missing ones)")
     p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_automatch)
     p = sp.add_parser("osd-learn", help="rebuild the OSD digit templates from a labels file")
     p.add_argument("labels", nargs="?", default="scripts/osd-labels.json"); p.set_defaults(f=cmd_osd_learn)
@@ -593,7 +623,11 @@ def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if a.cmd in PROXIED and sessions.remote():
         return _proxy(args)
-    a.f(a)
+    try:
+        a.f(a)
+    except (FileNotFoundError, ValueError, RemoteError) as e:   # a name that is not there, a refused edit: one line
+        print(f"acroscope: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

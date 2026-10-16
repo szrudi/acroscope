@@ -17,6 +17,12 @@ Two users over one data layer:
 63 at the cursor), the readout at the current frame, the tag bar, and the three milestone moments with their
 numbers.*
 
+The logs tab lists a session's logs by power cycle, each arm with the clip that covers it. On top, 🎯 runs automatch
+on the session's clips without a match (a log that came after its clips; matches made by hand are left alone). On each
+log: ⤓ downloads the .bbl (for Blackbox Explorer), ⇄ moves it to another session, 🗑 takes it out of this one (its
+matches here are deleted, the file stays). A log taken out of a session stays out: the refresh attaches a session's
+same-date logs only when it has none, and never one taken out by hand.
+
 The blackbox is a supporting layer: it shows which flights the clips cover and feeds the metrics. Deep log reading
 stays in the Betaflight App's blackbox viewer.
 
@@ -105,7 +111,7 @@ acroscope scan                                   register every session folder (
 acroscope refresh <session>                      the folder's clips in (durations, codecs), gone clips marked missing, bbl by date
 acroscope purge <session> [clip] [--days N --yes]   remove clips marked missing, with their matches and moments
 acroscope note <session> "<text>" [--clip NNN]   session or clip note
-acroscope attach|detach <session> <bbl>          a blackbox file dated another day
+acroscope attach|detach <session> <bbl>          a blackbox file dated another day (detach drops its matches there)
 acroscope import-json [session]                  one-off: the pre-database session.json files
 acroscope session rename|date|move|merge|delete  rename a session (the date is its first ten characters), change its date,
                                                  move a clip to another session, merge one session into another, delete
@@ -129,7 +135,8 @@ acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
 acroscope untag <session> <id>
 acroscope moments <session>
-acroscope automatch <session> [clips...] [--write]   match clips to arms from the OSD timers (see below)
+acroscope automatch <session> [clips...] [--write] [--unmatched]   match clips to arms from the OSD timers (see below);
+                                                 --unmatched: only clips without a match (the player's 🎯 in the logs tab)
 acroscope osd <session> <clip>                   the timer readings and arm runs of a clip
 acroscope transcode <session> [clips...] [--replace]   H.264 proxies in the cache, or replace the clips in place
 acroscope serve [--port 8070]
