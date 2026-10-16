@@ -117,7 +117,14 @@ def _decode(path: Path, index: int):
     """Decode one log with orangebox. Returns (meta, t, cols). The last log of a full flash is truncated and ends in
     an exception mid-frame; what was parsed until then is kept and flagged."""
     from orangebox import Parser
-    p = Parser.load(str(path), index)
+    try:
+        p = Parser.load(str(path), index)
+    except Exception as e:  # noqa: BLE001  (a segment orangebox cannot open: noted, the other arms decode on)
+        # 2026-10-16's dump: segment 27 of 61 gave "read length must be non-negative" and, uncaught, cost the whole
+        # index, so the server started the decode again on every look
+        return ({"bbl": path.stem, "file": path.name, "index": index, "frames": 0, "length": 0.0, "rate": 0.0,
+                 "fields": [], "truncated": False, "headers": {}, "events": [], "error": f"{type(e).__name__}: {e}"[:160]},
+                array.array("d"), {})
     fields = p.field_names
     ix = {n: i for i, n in enumerate(fields)}
     rows = []
