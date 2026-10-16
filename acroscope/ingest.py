@@ -67,7 +67,9 @@ def list_inbox() -> list[dict]:
     for b in rows.values():             # done or failed batches whose dir is gone: what they produced
         r = b.get("result") or {}
         out.append(dict(b, clips=len(r.get("clips", [])), logs=len(r.get("logs", []))))
-    return out
+    # in the order they came, whatever their state: the id is the push's timestamp (the player shows it newest first;
+    # with the folders first, a new batch went to the bottom and jumped to the top once done and its folder gone)
+    return sorted(out, key=lambda b: b["id"])
 
 
 def plain_name(name: str) -> str:

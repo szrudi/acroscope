@@ -44,6 +44,25 @@ class _Scratch(unittest.TestCase):
         return subprocess.run([sys.executable, "-m", "acroscope.cli", *args], env=self.env, capture_output=True, text=True)
 
 
+class InboxOrderTest(_Scratch):
+    def test_batches_in_the_order_they_came(self):
+        """By batch id (the push's timestamp), whatever their state: a finished batch whose folder is gone does not
+        go after one still arriving (the player shows the list newest first, so new batches went to the bottom and
+        jumped to the top when done)."""
+        inbox = self.data / "inbox"
+        for b, done in (("20261015-094754-1", False), ("20261016-120000-2", True)):
+            (inbox / b).mkdir(parents=True)
+            if done:
+                (inbox / b / ".done").write_text("{}")
+        db = Db(self.root / "t.db")
+        db.set_batch("20261014-201551-3", status="done", result={"clips": [], "logs": []})   # its folder long gone
+        db.set_batch("20261016-130000-4", status="done", result={"clips": [], "logs": []})
+        r = self.cli("inbox", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([b["id"] for b in json.loads(r.stdout)],
+                         ["20261014-201551-3", "20261015-094754-1", "20261016-120000-2", "20261016-130000-4"])
+
+
 class IngestTest(_Scratch):
     def test_trash_emptied_after_its_days(self):
         # a deleted clip waits in trash/<date>/<session>/ for TRASH_DAYS, then housekeeping removes the day's folder
