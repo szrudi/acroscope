@@ -611,6 +611,17 @@ class PlayerTest(unittest.TestCase):
         self.assertEqual(page.locator("#logs .arm").count(), 2)              # rows are arms; the segment is in the line
         self.assertIn("read length", page.get_attribute("#logs .log .cov .seg", "title"))
 
+    def test_a_retimed_clip_says_so(self):
+        """#30: a clip re-timed for a mis-stamped frame rate says so in the clips list, with the factor and that its
+        sound went; the others say nothing."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        page.click("#mtabs [data-mtab=clips]")
+        page.evaluate("() => { S.videos[1].timescale = 2.2001; renderClips(); }")
+        texts = page.locator("#clips .clip").all_inner_texts()
+        self.assertIn("re-timed ×2.20", texts[1])
+        self.assertIn("no sound", texts[1])
+        self.assertNotIn("re-timed", texts[0] + texts[2])
+
     def test_flash_restores_what_is_there_now(self):
         """A status written between two flashes (the reload clearing "decoding…") is what comes back, not the text
         before the first flash; and a flash after the last one ran out starts afresh."""

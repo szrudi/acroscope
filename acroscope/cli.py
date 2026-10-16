@@ -72,6 +72,8 @@ def cmd_sessions(a):
         cov = "; ".join(f"arm {m['arm']} @ +{m['offset']}s" for m in ms) or "no log"
         d = fmt_time(v["duration"]) if v.get("duration") else "?"
         gone = f"  MISSING since {v['missing_since'][:10]}" if v.get("missing_since") else ""
+        if v.get("timescale"):
+            gone += f"  RE-TIMED x{v['timescale']:g} (mis-stamped frame rate, no sound)"
         label = v["file"] if v.get("name") in (None, Path(v["file"]).stem) else f"{v['name']} ({v['file']})"
         print(f"  {label:24} {d:>7}  {cov}{gone}" + (f"  | {v['note']}" if v.get("note") else ""))
     print("\n## arms")

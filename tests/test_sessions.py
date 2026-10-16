@@ -293,6 +293,19 @@ class EditGuardsTest(_Scratch):
         self.assertTrue((sessions.VIDEOS_DIR / A / "2026-10-09_001.mp4").exists())
 
 
+class SessionsListingTest(_Scratch):
+    def test_a_retimed_clip_says_so(self):
+        """#30: `acroscope sessions <s>` marks a clip re-timed for a mis-stamped frame rate, with the factor."""
+        S = "2026-10-14-x"
+        f = self.session_with_clip(S, "2026-10-14_007.mp4")
+        sessions.store().set_video_fields(S, f, timescale=2.2001, duration=259.8)
+        out = io.StringIO()
+        with mock.patch.object(sessions, "SERVER_URL", ""), redirect_stdout(out):
+            cli.main(["sessions", S])
+        line = next(l for l in out.getvalue().splitlines() if "2026-10-14_007" in l)
+        self.assertIn("RE-TIMED x2.2001 (mis-stamped frame rate, no sound)", line)
+
+
 class AutomatchExitTest(_Scratch):
     """automatch tells by its exit code whether it could run (review finding 10): clips named on the command line
     must all go through; a whole-session run fails only when no clip did (some clips there have no log, as 10-07's
