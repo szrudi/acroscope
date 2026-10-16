@@ -47,5 +47,22 @@ class UnreadableSegmentTest(unittest.TestCase):
         self.assertEqual(json.loads(blackbox.cache("arms", self.bbl.stem, "arms.json").read_text())["arms"][1]["index"], 2)
 
 
+class OverviewTest(unittest.TestCase):
+    def test_the_overview_says_which_segments_hold_frames(self):
+        """The player tells an arm from an unreadable segment by `frames` and `error`, so the overview passes them on."""
+        from acroscope import sessions
+        from acroscope.db import Db
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Db(Path(tmp) / "t.db")
+            db.ensure_session("2026-10-16-x")
+            db.attach("2026-10-16-x", "L.bbl")
+            idx = {"file": "L.bbl", "boots": [], "arms": [{"index": 1, "frames": 500, "length": 10.0},
+                                                         {"index": 2, "frames": 0, "length": 0.0, "error": "ValueError: bad"}]}
+            with mock.patch.object(sessions, "_store", db), mock.patch.object(sessions, "SERVER_URL", ""), \
+                    mock.patch.object(blackbox, "index_bbl", lambda b, **k: idx):
+                arms = sessions.overview("2026-10-16-x")["arms"]
+        self.assertEqual([(a["index"], a["frames"], a.get("error")) for a in arms], [(1, 500, None), (2, 0, "ValueError: bad")])
+
+
 if __name__ == "__main__":
     unittest.main()

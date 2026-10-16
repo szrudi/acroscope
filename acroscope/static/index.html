@@ -376,13 +376,15 @@ function renderLogs() {
   const arms = S.arms || [], boots = S.boots || {};
   let h = `<div class="logbar"><button class="small" id="logsAutomatch" ${automatching === S.session ? 'disabled' : ''} title="match the clips without a match to the session's logs from the OSD timers; clips with a match, by hand or not, are left alone">🎯 automatch the clips without a match</button></div>`;
   for (const b of S.blackbox || []) {
-    const rows = arms.filter(a => a.bbl === b);
+    const segs = arms.filter(a => a.bbl === b);
+    const rows = segs.filter(a => a.frames !== 0), bad = segs.filter(a => a.frames === 0);   // a segment without frames (an unreadable stub) is no arm
+    const badNote = bad.length ? ` · <span class="flag seg" title="${esc(bad.map(a => `segment ${a.index}: ${a.error || 'no frames'}`).join('\n'))}">${bad.length} unreadable segment${bad.length === 1 ? '' : 's'} (${bad.map(a => a.index).join(', ')})</span>` : '';
     if ((S.arms_pending || []).includes(b)) { h += `<div class="log">${logHead(b)}<div class="cov">decoding in the background…</div></div>`; continue; }
-    if (!rows.length) { h += `<div class="log">${logHead(b)}<div class="cov">no arms</div></div>`; continue; }
+    if (!rows.length) { h += `<div class="log">${logHead(b)}<div class="cov">no arms${badNote}</div></div>`; continue; }
     const flown = rows.filter(a => a.motors_spun !== false), covered = flown.filter(a => a.videos.length);
     const secs = xs => xs.reduce((t, a) => t + (a.length || 0), 0);
     h += `<div class="log">${logHead(b)}<div class="cov">${rows.length} arms · <b>${covered.length}</b> with a clip` +
-      (flown.length - covered.length ? ` · <span class="miss">${flown.length - covered.length} without</span> (${fmt(secs(flown) - secs(covered))} of flight)` : '') + `</div></div>`;
+      (flown.length - covered.length ? ` · <span class="miss">${flown.length - covered.length} without</span> (${fmt(secs(flown) - secs(covered))} of flight)` : '') + badNote + `</div></div>`;
     const groups = (boots[b] && boots[b].length) ? boots[b] : [{first: rows[0].index, last: rows[rows.length - 1].index, arms: rows.map(a => a.index)}];
     for (const g of groups) {
       if (groups.length > 1) h += `<div class="boot">boot: arms ${g.first}–${g.last}</div>`;

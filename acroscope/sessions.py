@@ -156,7 +156,7 @@ def overview(session: str, with_arms: bool = True, cached_only: bool = False) ->
             for a in idx["arms"]:
                 matched = [m for m in s["matches"] if m["bbl"] == idx["file"] and m["arm"] == a["index"]]
                 arms.append({"bbl": idx["file"], **{k: a.get(k) for k in ("index", "length", "rate", "vbat_start",
-                             "vbat_end", "vbat_min", "motors_spun", "disarm_reason", "complete")},
+                             "vbat_end", "vbat_min", "motors_spun", "disarm_reason", "complete", "frames", "error")},
                              "videos": [{"video": m["video"], "offset": m["offset"]} for m in matched]})
         out["arms"] = arms
     return out

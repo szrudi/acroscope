@@ -595,6 +595,22 @@ class PlayerTest(unittest.TestCase):
         page.wait_for_timeout(1500)
         self.assertLess(page.evaluate("() => v.currentTime"), 1)
 
+    def test_an_unreadable_segment_is_not_an_arm(self):
+        """A log segment without frames (2026-10-16's stub, segment 27 of 61) is not counted as an arm (it was: "61
+        arms · 60 with a clip" over 60 rows with a clip); the log's line names it, with the decoder's error on hover."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        page.click("#mtabs [data-mtab=logs]")
+        page.evaluate("""() => { S.blackbox = ['L.bbl']; S.boots = {}; S.arms_pending = [];
+          const arm = (i, v) => ({bbl: 'L.bbl', index: i, length: 10, frames: 500, motors_spun: true, complete: true, videos: v ? [{video: v, offset: 3}] : []});
+          S.arms = [arm(1, '2026-10-16_001.mp4'), {bbl: 'L.bbl', index: 2, length: 0, frames: 0, error: 'ValueError: read length must be non-negative or -1', videos: []}, arm(3, '2026-10-16_002.mp4')];
+          renderLogs(); }""")
+        cov = page.text_content("#logs .log .cov")
+        self.assertIn("2 arms · 2 with a clip", cov)
+        self.assertIn("1 unreadable segment (2)", cov)
+        self.assertNotIn("without", cov)
+        self.assertEqual(page.locator("#logs .arm").count(), 2)              # rows are arms; the segment is in the line
+        self.assertIn("read length", page.get_attribute("#logs .log .cov .seg", "title"))
+
     def test_flash_restores_what_is_there_now(self):
         """A status written between two flashes (the reload clearing "decoding…") is what comes back, not the text
         before the first flash; and a flash after the last one ran out starts afresh."""
