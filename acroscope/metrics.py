@@ -17,7 +17,7 @@ CONVENTIONS = {
     "yaw": "+ = nose LEFT (left stick left; gyroADC[2] and rcCommand[2] both). In the camera view the scene slides right",
     "stick_pct": "rcCommand[0..2] / 5: -100..100 % of stick travel; throttle_pct = (rcCommand[3] - 1000) / 10",
     "tilt_deg": "angle between the quad's up and world up: 0 level, 90 knife edge, 180 inverted",
-    "lean": "[forward, right] in degrees from the IMU; negative forward = nose up",
+    "lean": "[forward, right] in degrees from the IMU: forward + = nose down, right + = right side down (a right bank). Right had the wrong sign before 2026-10-17 (#38); moment snapshots from before were corrected",
     "rates_dps": "gyroADC is deg/s as logged (the gyro is already scaled); peaks are absolute values",
     "video_time": "video = arm time + offset (session.json matches); the OSD arm timer shows floor(seconds)",
 }
@@ -192,7 +192,9 @@ def orbit(arm: Arm, t0: float, t1: float, step: float = 0.5) -> list[dict]:
             az += (a - prev + 180) % 360 - 180
         prev = a
         ux, uy, _ = arm.up_body(i)
-        rows.append((arm.t[i], az, math.degrees(math.acos(max(-1.0, min(1.0, tz)))), math.degrees(math.atan2(-uy, -ux))))
+        # the side the quad leans to, from the nose: (-ux, -uy) is down's direction in body axes, and body Y points
+        # left, so right is -(-uy) (#38: it had left and right swapped)
+        rows.append((arm.t[i], az, math.degrees(math.acos(max(-1.0, min(1.0, tz)))), math.degrees(math.atan2(uy, -ux))))
     b = t0
     while b < t1:
         d = [r for r in rows if b <= r[0] < b + step]
