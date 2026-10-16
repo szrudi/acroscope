@@ -59,7 +59,13 @@ class PlayerTest(unittest.TestCase):
                 "2026-10-14-gone": ["2026-10-14_009.mp4"], "2026-10-14-job": ["2026-10-14_010.mp4"],
                 "2026-10-14-am": ["2026-10-14_001.mp4", "2026-10-14_002.mp4"],
                 "2026-10-14-run-a": ["2026-10-14_011.mp4"], "2026-10-14-run-b": ["2026-10-14_012.mp4"],
-                "2026-10-14-nologs": ["2026-10-14_013.mp4"]}
+                "2026-10-14-nologs": ["2026-10-14_013.mp4"],
+                "2026-10-16-swipe": ["2026-10-16_001.mp4", "2026-10-16_002.mp4", "2026-10-16_003.mp4"],
+                "2026-10-16-all": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"],
+                "2026-10-16-step": ["2026-10-16_001.mp4", "2026-10-16_002.mp4", "2026-10-16_003.mp4"],
+                "2026-10-16-zero": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"],
+                "2026-10-16-quick": ["2026-10-16_001.mp4", "2026-10-16_002.mp4", "2026-10-16_003.mp4"],
+                "2026-10-16-two": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"]}
 
     @classmethod
     def setUpClass(cls):
@@ -226,6 +232,440 @@ class PlayerTest(unittest.TestCase):
         page.wait_for_function("() => typeof S !== 'undefined' && S && S.session")      # the reloaded player is up
         self.assertIsNone(page.evaluate("window.__before"))
         self.assertIn("session=2026-10-13-phone", page.url)                    # comes back to the same session
+
+    # ---- the phone: swipe between clips, the hints, all clips' moments, tag pauses ---------------------------------
+
+    # [dx, dy, start this many px above the video's bottom (None: at 40 % of its height), fingers]
+    SWIPE = """([dx, dy, fromBottom, fingers]) => {
+      const v = document.getElementById('v'), r = v.getBoundingClientRect();
+      const x = r.left + r.width / 2 - dx / 2, y = fromBottom != null ? r.bottom - fromBottom : r.top + r.height * 0.4;
+      const t = (xx, yy, id = 1) => new Touch({identifier: id, target: v, clientX: xx, clientY: yy});
+      const fire = (type, xx, yy) => v.dispatchEvent(new TouchEvent(type, {bubbles: true, touches: type === 'touchend' ? [] : [t(xx, yy)], changedTouches: [t(xx, yy)]}));
+      if ((fingers || 1) > 1) v.dispatchEvent(new TouchEvent('touchstart', {bubbles: true, touches: [t(x, y), t(x + 40, y, 2)], changedTouches: [t(x, y), t(x + 40, y, 2)]}));
+      else fire('touchstart', x, y);
+      for (let k = 1; k <= 5; k++) fire('touchmove', x + dx * k / 5, y + dy * k / 5);
+      fire('touchend', x + dx, y + dy);
+    }"""
+
+    def test_swipe_on_the_video_changes_clip(self):
+        """On the phone a sideways swipe on the video goes to the next clip (to the left) or the previous one (to the
+        right), like turning a page; not past the ends, not on a mostly vertical drag, not from the video's own
+        controls at its bottom (the seek bar)."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        page.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        on = lambda: page.evaluate("() => clip")
+        page.evaluate(self.SWIPE, [-150, 10, None])
+        page.wait_for_function("() => clip === '2026-10-16_002.mp4'")
+        page.evaluate(self.SWIPE, [-150, 10, None])
+        page.wait_for_function("() => clip === '2026-10-16_003.mp4'")
+        page.evaluate(self.SWIPE, [-150, 10, None])                     # the last one: stays
+        page.wait_for_timeout(200)
+        self.assertEqual(on(), "2026-10-16_003.mp4")
+        page.evaluate(self.SWIPE, [150, -10, None])
+        page.wait_for_function("() => clip === '2026-10-16_002.mp4'")
+        page.evaluate(self.SWIPE, [-60, 120, None])                     # mostly down: the header's gesture
+        page.evaluate(self.SWIPE, [-30, 0, None])                       # too short: a tap that slid
+        page.evaluate(self.SWIPE, [-150, 0, 20])                       # on the seek bar
+        page.wait_for_timeout(200)
+        self.assertEqual(on(), "2026-10-16_002.mp4")
+        dpage = self.open("2026-10-16-swipe")                            # the desktop has keys and the list: no swipe
+        dpage.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        dpage.evaluate(self.SWIPE, [-150, 10, None])
+        dpage.wait_for_timeout(200)
+        self.assertEqual(dpage.evaluate("() => clip"), "2026-10-16_001.mp4")
+
+    def test_swipe_hints_in_the_padding(self):
+        """A faint arrow each side of the video where a swipe leads somewhere, inside the padding that is already
+        there: the video keeps its size and place."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        box = "() => { const r = document.getElementById('v').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }"
+        page.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        before = page.evaluate(box)
+        hints = """() => [...document.querySelectorAll('.swipe-hint')].filter(h => getComputedStyle(h).display !== 'none')
+          .map(h => { const r = h.getBoundingClientRect(); return {side: h.dataset.side, left: r.left, right: r.right, top: r.top, bottom: r.bottom}; })"""
+        h = page.evaluate(hints)
+        self.assertEqual([x["side"] for x in h], ["next"])               # first clip: only onwards
+        page.evaluate("() => loadClip('2026-10-16_002.mp4')")
+        h = page.evaluate(hints)
+        self.assertEqual(sorted(x["side"] for x in h), ["next", "prev"])
+        v = page.evaluate(box)
+        self.assertEqual(v, before)
+        for x in h:                                                     # in the gutter beside the video, on screen
+            if x["side"] == "prev":
+                self.assertGreaterEqual(x["left"], 0); self.assertLessEqual(x["right"], v[0] + 0.5)
+            else:
+                self.assertGreaterEqual(x["left"], v[0] + v[2] - 0.5); self.assertLessEqual(x["right"], 412)
+            self.assertTrue(v[1] <= x["top"] and x["bottom"] <= v[1] + v[3])
+        page.evaluate("() => loadClip('2026-10-16_003.mp4')")
+        self.assertEqual([x["side"] for x in page.evaluate(hints)], ["prev"])
+        self.assertEqual(page.evaluate(box), before)
+        dpage = self.open("2026-10-16-swipe")                            # not on the desktop
+        self.assertEqual(dpage.evaluate(hints), [])
+
+    def test_all_clips_moments_on_the_phone(self):
+        """The 'all clips' switch is in the phone's moments tab too; on, the list and ◀◀ ▶▶ go across clips; it
+        stays on through a reload."""
+        S = "2026-10-16-all"
+        self.api.tag(S, "2026-10-16_001.mp4", 1, 2, "one", [])
+        self.api.tag(S, "2026-10-16_002.mp4", 3, 4, "two", [])
+        page = self.open(S, PHONE)
+        page.click("#mtabs [data-mtab=moments]")
+        page.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        self.assertTrue(page.is_visible("#allClips"))
+        self.assertEqual(page.locator("#moments .m").count(), 1)
+        page.click("#allClips")
+        self.assertEqual(page.locator("#moments .m").count(), 2)
+        page.click(".mctl [data-act=next]")
+        page.click(".mctl [data-act=next]")
+        page.wait_for_function("() => clip === '2026-10-16_002.mp4'")
+        page.reload()
+        page.wait_for_function("() => typeof S !== 'undefined' && S && S.session")
+        self.assertTrue(page.eval_on_selector("#allClips", "c => c.checked"))
+
+    def test_tag_pauses_the_video(self):
+        """tag opens the editor at the spot and pauses there, to fill it in at that frame; the t key too."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        page.evaluate("() => { window.__paused = 0; v.pause = () => { window.__paused++; }; }")
+        page.click(".mctl [data-act=tag]")
+        self.assertEqual(page.evaluate("window.__paused"), 1)
+        self.assertTrue(page.is_visible("#editor"))
+        dpage = self.open("2026-10-16-swipe")
+        dpage.evaluate("() => { window.__paused = 0; v.pause = () => { window.__paused++; }; }")
+        dpage.keyboard.press("t")
+        self.assertEqual(dpage.evaluate("window.__paused"), 1)
+
+    # review on #34 ------------------------------------------------------------------------------------------------
+
+    def swipe_page(self):
+        page = self.open("2026-10-16-swipe", PHONE)
+        page.evaluate("() => loadClip('2026-10-16_002.mp4')")
+        return page
+
+    def swiped(self, page, *args, to=None):
+        """Swipe from 002 and say where it went (and back to 002 for the next one)."""
+        page.evaluate("() => loadClip('2026-10-16_002.mp4')")
+        page.evaluate(self.SWIPE, list(args) + [None] * (4 - len(args)))
+        page.wait_for_timeout(150)
+        return page.evaluate("() => clip")
+
+    def test_swipe_boundaries(self):
+        """60 px across swipes and 59 does not; up or down, under half the travel swipes and more does not; from
+        57 px above the video's bottom it swipes, from 55 (the seek bar) it does not; two fingers never."""
+        page = self.swipe_page()
+        self.assertEqual(self.swiped(page, -60, 0), "2026-10-16_003.mp4")
+        self.assertEqual(self.swiped(page, -59, 0), "2026-10-16_002.mp4")
+        self.assertEqual(self.swiped(page, -150, 70), "2026-10-16_003.mp4")
+        self.assertEqual(self.swiped(page, -150, -70), "2026-10-16_003.mp4")
+        self.assertEqual(self.swiped(page, -150, -80), "2026-10-16_002.mp4")
+        self.assertEqual(self.swiped(page, -150, 80), "2026-10-16_002.mp4")
+        self.assertEqual(self.swiped(page, -150, 0, 57), "2026-10-16_003.mp4")
+        self.assertEqual(self.swiped(page, -150, 0, 55), "2026-10-16_002.mp4")
+        self.assertEqual(self.swiped(page, -150, 0, None, 2), "2026-10-16_002.mp4")
+
+    def test_swipe_says_where_it_went(self):
+        """The status names the clip a swipe went to, or that there is none further; two quick swipes leave the
+        status as it was before them, not on the first one's text."""
+        page = self.swipe_page()
+        page.evaluate("() => { document.getElementById('status').textContent = 'before'; }")
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        self.assertEqual(page.text_content("#status"), "clip 003")
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        self.assertEqual(page.text_content("#status"), "last clip")
+        page.wait_for_timeout(1700)
+        self.assertEqual(page.text_content("#status"), "before")
+        page.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        page.evaluate(self.SWIPE, [150, 0, None, 1])
+        self.assertEqual(page.text_content("#status"), "first clip")
+
+    def test_an_arcing_swipe_leaves_the_header(self):
+        """A sideways swipe that drifts up is a swipe, not the header's drag: the header (and its status) stays."""
+        page = self.swipe_page()
+        page.evaluate(self.SWIPE, [-150, -45, None, 1])
+        page.wait_for_function("() => clip === '2026-10-16_003.mp4'")
+        self.assertFalse(page.evaluate("() => document.body.classList.contains('hide-head')"))
+        page.evaluate(self.SWIPE, [0, -120, None, 1])                      # a drag up still hides it
+        self.assertTrue(page.evaluate("() => document.body.classList.contains('hide-head')"))
+
+    def test_no_swipe_while_editing(self):
+        """With the editor (or a question) open a swipe does nothing: the moment being typed is not lost."""
+        page = self.swipe_page()
+        page.click(".mctl [data-act=tag]")
+        page.fill("#edTitle", "half typed")
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        page.wait_for_timeout(150)
+        self.assertEqual(page.evaluate("() => clip"), "2026-10-16_002.mp4")
+        self.assertEqual(page.input_value("#edTitle"), "half typed")
+        page.click("#editor button:has-text('cancel')")
+        page.evaluate("() => { ask('a question', ''); }")
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        page.wait_for_timeout(150)
+        self.assertEqual(page.evaluate("() => clip"), "2026-10-16_002.mp4")
+
+    def test_sideways_drags_on_the_video_are_the_pages(self):
+        """touch-action keeps vertical scrolling and zoom for the browser and takes sideways drags (no back gesture)."""
+        page = self.swipe_page()
+        self.assertEqual(page.eval_on_selector(".vwrap", "w => getComputedStyle(w).touchAction"), "pan-y pinch-zoom")
+
+    def test_swipe_measures_the_video_not_its_wrapper(self):
+        """In fullscreen the wrapper collapses (the video is in the top layer): the seek-bar zone is the video's."""
+        page = self.swipe_page()
+        page.evaluate("() => { const w = document.querySelector('.vwrap'); w.style.height = '0px'; w.style.overflow = 'visible'; }")
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        page.wait_for_function("() => clip === '2026-10-16_003.mp4'")
+
+    def test_hints_follow_the_clip_list(self):
+        """The hints follow the list, not only a clip load: a list that shrinks to one clip shows none."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        page.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        self.assertTrue(page.evaluate("() => document.querySelector('.vwrap').classList.contains('has-next')"))
+        page.evaluate("() => { S.videos = S.videos.slice(0, 1); renderClips(); }")
+        self.assertFalse(page.evaluate("() => document.querySelector('.vwrap').classList.contains('has-next')"))
+        dpage = self.open("2026-10-16-swipe")                            # the desktop: none, at either end
+        dpage.evaluate("() => loadClip('2026-10-16_002.mp4')")
+        self.assertEqual(dpage.evaluate("() => [...document.querySelectorAll('.swipe-hint')].filter(h => getComputedStyle(h).display !== 'none').length"), 0)
+
+    def step_session(self):
+        """Three clips with a moment each (m1-m3, at 10, 11 and 12 s), made once."""
+        S = "2026-10-16-step"
+        if not self.api.load(S)["moments"]:
+            for i, c in enumerate(self.SESSIONS[S]):
+                self.api.tag(S, c, 10 + i, 12 + i, f"m{i + 1}", [])
+        return S
+
+    def test_step_after_a_swipe_goes_on_from_here(self):
+        """All clips on, a swipe to a clip, then ▶▶: that clip's next moment, not the session's first; ◀◀: the one
+        before here. Across clips the order is the clips list's, not the files' names (ids since 10-10)."""
+        S = self.step_session()
+        page = self.open(S, PHONE)
+        page.click("#mtabs [data-mtab=moments]")
+        if not page.eval_on_selector("#allClips", "c => c.checked"):
+            page.click("#allClips")
+        page.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        page.wait_for_function("() => clip === '2026-10-16_002.mp4'")
+        page.click(".mctl [data-act=next]")
+        page.wait_for_function("() => cur && S.moments.find(m => m.id === cur).title === 'm2'")
+        page.evaluate("() => loadClip('2026-10-16_003.mp4')")
+        page.click(".mctl [data-act=prev]")
+        page.wait_for_function("() => cur && S.moments.find(m => m.id === cur).title === 'm2'")
+        page.evaluate("() => { S.videos.reverse(); renderMoments(); }")   # the list's order rules, not the names
+        self.assertEqual(page.evaluate("() => momentsShown().map(m => m.title)"), ["m3", "m2", "m1"])
+
+    def test_a_late_clip_load_does_not_pull_back(self):
+        """▶▶ into the next clip, a swipe on before that clip has loaded: the late load does not bring it back."""
+        S = self.step_session()
+        page = self.open(S, PHONE)
+        page.evaluate("() => { document.getElementById('allClips').checked = true; renderMoments(); loadClip('2026-10-16_001.mp4'); }")
+        page.evaluate("""() => { const f = window.fetch;   // 002's series answers 1.5 s late
+          window.fetch = (u, o) => String(u).includes('series?video=2026-10-16_002') ? new Promise(r => setTimeout(() => r(f(u, o)), 1500)) : f(u, o); }""")
+        page.evaluate("() => { playMoment(S.moments.find(m => m.video === '2026-10-16_002.mp4').id); }")
+        page.wait_for_function("() => clip === '2026-10-16_002.mp4'")
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        page.wait_for_function("() => clip === '2026-10-16_003.mp4'")
+        page.wait_for_timeout(300)
+        page.evaluate("() => { window.__series = series; }")             # 003's, loaded
+        page.wait_for_timeout(2200)
+        self.assertEqual(page.evaluate("() => clip"), "2026-10-16_003.mp4")
+        self.assertTrue(page.evaluate("() => series === window.__series"))   # 002's late answer did not replace it
+
+    # review round 2 on #34 ----------------------------------------------------------------------------------------
+
+    # a touch on the video at 40 % of its height, through these offsets from the start, then released at the last
+    GESTURE = """(pts) => {
+      const v = document.getElementById('v'), r = v.getBoundingClientRect(), x = r.left + r.width * 0.7, y = r.top + r.height * 0.4;
+      const t = (xx, yy) => new Touch({identifier: 1, target: v, clientX: xx, clientY: yy});
+      const fire = (type, [dx, dy]) => v.dispatchEvent(new TouchEvent(type, {bubbles: true, touches: type === 'touchend' ? [] : [t(x + dx, y + dy)], changedTouches: [t(x + dx, y + dy)]}));
+      fire('touchstart', [0, 0]);
+      for (const p of pts) fire('touchmove', p);
+      fire('touchend', pts[pts.length - 1]);
+    }"""
+
+    def all_clips_on(self, page):
+        page.evaluate("() => { const c = document.getElementById('allClips'); if (!c.checked) c.click(); }")
+
+    def title(self, page):
+        return page.evaluate("() => cur && S.moments.find(m => m.id === cur).title")
+
+    def test_step_from_here_counts_a_moment_at_the_spot(self):
+        """From here (no moment playing): a moment starting right here is the next one, not one behind; from mid-clip
+        ▶▶ goes to the next moment after the time, also in the next clip, and ◀◀ to the one before it."""
+        S = "2026-10-16-zero"
+        if not self.api.load(S)["moments"]:
+            self.api.tag(S, "2026-10-16_001.mp4", 0, 2, "z0", [])
+            self.api.tag(S, "2026-10-16_001.mp4", 5, 7, "z5", [])
+            self.api.tag(S, "2026-10-16_002.mp4", 2, 4, "z2", [])
+        page = self.open(S, PHONE)
+        self.all_clips_on(page)
+        at = lambda t: page.evaluate(f"() => loadClip('2026-10-16_001.mp4').then(() => {{ v.currentTime = {t}; }})")
+        at(0); page.click(".mctl [data-act=next]"); self.assertEqual(self.title(page), "z0")
+        at(3); page.click(".mctl [data-act=next]"); self.assertEqual(self.title(page), "z5")
+        at(3); page.click(".mctl [data-act=prev]"); self.assertEqual(self.title(page), "z0")
+        at(7); page.click(".mctl [data-act=prev]"); self.assertEqual(self.title(page), "z5")
+        at(7); page.click(".mctl [data-act=next]")
+        page.wait_for_function("() => clip === '2026-10-16_002.mp4'")
+        self.assertEqual(self.title(page), "z2")
+
+    def test_quick_steps_across_clips(self):
+        """▶▶ ▶▶ fast across a clip boundary (the next clip still loading): two moments on, not one."""
+        S = "2026-10-16-quick"
+        if not self.api.load(S)["moments"]:
+            for i, c in enumerate(self.SESSIONS[S]):
+                self.api.tag(S, c, 10 + i, 12 + i, f"q{i + 1}", [])
+        page = self.open(S, PHONE)
+        self.all_clips_on(page)
+        page.evaluate("() => playMoment(S.moments.find(m => m.title === 'q1').id)")
+        page.wait_for_function("() => clip === '2026-10-16_001.mp4' && cur")
+        page.evaluate("""() => { const f = window.fetch;   // 002's series answers 1 s late
+          window.fetch = (u, o) => String(u).includes('series?video=2026-10-16_002') ? new Promise(r => setTimeout(() => r(f(u, o)), 1000)) : f(u, o); }""")
+        page.click(".mctl [data-act=next]")
+        page.click(".mctl [data-act=next]")
+        page.wait_for_timeout(1500)
+        self.assertEqual((page.evaluate("() => clip"), self.title(page)), ("2026-10-16_003.mp4", "q3"))
+
+    def test_quick_steps_into_a_clip_with_two_moments(self):
+        """▶▶ ▶▶ fast into a clip holding both next moments: the second press plays the later one at once, and the
+        first press's load, finishing after, does not play its moment over it."""
+        S = "2026-10-16-two"
+        if not self.api.load(S)["moments"]:
+            self.api.tag(S, "2026-10-16_001.mp4", 10, 12, "w1", [])
+            self.api.tag(S, "2026-10-16_002.mp4", 5, 7, "w2", [])
+            self.api.tag(S, "2026-10-16_002.mp4", 20, 22, "w3", [])
+        page = self.open(S, PHONE)
+        self.all_clips_on(page)
+        page.evaluate("() => playMoment(S.moments.find(m => m.title === 'w1').id)")
+        page.wait_for_function("() => clip === '2026-10-16_001.mp4' && cur")
+        page.evaluate("""() => { const f = window.fetch;   // 002's series answers 1 s late
+          window.fetch = (u, o) => String(u).includes('series?video=2026-10-16_002') ? new Promise(r => setTimeout(() => r(f(u, o)), 1000)) : f(u, o); }""")
+        page.click(".mctl [data-act=next]")
+        page.click(".mctl [data-act=next]")
+        page.wait_for_timeout(1500)
+        self.assertEqual(self.title(page), "w3")
+        self.assertGreaterEqual(page.evaluate("() => v.currentTime"), 20)
+
+    def test_a_steep_start_is_still_a_swipe(self):
+        """A thumb arc that starts more up than sideways and ends as a swipe changes clip and leaves the header;
+        on the video the header's drag goes by the whole drag, decided at the end."""
+        page = self.swipe_page()
+        page.evaluate(self.GESTURE, [[-10, -20], [-15, -35], [-60, -45], [-150, -50]])
+        page.wait_for_function("() => clip === '2026-10-16_003.mp4'")
+        self.assertFalse(page.evaluate("() => document.body.classList.contains('hide-head')"))
+        page.evaluate(self.GESTURE, [[-5, -40], [-10, -90]])              # up, a little sideways: the header goes
+        self.assertTrue(page.evaluate("() => document.body.classList.contains('hide-head')"))
+        page.evaluate(self.GESTURE, [[5, 40], [10, 90]])                  # and comes back
+        self.assertFalse(page.evaluate("() => document.body.classList.contains('hide-head')"))
+
+    def test_a_diagonal_drag_on_the_video_does_neither(self):
+        """Between the two: too steep for a swipe, too flat for the header (|dy| over half |dx|, not over |dx|)."""
+        page = self.swipe_page()
+        page.evaluate(self.GESTURE, [[-40, -25], [-80, -50]])
+        page.wait_for_timeout(150)
+        self.assertEqual(page.evaluate("() => clip"), "2026-10-16_002.mp4")
+        self.assertFalse(page.evaluate("() => document.body.classList.contains('hide-head')"))
+
+    def test_late_suggestions_stay_with_their_clip(self):
+        """A clip's suggestions answering after a swipe on do not land on the next clip."""
+        page = self.swipe_page()
+        page.wait_for_timeout(300)
+        page.evaluate("""() => { const f = window.fetch;   // 002's suggestions answer 1.5 s late
+          window.fetch = (u, o) => String(u).includes('events?video=2026-10-16_002') ? new Promise(r => setTimeout(() => r(f(u, o)), 1500)) : f(u, o);
+          loadClip('2026-10-16_002.mp4'); }""")
+        page.wait_for_timeout(200)
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        page.wait_for_function("() => clip === '2026-10-16_003.mp4'")
+        page.wait_for_timeout(300)
+        page.evaluate("() => { window.__sugg = sugg; }")
+        page.wait_for_timeout(1800)
+        self.assertTrue(page.evaluate("() => sugg === window.__sugg"))
+
+    def test_an_arm_click_does_not_seek_a_clip_chosen_since(self):
+        """The logs tab's arm row loads its clip and seeks there; a swipe on before that clip loaded is not
+        seeked to the arm's time."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        page.click("#mtabs [data-mtab=logs]")
+        page.evaluate("""() => { loadClip('2026-10-16_001.mp4');
+          S.blackbox = ['L.bbl']; S.boots = {}; S.arms_pending = [];
+          S.arms = [{bbl: 'L.bbl', index: 1, length: 10, motors_spun: true, complete: true, videos: [{video: '2026-10-16_002.mp4', offset: 30}]}];
+          renderLogs();
+          const f = window.fetch;   // 002's series answers 1 s late: the click's loadClip waits
+          window.fetch = (u, o) => String(u).includes('series?video=2026-10-16_002') ? new Promise(r => setTimeout(() => r(f(u, o)), 1000)) : f(u, o); }""")
+        page.click("#logs .arm.has")
+        page.wait_for_function("() => clip === '2026-10-16_002.mp4'")
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        page.wait_for_function("() => clip === '2026-10-16_003.mp4'")
+        page.wait_for_timeout(1500)
+        self.assertLess(page.evaluate("() => v.currentTime"), 1)
+
+    def test_flash_restores_what_is_there_now(self):
+        """A status written between two flashes (the reload clearing "decoding…") is what comes back, not the text
+        before the first flash; and a flash after the last one ran out starts afresh."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        st = "document.getElementById('status').textContent"
+        page.evaluate(f"() => {{ {st} = 'decoding'; flash('a'); {st} = ''; flash('b'); }}")
+        page.wait_for_timeout(1700)
+        self.assertEqual(page.evaluate(f"() => {st}"), "")
+        page.evaluate(f"() => {{ {st} = 'x'; flash('c'); }}")
+        page.wait_for_timeout(1700)
+        page.evaluate(f"() => {{ {st} = 'y'; flash('d'); }}")
+        page.wait_for_timeout(1700)
+        self.assertEqual(page.evaluate(f"() => {st}"), "y")
+
+    def test_a_late_refresh_does_not_land_on_the_next_clip(self):
+        """refreshSession's series and suggestions are for the clip it started on: a swipe meanwhile keeps the new
+        clip's (the last refresh after decoding, with 001's series late)."""
+        page = self.swipe_page()
+        page.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        page.wait_for_timeout(300)
+        page.evaluate("""() => { const f = window.fetch;
+          window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s.endsWith('/api/session/2026-10-16-swipe')) {      // nothing pending: the refresh goes on to the series
+              const j = await (await f(u, o)).json(); j.probe_pending = false; j.arms_pending = [];
+              return new Response(JSON.stringify(j));
+            }
+            if (s.includes('series?video=2026-10-16_001') || s.includes('events?video=2026-10-16_001'))
+              return new Promise(r => setTimeout(() => r(f(u, o)), 1500));
+            return f(u, o);
+          }; refreshSession(); }""")
+        page.wait_for_timeout(200)
+        page.evaluate(self.SWIPE, [-150, 0, None, 1])
+        page.wait_for_function("() => clip === '2026-10-16_002.mp4'")
+        page.wait_for_timeout(300)
+        page.evaluate("() => { window.__series = series; window.__sugg = sugg; }")
+        page.wait_for_timeout(2500)
+        self.assertTrue(page.evaluate("() => series === window.__series && sugg === window.__sugg"))
+
+    def test_pull_to_refresh_only_from_the_header(self):
+        """Rudi: pull to refresh from the header only; a long pull inside a pane does nothing."""
+        page = self.open("2026-10-16-all", PHONE)
+        page.click("#mtabs [data-mtab=moments]")
+        shown = page.evaluate("""() => {
+          const el = document.getElementById('moments'), r = el.getBoundingClientRect(), x = 200, y = r.top + 10;
+          const t = yy => new Touch({identifier: 1, target: el, clientX: x, clientY: yy});
+          const fire = (type, yy) => el.dispatchEvent(new TouchEvent(type, {bubbles: true, touches: type === 'touchend' ? [] : [t(yy)], changedTouches: [t(yy)]}));
+          fire('touchstart', y);
+          for (let d = 10; d <= 260; d += 10) fire('touchmove', y + d);
+          const on = document.getElementById('ptr').classList.contains('on');
+          fire('touchcancel', y + 260);
+          return on;
+        }""")
+        self.assertFalse(shown)
+
+    def test_all_clips_off_is_remembered_too(self):
+        S = "2026-10-16-all"
+        page = self.open(S, PHONE)
+        page.click("#mtabs [data-mtab=moments]")
+        if not page.eval_on_selector("#allClips", "c => c.checked"):
+            page.click("#allClips")
+        page.click("#allClips")                                           # off
+        page.reload()
+        page.wait_for_function("() => typeof S !== 'undefined' && S && S.session")
+        self.assertFalse(page.eval_on_selector("#allClips", "c => c.checked"))
+
+    def test_the_moments_heading_does_not_fold_on_the_phone(self):
+        page = self.open("2026-10-16-all", PHONE)
+        page.click("#mtabs [data-mtab=moments]")
+        page.click("#paneMoments h2", position={"x": 20, "y": 8})
+        self.assertFalse(page.eval_on_selector("#paneMoments", "p => p.classList.contains('closed')"))
 
     # ---- virtual sticks ------------------------------------------------------------------------------------------
 
