@@ -532,7 +532,8 @@ def _proxy(argv: list[str]) -> None:
     sys.exit(r["code"])
 
 
-def main(argv=None):
+def parser() -> argparse.ArgumentParser:
+    """The CLI's arguments; the server parses a client's command with it too, to tell names from free text."""
     ap = argparse.ArgumentParser(prog="acroscope", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     class Version(argparse.Action):   # the store is opened only when asked: `--help` must not create a database
         def __call__(self, parser, ns, values, option_string=None):
@@ -620,8 +621,11 @@ def main(argv=None):
     p.add_argument("labels", nargs="?", default="scripts/osd-labels.json"); p.set_defaults(f=cmd_osd_learn)
     p = sp.add_parser("serve", help="run the player (http)"); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8070)
     p.add_argument("--no-warm", action="store_true", help="don't decode/probe everything in the background at start"); p.set_defaults(f=cmd_serve)
+    return ap
 
-    a = ap.parse_args(argv)
+
+def main(argv=None):
+    a = parser().parse_args(argv)
     args = list(sys.argv[1:] if argv is None else argv)
     if a.cmd in PROXIED and sessions.remote():
         return _proxy(args)

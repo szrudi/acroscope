@@ -396,6 +396,24 @@ class ApiTest(unittest.TestCase):
         o = self.r._call("GET", "/api/session/2026-10-06-gone")
         self.assertEqual(o["blackbox_gone"], ["gone.bbl"])
 
+    def test_free_text_may_hold_a_slash(self):
+        """#32: the server refuses a '/' in what names a file (session, clip, log: a path would point ffmpeg or the
+        decoder anywhere on the host), not in free text: a moment's title, --note, --tags ("725 deg/s")."""
+        self.session("2026-10-06-slash")
+        r = self.r._call("POST", "/api/cli", {"args": ["tag", "2026-10-06-slash", "001", "1", "2", "roll at 725 deg/s",
+                                                      "--note", "pitch 2/3 of the way", "--tags", "roll,a/b"]})
+        self.assertEqual(r["code"], 0, r["stderr"])
+        titles = {m["title"]: (m["note"], m["tags"]) for m in self.r.load("2026-10-06-slash")["moments"]}
+        self.assertEqual(titles["roll at 725 deg/s"], ("pitch 2/3 of the way", ["roll", "a/b"]))
+        for args in (["sessions", "../2026-10-07-s"], ["tag", "../../x", "001", "1", "2", "t"], ["frame", "2026-10-07-s", "../../t.db", "1"],
+                     ["arms", "/etc/passwd"], ["match", "2026-10-07-s", "001", "a/b.bbl", "1", "2"]):
+            with self.assertRaises(RemoteError, msg=args) as cm:
+                self.r._call("POST", "/api/cli", {"args": args})
+            self.assertIn("paths are not accepted", str(cm.exception), args)
+        for args in (["tag", "2026-10-07-s"], ["serve"], []):                            # not a command a client may run
+            with self.assertRaises(RemoteError, msg=args):
+                self.r._call("POST", "/api/cli", {"args": args})
+
     def test_tags_api(self):
         r = self.r
         t = r.tags()
