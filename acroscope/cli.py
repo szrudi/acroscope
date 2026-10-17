@@ -262,6 +262,32 @@ def _segment_count(segs: list[dict]) -> str:
     return f"{len(segs) - bad} arms" + (f", {bad} segment{'' if bad == 1 else 's'} without frames" if bad else "")
 
 
+def cmd_fetch_log(a):
+    """The .bbl as it is, on this machine (#21): from the server through GET /blackbox/<file> (the player's ⤓), by its
+    file name or a fragment unique among the logs the sessions know, into --to or the cache's blackbox/. Not proxied:
+    it runs here. With a local store the log is already here: its path is printed, or it is copied into --to."""
+    import shutil
+    if sessions.remote():
+        r = sessions.store()
+        name = a.bbl
+        if not name.lower().endswith(".bbl"):
+            hits = sorted({b for s in r.sessions() for b in s.get("blackbox", []) if name in b})
+            if len(hits) != 1:
+                raise FileNotFoundError(f"{name}: {len(hits)} logs match (need exactly 1)" + (": " + ", ".join(hits) if hits else ""))
+            name = hits[0]
+        dest = Path(a.to or CACHE_DIR / "blackbox") / Path(name).name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        r.fetch_log(name, dest)
+    else:
+        src = blackbox.resolve_bbl(a.bbl)
+        if not a.to:
+            return print(src)
+        dest = Path(a.to) / src.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+    print(dest)
+
+
 def cmd_decode(a):
     arm = blackbox.load_arm(a.bbl, a.arm)
     if a.csv:
@@ -596,6 +622,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("name"); p.add_argument("--color"); p.add_argument("--rm", action="store_true"); p.set_defaults(f=cmd_category)
     p = sp.add_parser("arms", help="list the arms of a .bbl (decodes every arm into the cache once)")
     p.add_argument("bbl"); p.add_argument("--force", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_arms)
+    p = sp.add_parser("fetch-log", help="the .bbl as it is, from the server onto this machine (for blackbox_decode or Blackbox Explorer)")
+    p.add_argument("bbl", help="file name, or a fragment unique among the logs the sessions know")
+    p.add_argument("--to", help="directory to save into (default: the cache's blackbox/)"); p.set_defaults(f=cmd_fetch_log)
     p = sp.add_parser("decode", help="decode one arm into the cache; --csv dumps it like blackbox_decode")
     p.add_argument("bbl"); p.add_argument("arm", type=int); p.add_argument("--csv", action="store_true"); p.set_defaults(f=cmd_decode)
     p = sp.add_parser("match", help="record video <-> arm with offset (video time = arm time + offset)")
