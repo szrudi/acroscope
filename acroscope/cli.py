@@ -85,9 +85,12 @@ def cmd_sessions(a):
         if not rows:
             print(f"  {b}: no arms" + ("" if (DATA_DIR / 'blackbox' / b).exists() else " (file not found)"))
             continue
-        print(f"  {b}  ({len(rows)} arms, {sum(1 for r in rows if r['videos'])} with a clip)")
+        print(f"  {b}  ({_segment_count(rows)}, {sum(1 for r in rows if r['videos'])} with a clip)")
         names = {v["file"]: (v.get("name") or v["file"]) for v in s["videos"]}
         for r in rows:
+            if r.get("frames") == 0:
+                print(f"    segment {r['index']:2}  no frames: {r.get('error') or 'empty'}")
+                continue
             vids = ", ".join(f"{names.get(x['video'], x['video'])[-3:]} +{x['offset']}" for x in r["videos"]) or "no clip"
             flags = ("" if r["motors_spun"] else " (motors off)") + ("" if r["complete"] else " (cut off)")
             vb = f"{r['vbat_start']:.2f}→{r['vbat_end']:.2f} V" if r.get("vbat_start") is not None else "no frames"
@@ -232,13 +235,30 @@ def cmd_arms(a):
     idx = blackbox.index_bbl(a.bbl, force=a.force, progress=lambda m: print(m, file=sys.stderr))
     if a.json:
         return out(idx)
-    print(f"{idx['file']}  ({len(idx['arms'])} arms)")
+    try:
+        size = {s["index"]: _bytes(s["size"]) for s in blackbox.segments(a.bbl)}
+    except Exception:  # noqa: BLE001  (the sizes are extra: a listing from the cache without the file still prints)
+        size = {}
+    print(f"{idx['file']}  ({_segment_count(idx['arms'])})")
     for r in idx["arms"]:
-        flags = ("" if r["motors_spun"] else " motors-off") + ("" if r["complete"] else " cut-off") + (" TRUNCATED" if r["truncated"] else "")
+        if not r.get("frames"):      # a segment without frames is no arm: say why, so missing and unreadable differ (#21)
+            print(f"  segment {r['index']:2}  no frames: {r.get('error') or 'empty'}  {size.get(r['index'], '')}".rstrip())
+            continue
+        flags = ("" if r.get("motors_spun", True) else " motors-off") + ("" if r.get("complete", True) else " cut-off") + (" TRUNCATED" if r.get("truncated") else "")
         v = {k: "-" if r.get(k) is None else f"{r[k]:.2f}" for k in ("vbat_start", "vbat_end", "vbat_min")}   # an arm can log no vbat
-        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  uptime {r.get('uptime_start') or 0:7.1f}-{r.get('uptime_end') or 0:7.1f}  {v['vbat_start']}→{v['vbat_end']} V (min {v['vbat_min']})  disarm {r['disarm_reason']}{flags}")
+        print(f"  arm {r['index']:2}  {r['length']:6.1f} s  uptime {r.get('uptime_start') or 0:7.1f}-{r.get('uptime_end') or 0:7.1f}  {v['vbat_start']}→{v['vbat_end']} V (min {v['vbat_min']})  disarm {r.get('disarm_reason')}  {size.get(r['index'], '')}{flags}")
     for b in idx.get("boots", []):
         print(f"  boot: arms {b['first']}-{b['last']} ({len(b['arms'])} arms, uptime {b['uptime_start']:.1f}-{b['uptime_end']:.1f} s, {b['length']:.0f} s span): one offset covers them all (`match --boot`)")
+
+
+def _bytes(n: int) -> str:
+    return f"{n} B" if n < 1000 else f"{n / 1000:.0f} KB" if n < 1_000_000 else f"{n / 1e6:.1f} MB"
+
+
+def _segment_count(segs: list[dict]) -> str:
+    """'60 arms, 1 segment without frames': a segment without frames (unreadable, or empty) is no arm."""
+    bad = sum(1 for r in segs if not r.get("frames", 1))
+    return f"{len(segs) - bad} arms" + (f", {bad} segment{'' if bad == 1 else 's'} without frames" if bad else "")
 
 
 def cmd_decode(a):

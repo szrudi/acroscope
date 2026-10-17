@@ -128,5 +128,66 @@ class LeanTest(unittest.TestCase):
         self.assertIn("right end rises", metrics.CONVENTIONS["roll"])   # the horizon, not "the picture": the video check (#38)
 
 
+class SegmentListingTest(unittest.TestCase):
+    """#21: every log segment in a .bbl is listed, with its size, and one that holds no frames says why (the decoder's
+    error, or empty), so a pack missing from the flash can be told from one that is there but unreadable.
+    `acroscope arms` crashed on 2026-10-16's unreadable segment 27 (no motors_spun), and `sessions` called it
+    "motors off, cut off"."""
+
+    IDX = {"file": "L.bbl", "stem": "L", "boots": [{"first": 1, "last": 3, "arms": [1, 3], "uptime_start": 1.0, "uptime_end": 30.0, "length": 29.0}],
+           "arms": [{"index": 1, "frames": 500, "length": 10.0, "uptime_start": 1.0, "uptime_end": 11.0, "vbat_start": 4.2, "vbat_end": 4.0,
+                     "vbat_min": 3.9, "disarm_reason": 4, "motors_spun": True, "complete": True, "truncated": False},
+                    {"index": 2, "frames": 0, "length": 0.0, "rate": 0.0, "truncated": False, "error": "ValueError: read length must be non-negative or -1"},
+                    {"index": 3, "frames": 500, "length": 9.0, "uptime_start": 20.0, "uptime_end": 29.0, "vbat_start": 4.0, "vbat_end": 3.8,
+                     "vbat_min": 3.7, "disarm_reason": 4, "motors_spun": True, "complete": True, "truncated": False},
+                    {"index": 4, "frames": 0, "length": 0.0, "rate": 0.0, "truncated": False}]}
+
+    def test_segment_sizes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bbl = Path(tmp) / "L.bbl"
+            head = b"H Product:Blackbox flight data recorder by Nicholas Sherlock\n"
+            bbl.write_bytes(head + b"a" * 100 + head + b"b" * 50)
+            with mock.patch.object(blackbox, "BLACKBOX_DIR", Path(tmp)):
+                segs = blackbox.segments("L.bbl")
+        n = len(head)
+        self.assertEqual(segs, [{"index": 1, "start": 0, "size": n + 100}, {"index": 2, "start": n + 100, "size": n + 50}])
+
+    def cli(self, *args):
+        import io
+        from contextlib import redirect_stdout
+        from acroscope import cli, sessions
+        out = io.StringIO()
+        segs = [{"index": i, "start": 0, "size": sz} for i, sz in ((1, 300_000), (2, 6144), (3, 280_000), (4, 512))]
+        with mock.patch.object(sessions, "SERVER_URL", ""), mock.patch.object(blackbox, "index_bbl", lambda b, **k: self.IDX), \
+                mock.patch.object(blackbox, "segments", lambda b: segs), redirect_stdout(out):
+            cli.main(list(args))
+        return out.getvalue()
+
+    def test_arms_lists_every_segment(self):
+        text = self.cli("arms", "L.bbl")
+        self.assertIn("2 arms, 2 segments without frames", text.splitlines()[0])
+        rows = {int(l.split()[1]): l for l in text.splitlines() if l.startswith("  arm ") or l.startswith("  segment ")}
+        self.assertEqual(sorted(rows), [1, 2, 3, 4])
+        self.assertTrue(rows[2].startswith("  segment  2"), rows[2])
+        self.assertIn("no frames: ValueError: read length must be non-negative", rows[2])
+        self.assertIn("6 KB", rows[2])
+        self.assertIn("no frames: empty", rows[4])
+        self.assertIn("300 KB", rows[1])
+
+    def test_sessions_says_what_a_segment_without_frames_is(self):
+        from acroscope import sessions
+        from acroscope.db import Db
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Db(Path(tmp) / "t.db")
+            db.ensure_session("2026-10-16-x")
+            db.attach("2026-10-16-x", "L.bbl")
+            with mock.patch.object(sessions, "_store", db):
+                text = self.cli("sessions", "2026-10-16-x")
+        row = next(l for l in text.splitlines() if l.strip().startswith("segment  2"))
+        self.assertIn("no frames: ValueError", row)
+        self.assertNotIn("motors off", row)
+        self.assertNotIn("cut off", row)
+
+
 if __name__ == "__main__":
     unittest.main()

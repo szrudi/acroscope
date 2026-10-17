@@ -242,6 +242,18 @@ def index_bbl(name: str, force: bool = False, progress=None, cached_only: bool =
     return idx
 
 
+def segments(name: str) -> list[dict]:
+    """Every log segment in a .bbl as orangebox finds them (by the header's first line): [{index, start, size}] in
+    bytes, so a pack missing from the flash can be told from one there but unreadable (#21). [] for an empty file."""
+    from orangebox.reader import Reader
+    path = resolve_bbl(name)
+    if path.stat().st_size == 0:
+        return []
+    ptrs = Reader(str(path)).log_pointers
+    ends = ptrs[1:] + [path.stat().st_size]
+    return [{"index": i + 1, "start": s, "size": e - s} for i, (s, e) in enumerate(zip(ptrs, ends))]
+
+
 def boots(arms: list[dict]) -> list[dict]:
     """Group arms into power cycles: uptime runs on within a boot and restarts (goes backwards) on the next.
     Each boot: {first, last, arms: [index…], length} with length = uptime span from the first arm's start."""
