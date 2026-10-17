@@ -405,10 +405,12 @@ def cmd_tricks(a):
         crafts = [n for n in base.crafts if n != "default"]
         print(f"# skill: {base.skill or 'none (the defaults)'}; presets: {', '.join(base.skills) or 'none'}; crafts: {', '.join(crafts) or 'none'}"
               + (f"; showing {a.craft}" if a.craft else ""))
-        print(f"{'id':16} {'tag':11} {'segment':16} {'kind':13} prio  on   ex  conditions")
+        print(f"{'id':16} {'tag':11} {'segment':28} {'kind':13} prio  on   ex  conditions")
         for t in lib.ordered():
-            seg = lib.segments[t.segment]
-            print(f"{t.id:16} {t.tag:11} {t.segment[:16]:16} {seg.kind:13} {t.priority:4}  {'yes' if t.enabled else 'no ':3} {len(t.examples):3}  {len(t.when)}")
+            seg_name = t.segment if not t.phases else " > ".join(ph.segment for ph in t.phases)
+            kind = lib.segments[t.segment].kind if not t.phases else f"{len(t.phases)} phases"
+            conds = len(t.when) + sum(len(ph.when) for ph in t.phases)
+            print(f"{t.id:16} {t.tag:11} {seg_name[:28]:28} {kind:13} {t.priority:4}  {'yes' if t.enabled else 'no ':3} {len(t.examples):3}  {conds}")
         print(f"params: {', '.join(f'{k}={v}' for k, v in lib.params.items())}")
         if base.crafts.get("default"):
             print(f"craft: {', '.join(f'{k}={v}' for k, v in sorted(base.craft_context(a.craft).items()) if v is not None)}")
@@ -418,10 +420,17 @@ def cmd_tricks(a):
             t = lib.tricks.get(tid)
             if not t:
                 raise FileNotFoundError(f"{tid}: no such trick (have {', '.join(lib.tricks)})")
-            seg = lib.segments[t.segment]
+            seg = lib.segments.get(t.segment)
             print(f"[[trick]] {t.id}  ({t.source})")
             print(f"  tag       {t.tag}    priority {t.priority}    {'enabled' if t.enabled else 'DISABLED'}")
-            print(f"  segment   {t.segment}: {seg.kind} {' '.join(f'{k}={v}' for k, v in seg.opts.items())}")
+            if t.phases:
+                for k, ph in enumerate(t.phases):
+                    pseg = lib.segments[ph.segment]
+                    print(f"  phase {k + 1}   {ph.segment}: {pseg.kind}" + (f", within {ph.within} s" if k else ""))
+                    for c in ph.conditions:
+                        print(f"            when {c}")
+            else:
+                print(f"  segment   {t.segment}: {seg.kind} {' '.join(f'{k}={v}' for k, v in seg.opts.items())}")
             for c in t.conditions:
                 print(f"  when      {c}")
             print(f"  title     {t.title}\n  why       {t.why}")
@@ -458,6 +467,21 @@ def cmd_tricks(a):
         if res["failed"]:
             sys.exit(1)
         return
+    if what == "eval":
+        if not args:
+            raise SystemExit("acroscope tricks eval <session>")
+        s = sessions.load(_session(args[0]))
+        res = tricks.evaluate(s, blackbox.load_arm, lib)
+        if a.json:
+            return out(res)
+        print(f"# {s['session']}: {len(s['moments'])} moments, {len(s['matches'])} matches")
+        for tag, c in res["per_tag"].items():
+            print(f"{tag:12} {c['found']:3} found, {c['missed']:3} missed")
+        for m in res["missed"]:
+            print(f"missed {m['tag']:11} {m['id']} {m['video'][-7:-4]} {fmt_time(m['start'])}-{fmt_time(m['end'])} {m['title'][:40]}  arms {', '.join(f'{a}@{t}' for a, t in m['arms'].items())}")
+        for e in res["untagged"]:
+            print(f"untagged {e['tag']:9} {e['video'][-7:-4]} {fmt_time(e['start'])}-{fmt_time(e['end'])} {e['title'][:36]} (arm {e['arm']} @{e['arm_from']})" + (f"  [{e['moment'][:40]}]" if e["moment"] else ""))
+        return
     if what == "explain":
         if not args:
             raise SystemExit("acroscope tricks explain <bbl>:<arm> [from] [to]")
@@ -485,7 +509,7 @@ def cmd_tricks(a):
                     fate = f"suppressed by {t['suppressed_by']}"
                 print(f"    {t['id']:16} {fate}")
         return
-    raise SystemExit(f"tricks: {what}: not a subcommand (list, show, features, check, explain, init)")
+    raise SystemExit(f"tricks: {what}: not a subcommand (list, show, features, check, explain, eval, init)")
 
 
 def cmd_frame(a):
@@ -755,8 +779,8 @@ def parser() -> argparse.ArgumentParser:
     p = sp.add_parser("events", help="suggested moments from the tricks file (flips, loops, split-S, dives, crashes, kicks, motor loss)")
     p.add_argument("session", nargs="?"); p.add_argument("video", nargs="?"); p.add_argument("--arm", help="bbl:N")
     p.add_argument("--matched-only", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_events)
-    p = sp.add_parser("tricks", help="the tricks in force: list | show <id> | features [kind] | check [id...] | explain <bbl>:<arm> [from] [to] | init")
-    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "features", "check", "explain", "init"]); p.add_argument("args", nargs="*")
+    p = sp.add_parser("tricks", help="the tricks in force: list | show <id> | features [kind] | check [id...] | explain <bbl>:<arm> [from] [to] | eval <session> | init")
+    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "features", "check", "explain", "eval", "init"]); p.add_argument("args", nargs="*")
     p.add_argument("--craft", help="list/show the library in force for this craft (by the log header's Craft name)")
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_tricks)
     p = sp.add_parser("frame", help="extract frames as JPEG (prints the paths); --osd crops and enlarges the OSD strip")

@@ -21,6 +21,18 @@
     examples = [{ log = "x.bbl", arm = 20, at = 70.4 }, { log = "x.bbl", arm = 6, from = 10, to = 20, absent = true }]
                                   # `acroscope tricks check` runs them: a detection of this trick over `at`, or none over from-to
 
+A trick that is a series of phases names them instead of one segment:
+
+    [[trick]]
+    id = "split-s"
+    phases = [
+      { segment = "fast-rotation", when = ["150 <= abs(rotation_peak_deg.roll) <= 240"] },
+      { segment = "pitch-back", within = 1.0, when = ["rotation_deg.pitch <= -50", "tilt_deg.end <= 75"] },
+    ]                             # each phase's `when` sees its own window (and the earlier phases' features as
+                                  # p1.*); the next phase starts after the one before it and no later than `within` s
+                                  # after it ends. The trick's own `when`, title and why see the whole span plus
+                                  # p1.*, p2.* for each phase's features.
+
 Every name a condition or template uses must be a feature of the trick's segment kind (features.vocabulary) or a
 param; every segment option must exist for its kind; an unknown key is an error. So a typo fails at load, with
 the file and the entry named, never silently as a trick that cannot fire.
@@ -52,7 +64,8 @@ from . import expr, features, segments
 
 SHIPPED = Path(__file__).with_name("tricks.toml")
 VERSION = 1
-TRICK_KEYS = {"id", "tag", "segment", "when", "title", "why", "priority", "suppress", "requires", "enabled", "examples", "note"}
+TRICK_KEYS = {"id", "tag", "segment", "phases", "when", "title", "why", "priority", "suppress", "requires", "enabled", "examples", "note"}
+PHASE_KEYS = {"segment", "when", "within"}
 TOP_KEYS = {"version", "params", "segment", "trick", "skill", "craft"}
 CRAFT_KEYS = {"params", "segment", "trick", "skill"}         # the rest of a craft section are its properties
 DEFAULT_CRAFT = "default"
@@ -79,10 +92,22 @@ class Rule:
 
 
 @dataclass
+class Phase:
+    segment: str
+    when: list = field(default_factory=list)          # [(text, Expr)]
+    within: float = 1.0                               # s after the previous phase's end by which this one starts
+
+    @property
+    def conditions(self) -> list[str]:
+        return [text for text, _ in self.when]
+
+
+@dataclass
 class Trick:
     id: str
     tag: str = ""
     segment: str = ""
+    phases: list = field(default_factory=list)        # [Phase]; a sequence trick has these instead of a segment
     when: list = field(default_factory=list)          # [(text, Expr)]
     title: str = ""
     why: str = ""
@@ -253,12 +278,11 @@ class Library:
                     raise LibraryError(_where(source, f"trick {tid}: segment must be a name or an inline table"))
                 t.segment = v
             elif key == "when":
-                if not isinstance(v, list) or not all(isinstance(c, str) for c in v):
-                    raise LibraryError(_where(source, f"trick {tid}: when must be a list of conditions"))
-                try:
-                    t.when = [(c, expr.compile(c)) for c in v]
-                except expr.ExprError as e:
-                    raise LibraryError(_where(source, f"trick {tid}: {e}")) from None
+                t.when = self._conditions(v, tid, source)
+            elif key == "phases":
+                if not isinstance(v, list) or len(v) < 2 or not all(isinstance(ph, dict) for ph in v):
+                    raise LibraryError(_where(source, f"trick {tid}: phases must be a list of two or more {{ segment, when, within }} tables"))
+                t.phases = [self._phase(ph, k, tid, source) for k, ph in enumerate(v)]
             elif key in ("title", "why", "tag", "note"):
                 if not isinstance(v, str):
                     raise LibraryError(_where(source, f"trick {tid}: {key} must be a string"))
@@ -314,6 +338,28 @@ class Library:
         """Every property name any craft section declares (plus `name`): the craft.* features a condition may use."""
         return {"name"} | {k for c in self.crafts.values() for k in c["props"]}
 
+    def _conditions(self, v, tid: str, source: str) -> list:
+        if not isinstance(v, list) or not all(isinstance(c, str) for c in v):
+            raise LibraryError(_where(source, f"trick {tid}: when must be a list of conditions"))
+        try:
+            return [(c, expr.compile(c)) for c in v]
+        except expr.ExprError as e:
+            raise LibraryError(_where(source, f"trick {tid}: {e}")) from None
+
+    def _phase(self, ph: dict, k: int, tid: str, source: str) -> Phase:
+        bad = set(ph) - PHASE_KEYS
+        if bad or "segment" not in ph:
+            raise LibraryError(_where(source, f"trick {tid}: phase {k + 1} is {{ segment = ..., when = [...], within = s }}, not {ph!r}"))
+        seg = ph["segment"]
+        if isinstance(seg, dict):
+            seg = self._inline_segment(seg, source, f"{tid}.{k + 1}")
+        elif not isinstance(seg, str):
+            raise LibraryError(_where(source, f"trick {tid}: phase {k + 1}: segment must be a name or an inline table"))
+        within = ph.get("within", 1.0)
+        if k == 0 and "within" in ph:
+            raise LibraryError(_where(source, f"trick {tid}: the first phase has no `within`"))
+        return Phase(seg, self._conditions(ph.get("when", []), tid, source), _number(within, f"trick {tid}: phase {k + 1} within", source))
+
     def _rule(self, r, tid: str, source: str) -> Rule:
         if not isinstance(r, dict) or not isinstance(r.get("tags"), list) or not r["tags"] or set(r) - {"tags", "margin", "within"}:
             raise LibraryError(_where(source, f"trick {tid}: a suppress rule is {{ tags = [...], margin = s }} or {{ tags = [...], within = s }}, not {r!r}"))
@@ -356,11 +402,26 @@ class Library:
             w = f"trick {t.id}"
             if not t.tag:
                 raise LibraryError(_where(t.source, f"{w}: needs a tag"))
-            if t.segment not in lib.segments:
-                raise LibraryError(_where(t.source, f"{w}: unknown segment {t.segment!r} (have {', '.join(lib.segments) or 'none'})"))
+            if t.phases and t.segment:
+                raise LibraryError(_where(t.source, f"{w}: has phases, so no segment of its own"))
             if not t.title:
                 raise LibraryError(_where(t.source, f"{w}: needs a title"))
-            known = set(features.vocabulary(lib.segments[t.segment].kind)) | set(lib.params) | crafts
+            base = set(lib.params) | crafts
+            if t.phases:
+                known = set(features.WINDOW) | set(features.ARM) | base
+                earlier = set()
+                for k, ph in enumerate(t.phases):
+                    if ph.segment not in lib.segments:
+                        raise LibraryError(_where(t.source, f"{w}: phase {k + 1}: unknown segment {ph.segment!r} (have {', '.join(lib.segments) or 'none'})"))
+                    own = set(features.vocabulary(lib.segments[ph.segment].kind))
+                    for text, e in ph.when:
+                        self._check_names(e, own | earlier | base, f"{w}: phase {k + 1} condition {text!r}", t.source)
+                    earlier |= {f"p{k + 1}.{n}" for n in own}
+                known |= earlier
+            else:
+                if t.segment not in lib.segments:
+                    raise LibraryError(_where(t.source, f"{w}: unknown segment {t.segment!r} (have {', '.join(lib.segments) or 'none'})"))
+                known = set(features.vocabulary(lib.segments[t.segment].kind)) | base
             for text, e in t.when:
                 self._check_names(e, known, f"{w}: condition {text!r}", t.source)
             for tpl, what in ((t.title, "title"), (t.why, "why")):
@@ -439,5 +500,6 @@ class Library:
         return sorted(self.tricks.values(), key=lambda t: t.order)
 
     def requires(self, t: Trick) -> list[str]:
-        """The log fields a trick needs: its segment kind's and its own."""
-        return list(dict.fromkeys(segments.REQUIRES.get(self.segments[t.segment].kind, []) + t.requires))
+        """The log fields a trick needs: its segments' kinds' and its own."""
+        kinds = [self.segments[ph.segment].kind for ph in t.phases] if t.phases else [self.segments[t.segment].kind]
+        return list(dict.fromkeys([f for k in kinds for f in segments.REQUIRES.get(k, [])] + t.requires))

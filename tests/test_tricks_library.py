@@ -33,9 +33,10 @@ class ShippedTest(unittest.TestCase):
     def test_loads_with_the_pre_22_detectors(self):
         lib = Library.load([SHIPPED])
         self.assertEqual([t.id for t in lib.ordered()],
-                         ["crash", "hard-landing", "powerloop", "split-s", "flip", "flip-with-yaw", "roll", "roll-with-yaw", "dive", "gyro-kick", "motor-loss"])
-        self.assertEqual({t.tag for t in lib.ordered()}, {"crash", "powerloop", "split-s", "flip", "roll", "dive", "gyro-kick", "motor-loss"})
-        self.assertEqual({lib.segments[t.segment].kind for t in lib.ordered()}, set(segments.KINDS))
+                         ["crash", "hard-landing", "powerloop", "split-s", "flip", "flip-with-yaw", "flip-attempt", "roll", "barrel-roll", "roll-attempt",
+                          "orbit", "figure-8", "dive", "gyro-kick", "motor-loss"])
+        self.assertEqual({t.tag for t in lib.ordered()}, {"crash", "powerloop", "split-s", "flip", "roll", "barrel-roll", "orbit", "dive", "gyro-kick", "motor-loss"})
+        self.assertEqual({lib.segments[t.segment].kind for t in lib.ordered() if not t.phases}, set(segments.KINDS))
         for t in lib.ordered():
             self.assertTrue(t.title and t.why and t.enabled, t.id)
             for e in t.examples:
@@ -52,10 +53,12 @@ class ShippedTest(unittest.TestCase):
 
     def test_the_precedence_is_in_the_file(self):
         lib = Library.load([SHIPPED])
-        crash = lib.tricks["crash"]
-        self.assertEqual([(r.tags, r.margin, r.within) for r in crash.suppress], [(("flip", "roll", "split-s"), 1.0, None), (("motor-loss",), None, 0.5)])
+        self.assertEqual([(r.tags, r.margin, r.within) for r in lib.tricks["crash"].suppress], [(("motor-loss",), None, 0.5)])         # #20: a mid-flight impact swallows no trick
+        self.assertEqual([(r.tags, r.margin, r.within) for r in lib.tricks["hard-landing"].suppress],
+                         [(("flip", "roll", "barrel-roll", "split-s"), 0, None), (("motor-loss",), None, 0.5)])
         self.assertEqual(lib.tricks["powerloop"].suppress[0].margin, 0)
         self.assertGreater(lib.tricks["split-s"].priority, lib.tricks["roll"].priority)
+        self.assertGreater(lib.tricks["roll"].priority, lib.tricks["roll-attempt"].priority)
         self.assertEqual(lib.requires(lib.tricks["motor-loss"]), ["eRPM[0]", "motor[0]"])
         self.assertEqual(lib.requires(lib.tricks["roll"]), [])
 

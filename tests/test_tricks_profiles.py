@@ -17,7 +17,8 @@ try:
 except ImportError:
     from synthetic import axis, make_arm, pulse
 
-ROLL_250 = make_arm(5, gyro=axis(0, pulse(2.0, 2.5, 500)))                    # 250 deg: a roll only to a beginner
+ROLL_250 = make_arm(5, gyro=axis(0, pulse(2.0, 2.5, 500)))                    # 250 deg: a roll only to a beginner, else an attempt
+ATTEMPT = ["right roll attempt, 249 deg"]
 ROLL_250_X = make_arm(5, gyro=axis(0, pulse(2.0, 2.5, 500)), craft="X")
 ROLL_360 = make_arm(5, gyro=axis(0, pulse(2.0, 2.72, 500)))
 
@@ -37,19 +38,19 @@ def titles(arm, lib):
 
 class PresetTest(unittest.TestCase):
     def test_a_preset_loosens_the_numbers(self):
-        self.assertEqual(titles(ROLL_250, lib_with("")), [])
+        self.assertEqual(titles(ROLL_250, lib_with("")), ATTEMPT)
         self.assertEqual(titles(ROLL_250, lib_with('skill = "beginner"')), ["right roll"])
         self.assertEqual(titles(ROLL_360, lib_with('skill = "advanced"')), ["right roll"])
         self.assertEqual(lib_with('skill = "beginner"').for_craft(None).params["flip_min_deg"], 240)
 
     def test_the_pilots_own_params_win_over_the_preset(self):
-        self.assertEqual(titles(ROLL_250, lib_with('skill = "beginner"\n[params]\nflip_min_deg = 300\n')), [])
-        self.assertEqual(titles(ROLL_360, lib_with('skill = "advanced"\n[params]\nflip_min_deg = 400\n')), [])
+        self.assertEqual(titles(ROLL_250, lib_with('skill = "beginner"\n[params]\nflip_min_deg = 300\n')), ATTEMPT)
+        self.assertEqual(titles(ROLL_360, lib_with('skill = "advanced"\n[params]\nflip_min_deg = 400\n')), ["right roll attempt, 359 deg"])
 
     def test_a_preset_per_craft(self):
         lib = lib_with('[craft."X"]\nskill = "beginner"\n')
         self.assertEqual(titles(ROLL_250_X, lib), ["right roll"])
-        self.assertEqual(titles(ROLL_250, lib), [])
+        self.assertEqual(titles(ROLL_250, lib), ATTEMPT)
         self.assertEqual(lib.for_craft("X").params["flip_min_deg"], 240)
         self.assertEqual(lib.for_craft("Y").params["flip_min_deg"], 270)      # a craft without a section: the default layer
 
@@ -67,7 +68,7 @@ class PresetTest(unittest.TestCase):
 class CraftTest(unittest.TestCase):
     def test_a_crafts_params_segments_and_tricks(self):
         params = lib_with('[craft."X".params]\nflip_min_deg = 200\n')
-        self.assertEqual((titles(ROLL_250_X, params), titles(ROLL_250, params)), (["right roll"], []))
+        self.assertEqual((titles(ROLL_250_X, params), titles(ROLL_250, params)), (["right roll"], ATTEMPT))
         segment = lib_with('[craft."X".segment.fast-rotation]\nthreshold = 600\n')              # the 500 dps roll cuts no window
         self.assertEqual((titles(make_arm(5, gyro=axis(0, pulse(2.0, 2.72, 500)), craft="X"), segment), titles(ROLL_360, segment)), ([], ["right roll"]))
         off = lib_with('[[craft."X".trick]]\nid = "roll"\nenabled = false\n')
@@ -86,7 +87,7 @@ title = "a {craft.size_mm} mm roll"
 priority = 20
 ''')
         self.assertEqual(titles(ROLL_250_X, lib), ["a 75 mm roll"])
-        self.assertEqual(titles(ROLL_250, lib), [])                                           # the default craft is 65 mm
+        self.assertEqual(titles(ROLL_250, lib), ATTEMPT)                                      # the default craft is 65 mm
         self.assertEqual(lib.craft_context("X"), {"craft.size_mm": 75, "craft.weight_g": 25, "craft.hover_pct": 35, "craft.name": "X"})
         self.assertEqual(lib.craft_context(None)["craft.size_mm"], 65)
 
@@ -98,7 +99,7 @@ priority = 20
         self.assertEqual(titles(ROLL_250, lib), ["right roll"])
         # the named craft's own params, segments and tricks go over the default's
         lib = lib_with('[craft.default.params]\nflip_min_deg = 200\n[craft."X".params]\nflip_min_deg = 300\n')
-        self.assertEqual((titles(ROLL_250_X, lib), titles(ROLL_250, lib)), ([], ["right roll"]))
+        self.assertEqual((titles(ROLL_250_X, lib), titles(ROLL_250, lib)), (ATTEMPT, ["right roll"]))
         lib = lib_with('[[craft.default.trick]]\nid = "roll"\nenabled = false\n[craft."X"]\nsize_mm = 75\n')
         self.assertEqual((titles(ROLL_250_X, lib_with('skill = "beginner"\n[[craft.default.trick]]\nid = "roll"\nenabled = false\n[craft."X"]\nsize_mm = 75\n')),
                           titles(ROLL_360, lib)), ([], []))
@@ -199,7 +200,7 @@ class CliTest(unittest.TestCase):
         text = self.cli('[craft."X".params]\nflip_min_deg = 200\n', "tricks", "explain", "SYNTH.bbl:1")
         self.assertRegex(text, r"\broll\s+fired")
         text = self.cli("version = 1\n", "tricks", "explain", "SYNTH.bbl:1")
-        self.assertRegex(text, r"\broll\s+failed: abs\(rotation_deg.roll\) >= flip_min_deg")
+        self.assertRegex(text, r"\broll\s+failed: abs\(rotation_peak_deg.roll\) >= flip_min_deg")
 
 
 if __name__ == "__main__":

@@ -50,13 +50,13 @@ class RotationTest(unittest.TestCase):
         self.assertEqual(titles(tricks.detect(make_arm(5, gyro=axis(0, pulse(2.0, 2.72, -500))), LIB)), [("roll", "left roll")])
         self.assertEqual(titles(tricks.detect(make_arm(5, gyro=axis(1, pulse(2.0, 2.72, -500))), LIB)), [("flip", "back flip")])
         self.assertEqual(titles(tricks.detect(make_arm(5, gyro=axis(1, pulse(2.0, 2.72, 500))), LIB)), [("flip", "forward flip")])
-        with_yaw = make_arm(5, gyro=combine(axis(0, pulse(2.0, 2.72, 500)), axis(2, pulse(2.0, 2.72, 300))))       # yaw 216 > half of 360
-        self.assertEqual(titles(tricks.detect(with_yaw, LIB)), [("roll", "right roll with yaw")])
-        little_yaw = make_arm(5, gyro=combine(axis(0, pulse(2.0, 2.72, 500)), axis(2, pulse(2.0, 2.72, 150))))
+        with_yaw = make_arm(5, gyro=combine(axis(0, pulse(2.0, 2.72, 500)), axis(2, pulse(2.0, 2.72, 300))))       # yaw 216: off the axis
+        self.assertEqual(titles(tricks.detect(with_yaw, LIB)), [("barrel-roll", "right barrel roll")])
+        little_yaw = make_arm(5, gyro=combine(axis(0, pulse(2.0, 2.72, 500)), axis(2, pulse(2.0, 2.72, 100))))        # yaw 72: still a roll
         self.assertEqual(titles(tricks.detect(little_yaw, LIB)), [("roll", "right roll")])
 
-    def test_less_than_a_flip_is_nothing(self):
-        self.assertEqual(tricks.detect(make_arm(5, gyro=axis(0, pulse(2.0, 2.4, 500))), LIB), [])            # 200 deg
+    def test_less_than_a_flip_is_an_attempt_or_nothing(self):
+        self.assertEqual(titles(tricks.detect(make_arm(5, gyro=axis(0, pulse(2.0, 2.4, 500))), LIB)), [("roll", "right roll attempt, 199 deg")])
         self.assertEqual(tricks.detect(make_arm(5, gyro=axis(0, pulse(2.0, 2.2, 400))), LIB), [])            # 80 deg
 
     def test_a_tumble_is_nothing(self):
@@ -68,30 +68,30 @@ class RotationTest(unittest.TestCase):
         self.assertEqual(titles(tricks.detect(joined, LIB)), [("roll", "right roll")])
         self.assertEqual((tricks.detect(joined, LIB)[0]["arm_from"], tricks.detect(joined, LIB)[0]["arm_to"]), (2.0, 3.0))
         apart = make_arm(6, gyro=combine(axis(0, pulse(2.0, 2.4, 500)), axis(0, pulse(2.9, 3.3, 500))))
-        self.assertEqual(tricks.detect(apart, LIB), [])
+        self.assertEqual([e["title"] for e in tricks.detect(apart, LIB)], ["right roll attempt, 199 deg"] * 2)
 
     def test_too_short_a_stretch_is_no_window(self):
         self.assertEqual(tricks.detect(make_arm(5, gyro=axis(0, pulse(2.0, 2.25, 1200))), LIB), [])         # 300 deg in 0.25 s: under min_dur
 
     def test_split_s_wins_the_window(self):
-        """A half roll and a pull back at low throttle in one window: split-S, not a roll (priority), not a flip."""
+        """A half roll and a pull back close enough to share one rotation window: split-S, and its half roll is not
+        also a roll attempt (suppressed); the throttle does not matter (a beginner keeps it on)."""
         gyro = combine(axis(0, pulse(2.0, 2.4, 500)), axis(1, pulse(2.5, 2.8, -500)))      # roll 200, then pitch -150, gap 0.1 s
-        arm = make_arm(6, gyro=gyro, throttle=lambda t: 20 if 2 <= t < 3 else 50)
-        evs = tricks.detect(arm, LIB)
-        self.assertEqual(titles(evs), [("split-s", "split-S")])
-        self.assertEqual(evs[0]["why"], "roll +199 / pitch -150 / yaw +0 deg in 0.8 s, peak 500 dps, throttle 20-20 %")
-        # with the throttle on it is no split-S, and a 200 deg roll is no roll: nothing
-        self.assertEqual(tricks.detect(make_arm(6, gyro=gyro, throttle=50), LIB), [])
-        ex = tricks.explain(make_arm(6, gyro=gyro, throttle=50), LIB)
-        verdict = {t["id"]: t for t in ex["windows"][0]["tricks"]}
-        self.assertEqual(verdict["split-s"]["failed"], "throttle_pct.min < split_s_throttle_max")
-        self.assertEqual(verdict["roll"]["failed"], "abs(rotation_deg.roll) >= flip_min_deg")
-        self.assertEqual(verdict["flip"]["failed"], "axis == 'pitch'")
+        for throttle in (20, 50):
+            arm = make_arm(6, gyro=gyro, throttle=throttle)
+            evs = tricks.detect(arm, LIB)
+            self.assertEqual(titles(evs), [("split-s", "split-S")])
+            self.assertEqual((evs[0]["arm_from"], evs[0]["arm_to"]), (2.0, 2.8))
+        ex = tricks.explain(arm, LIB)
+        verdict = {t["id"]: t for w in ex["windows"] if w["kind"] == "rotation" for t in w["tricks"]}
+        self.assertEqual(verdict["roll-attempt"]["failed"], "abs(rotation_peak_deg.pitch) < barrel_off_axis_deg")   # the pull is in its window
+        self.assertEqual(verdict["roll"]["failed"], "abs(rotation_peak_deg.roll) >= flip_min_deg")
+        self.assertEqual(verdict["flip"]["failed"], "abs(rotation_peak_deg.roll) < barrel_off_axis_deg")   # the roll is in its window
 
 
 class LoopTest(unittest.TestCase):
     def test_a_powerloop_suppresses_the_flip_inside_it(self):
-        arm = make_arm(8, gyro=axis(1, pulse(2.0, 4.4, -150)))                 # -150 dps for 2.4 s = -360 deg
+        arm = make_arm(8, gyro=axis(1, pulse(2.0, 4.4, -150)), sticks=lambda t: (0.0, -100.0, 0.0))     # -150 dps for 2.4 s = -360 deg, full pitch
         evs = tricks.detect(arm, LIB)
         self.assertEqual(titles(evs), [("powerloop", "powerloop")])
         self.assertEqual(evs[0]["why"], "-360 deg pitch in 2.4 s, peak 150 dps, throttle inverted 50 %")
@@ -125,10 +125,11 @@ class ImpactTest(unittest.TestCase):
         acc, _ = impact(10.0)
         self.assertEqual(tricks.detect(make_arm(20, acc=acc), LIB), [])
 
-    def test_a_crash_swallows_the_roll_around_it(self):
+    def test_a_mid_flight_crash_leaves_the_roll_before_it(self):
+        """Since #20 a mid-flight impact swallows nothing: the roll before it is reported next to it."""
         acc, raw = impact(10.0)
         near = make_arm(20, gyro=axis(0, pulse(8.9, 9.62, 500)), acc=acc, raw=raw)     # the roll ends 0.38 s before the crash window
-        self.assertEqual(titles(tricks.detect(near, LIB)), [("crash", "impact")])
+        self.assertEqual(titles(tricks.detect(near, LIB)), [("roll", "right roll"), ("crash", "impact")])
         far = make_arm(20, gyro=axis(0, pulse(5.0, 5.72, 500)), acc=acc, raw=raw)
         self.assertEqual(titles(tricks.detect(far, LIB)), [("roll", "right roll"), ("crash", "impact")])
 
@@ -139,7 +140,7 @@ class ThrottleTest(unittest.TestCase):
         evs = tricks.detect(arm, LIB)
         self.assertEqual(titles(evs), [("dive", "dive")])
         self.assertEqual((evs[0]["arm_from"], evs[0]["arm_to"]), (3.0, 6.0))
-        self.assertEqual(evs[0]["why"], "throttle cut for 3.0 s, tilt 60-60 deg")
+        self.assertEqual(evs[0]["why"], "throttle under 15 % for 3.0 s (from 50 % before), tilt 60-60 deg")
         self.assertEqual(evs[0]["numbers"]["tilt_deg"]["mean"], 60)
 
     def test_a_blip_does_not_end_it_but_a_longer_rise_does(self):
@@ -306,10 +307,11 @@ class CliTest(unittest.TestCase):
         self.assertIn("tricks.toml", text.splitlines()[0])
         self.assertRegex(text, r"motor-loss\s+motor-loss\s+motor-drop\s+motor_drop")
         self.assertIn("flip_min_deg=270", text)
-        show = self.cli("tricks", "show", "crash")
-        self.assertIn("suppress  flip, roll, split-s: windows within 1.0 s", show)
+        show = self.cli("tricks", "show", "crash", "hard-landing", "split-s")
+        self.assertIn("suppress  flip, roll, barrel-roll, split-s: windows within 0 s", show)
         self.assertIn("suppress  motor-loss: instants within 0.5 s", show)
         self.assertIn("example   BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl arm 18 at 64.7", show)
+        self.assertIn("phase 2   pitch-back: sustained, within 1.0 s", show)
         feats = self.cli("tricks", "features", "impact")
         self.assertIn("impact_g", feats)
         self.assertIn("opt.jolt_window", feats)
@@ -319,7 +321,7 @@ class CliTest(unittest.TestCase):
         text = self.cli("tricks", "explain", "SYNTH.bbl:1", "4", "7")
         self.assertIn("fast-rotation 5.00-5.72", text)
         self.assertRegex(text, r"roll\s+fired")
-        self.assertRegex(text, r"flip\s+failed: axis == 'pitch'")
+        self.assertRegex(text, r"flip\s+failed: stick_pct_max.pitch >= stick_min")
         self.assertNotIn("impact 9.50", text)                                 # outside 4-7
 
     def test_check_runs_the_examples(self):

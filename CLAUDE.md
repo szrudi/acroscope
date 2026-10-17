@@ -38,11 +38,22 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   server's logs). The pre-#22 detectors were ported window for window: on 234 real arms (eleven logs, 2026-10-07 to
   10-16) every event's tag, title, why, start and end were identical except the dives' tilt range (every frame now,
   not 40 samples) and the powerloops' inverted throttle (IMU tilt > 135, not integrated pitch, which for a loop
-  entered from a dive measured the climb). The server's `_events` cache is keyed by the tricks files' mtimes. A pilot's file sits over the shipped one
+  entered from a dive measured the climb). The server's `_events` cache is keyed by the tricks files' mtimes. The recall work (#31, #29, #20): `acroscope
+  tricks eval <session>` scores the tricks against Rudi's tagged moments; on the eight tagged sessions of October
+  2026 it went from 3 of 28 (10-14 alone) to orbits 24/25, split-S 6/6, rolls 11/13 (the two left are crashes),
+  loops 3/3, barrel roll 1/1, dives 4/7; the 51 "dives" at an arm's first frame (the quad armed on the ground) and
+  the crash tumbles are gone. The tuning loop: `eval` names the misses with arm and time, `explain` shows the
+  window and the condition that failed, a param or a condition changes, the moment becomes an `examples` entry,
+  `check` keeps it. A pilot's file sits over the shipped one
   (`ACROSCOPE_TRICKS`, in the container `/state/tricks.toml` beside the database; locally
   `~/.config/acroscope/tricks.toml`, `tricks init` writes a starter): skill presets, own params, per-craft
   sections by the header's `Craft name` (`Library.for_craft`). Rudi edits the server's copy on the LXC for now;
   an editor in the player is an open idea.
+- Trick work needs real logs on joan: `acroscope fetch-log <fragment> --to <dir>/blackbox` (runs here, no deploy), then
+  `ACROSCOPE_DATA=<dir> ACROSCOPE_CACHE=<cache> ACROSCOPE_URL= ACROSCOPE_TRICKS=/nonexistent` with the branch's
+  checkout on `PYTHONPATH` (a script run by path imports the main checkout's package otherwise): `arms` decodes, then
+  `events`, `tricks check`, `tricks explain` work offline. `sessions <s> --json` saved from the server gives the
+  matches and moments to score against by hand; `tricks eval` itself needs the database, so it runs on the server.
 - The flight-analysis session's brief in the Drive folder (`~/gdrive/fpv/CLAUDE.md`) carries the acroscope workflow
   that session follows: keep its acroscope bullet in step with CLI changes.
 - Cache: `~/.cache/acroscope` on joan (frames and sheets fetched from the server, the real-data test leftovers);

@@ -27,6 +27,7 @@ WINDOW = {
     "throttle_inverted_pct.mean": "throttle while inverted (tilt > 135); none when never inverted",
     "throttle_inverted_pct.min": "", "throttle_inverted_pct.frames": "",
     "motor_mean": "mean motor command, 48-2047; none without motor fields", "motor_max": "",
+    "motor_min": "the lowest motor command: 0 = a motor stopped (crash flip mode, a disarm), the quad was not flying",
     "setpoint_peak_dps.roll": "peak |setpoint|: the rate the sticks asked for, deg/s; none when not logged",
     "setpoint_peak_dps.pitch": "", "setpoint_peak_dps.yaw": "",
     "to_arm_end_s": "seconds from the window's end (a point event: from its instant) to the arm's end",
@@ -43,6 +44,10 @@ ARM = {
 def vocabulary(kind: str) -> dict[str, str]:
     """Every name a trick on this segment kind may use, with what it means (opt.* are the segment's options)."""
     return {**WINDOW, **segments.EXTRAS[kind], **ARM, **{f"opt.{k}": f"the segment's {k} option" for k in segments.KINDS[kind]}}
+
+
+def flatten_numbers(numbers: dict) -> dict:
+    return flatten({k: v for k, v in numbers.items() if k not in ("rates", "phases")})
 
 
 def flatten(d: dict, prefix: str = "") -> dict:
@@ -71,17 +76,17 @@ def measure(arm: Arm, win: segments.Window, kind: str, opts: dict) -> tuple[dict
     numbers = metrics.summary(arm, arm.t[win.i0], arm.t[win.i1 - 1] + 1e-6) if win.i1 > win.i0 else {}
     numbers.pop("frames", None) if False else None
     numbers["arm_from"], numbers["arm_to"] = win.arm_from, win.arm_to
+    numbers.update(win.extras)
     if kind == "rotation":
-        rot = numbers["rotation_deg"]
+        rot = numbers["rotation_peak_deg"]              # the furthest it got, not the net: a counter-correction cancels the net
         main = "roll" if abs(rot["roll"]) >= abs(rot["pitch"]) else "pitch"
         numbers["axis"] = main
         numbers["direction"] = ("right" if rot["roll"] > 0 else "left") if main == "roll" else ("forward" if rot["pitch"] > 0 else "back")
-    numbers.update(win.extras)
     rates = arm.meta.get("rates")
     if rates:
         numbers["rates"] = rates
     flat = {name: None for name in WINDOW}
-    flat.update(flatten({k: v for k, v in numbers.items() if k != "rates"}))
+    flat.update(flatten_numbers(numbers))
     end = win.extras["arm_t"] if win.point is not None else win.arm_to
     flat["to_arm_end_s"] = round(arm.length - end, 2)
     flat.update({f"opt.{k}": v for k, v in opts.items()})

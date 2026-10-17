@@ -4,8 +4,8 @@
     max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps
 
 Numbers, strings in quotes, names with dots, + - * / % **, the comparisons (chained like Python's), `and` `or`
-`not`, parentheses, and the functions abs min max round sqrt. Nothing else: no attribute access, no indexing, no
-Python. A trick file from the internet must not run code, so this is a parser and a walker, never `eval`.
+`not`, parentheses, and the functions abs min max round sqrt, plus if(c, a, b) for a title that depends on the
+numbers. Nothing else: no attribute access, no indexing, no Python. A trick file from the internet must not run code, so this is a parser and a walker, never `eval`.
 
 A feature the log cannot give (no eRPM, no setpoint) is `none`: arithmetic on it gives none, a comparison with it is
 false, so a condition on a missing feature never fires and never crashes. `{expr}` and `{expr:fmt}` in a title or a
@@ -22,7 +22,7 @@ _TOKEN = re.compile(r"""\s*(?:
   | (?P<op>\*\*|<=|>=|==|!=|[-+*/%<>(),])
 )""", re.VERBOSE)
 _KEYWORDS = {"and", "or", "not", "true", "false", "none"}
-_FUNCTIONS = {"abs": abs, "min": min, "max": max, "round": round, "sqrt": math.sqrt}
+_FUNCTIONS = {"abs": abs, "min": min, "max": max, "round": round, "sqrt": math.sqrt, "if": None}
 _CMP = {"<", "<=", ">", ">=", "==", "!="}
 _TEMPLATE = re.compile(r"\{([^{}]*)\}")
 
@@ -156,6 +156,8 @@ class _Parser:
             self.take("op", ")")
             if not args:
                 raise ExprError(f"{name}() needs an argument in {self.text!r}")
+            if name == "if" and len(args) != 3:
+                raise ExprError(f"if() takes a condition and two values in {self.text!r}")
             return ("call", name, args)
         return ("name", name)
 
@@ -249,6 +251,8 @@ def _ev(node, ns: dict, text: str):
         except (ZeroDivisionError, OverflowError):
             return None
     if kind == "call":
+        if node[1] == "if":
+            return _ev(node[2][1] if _truth(_ev(node[2][0], ns, text)) else node[2][2], ns, text)
         args = [_ev(n, ns, text) for n in node[2]]
         if any(a is None for a in args):
             return None

@@ -35,14 +35,15 @@ def quat_from_lean(forward_deg: float = 0.0, right_deg: float = 0.0) -> tuple:
 def make_arm(seconds: float, gyro=None, throttle=50.0, sticks=None, raw=None, acc=None, quat0=None, motors=None,
              erpm=None, setpoint=False, vbat=3.8, rate: int = RATE, craft: str = "TEST", rates=None) -> Arm:
     """`gyro(t)` -> (roll, pitch, yaw) deg/s; `throttle` a number (%) or `throttle(t)`; `sticks(t)` -> (roll, pitch,
-    yaw) %; `raw(t)` the unfiltered gyro (default: the gyro); `acc(t)` -> (x, y, z) g in the body frame (default:
+    yaw) % (default: what asks for the gyro's rate on a 670 deg/s profile, so a scripted trick is a trick the
+    pilot flew); `raw(t)` the unfiltered gyro (default: the gyro); `acc(t)` -> (x, y, z) g in the body frame (default:
     gravity, from the attitude); `motors(t)` -> four commands 48-2047; `erpm(t)` -> four eRPMs; `quat0` the
     attitude at the start (`quat_from_lean`)."""
     n = int(seconds * rate) + 1
     t = array.array("d", (i / rate for i in range(n)))
     gyro = gyro or (lambda tt: (0.0, 0.0, 0.0))
     thr = throttle if callable(throttle) else (lambda tt: throttle)
-    sticks = sticks or (lambda tt: (0.0, 0.0, 0.0))
+    sticks = sticks or (lambda tt: tuple(max(-100.0, min(100.0, v / 670 * 100)) for v in gyro(tt)))
     raw = raw or gyro
     q = quat0 or (0.0, 0.0, 0.0, 1.0)
     cols = {}

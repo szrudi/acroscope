@@ -72,6 +72,7 @@ def summary(arm: Arm, t0: float, t1: float) -> dict:
     if motors:
         out["motor_mean"] = round(_mean(_mean(m[i] for m in motors) for i in r))
         out["motor_max"] = round(max(max(m[i] for m in motors) for i in r))
+        out["motor_min"] = round(min(min(m[i] for m in motors) for i in r))      # 0 = a motor stopped: not flying
     if "setpoint[0]" in arm:
         # what the sticks asked for after the rate curve (deg/s): intent, against the gyro's outcome (#22)
         sp = [arm.col(f"setpoint[{a}]") for a in range(3)]

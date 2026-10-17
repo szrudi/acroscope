@@ -133,10 +133,11 @@ acroscope match <session> <video> <bbl> <arm> <offset>   record a video <-> arm 
 acroscope metrics <session> <video> <from> <to> [--profile [STEP]] [--loop] [--orbit]
 acroscope metrics --arm <bbl>:<n> <from> <to>    same, in arm seconds without a session
 acroscope events <session> [video]               the tricks file's suggestions (flip, roll, powerloop, split-s, dive, crash, gyro-kick, motor-loss)
-acroscope tricks [list|show <id>|features [kind]|check [id...]|explain <bbl>:<arm> [from] [to]|init] [--craft X]
+acroscope tricks [list|show <id>|features [kind]|check [id...]|explain <bbl>:<arm> [from] [to]|eval <session>|init] [--craft X]
                                                  the tricks in force, one in full, the names a condition may use, the
                                                  examples run against the logs, every window of an arm with each trick's
-                                                 verdict, a starter file for your own tricks
+                                                 verdict, the tricks scored against a session's tagged moments, a starter
+                                                 file for your own tricks
 acroscope frame <session> <video> <t>... [--osd] JPEGs of frames; --osd enlarges the OSD strip (arm timer, total, vbat)
 acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling several timestamped frames (one look for the agent)
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
@@ -219,8 +220,9 @@ reader sees: `acroscope osd` and the ASCII dumps in the labels workflow, not a J
 ## Tricks
 
 `acroscope events` runs the **trick engine** (`acroscope/tricks/`) over an arm: a handful of **segmenters** cut it
-into candidate windows (`rotation`: roll or pitch over a rate; `sustained`: one axis past a rate with gaps allowed;
-`throttle_cut`; `impact`: a g spike with a gyro jolt; `kick`; `motor_drop`), each window is **measured** in the same
+into candidate windows (`rotation`: roll or pitch over a rate; `turn`: the nose's heading in the world turning one way;
+`sustained`: one axis past a rate with gaps allowed; `throttle_cut`; `impact`: a g spike with a gyro jolt; `kick`;
+`motor_drop`), each window is **measured** in the same
 vocabulary `metrics` uses (`rotation_deg.roll`, `throttle_pct.min`, `tilt_deg.max`, … plus what the scan itself found,
 and the arm's rate profile from the log's header, `arm.rates_max_dps.roll`), and the **tricks file** judges the windows.
 One entry per trick, in `acroscope/tricks/tricks.toml`:
@@ -237,6 +239,11 @@ why      = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} deg in {du
 priority = 20                                    # wins over a plain roll on the same window
 examples = [{ log = "…20261007_212530….bbl", arm = 13, at = 29.0 }]
 ```
+
+A trick that is a series of movements names `phases` instead of a segment: the split-S is a half roll that puts the
+quad over (a `rotation` window) and then, starting within a second, a pull-through (a `sustained` pitch-back window);
+a figure 8 is a turn one way then the other. Each phase judges its own window, the detection spans them all, and its
+texts see every phase's numbers (`p1.rotation_peak_deg.roll`).
 
 The numbers live in `[params]` (`flip_min_deg = 270`, `tumble_dps = 1500`, …), so tuning is editing a number, not
 code. Conditions and the `{…}` holes in titles use a small language of their own (comparisons chained like Python's,
@@ -261,9 +268,15 @@ the server reads an edited file on the next look, no restart.
 
 `acroscope tricks` lists the tricks in force, `tricks show <id>` one in full, `tricks features [kind]` the names a
 condition may use, `tricks explain <bbl>:<arm> [from] [to]` every window with each trick's verdict (fired, the
-condition it failed, lost to a higher priority, suppressed by whom), and `tricks check` runs every trick's
-`examples` (a real log, an arm, a moment) against the logs on the machine: a shared trick without an example is a
-guess. Each event says which `trick` fired; its `numbers` are the window's measurement, the same snapshot `metrics`
+condition it failed, lost to a higher priority, suppressed by whom), `tricks check` runs every trick's `examples` (a
+real log, an arm, a moment) against the logs on the machine (a shared trick without an example is a guess), and
+`tricks eval <session>` scores the tricks against the session's tagged moments: per tag the moments found and
+missed (with the arm and time of each miss, ready for `explain`), and every detection on no tagged moment. The
+shipped tricks: flips, rolls and barrel rolls (by the furthest the rotation got, with the stick behind it, holding its
+direction; a trick that touched something and flew on is titled "ended with contact"), attempts short of a flip,
+split-S, powerloop, orbit (named by the side the quad slides to, with laps, bank and throttle against the craft's
+hover throttle), figure 8, dive (the quad flying before the cut, pointing down, not tumbling), impact and hard
+landing, gyro yaw kick, motor loss. Each event says which `trick` fired; its `numbers` are the window's measurement, the same snapshot `metrics`
 gives for that window, so an accepted suggestion stores it.
 
 ## Player

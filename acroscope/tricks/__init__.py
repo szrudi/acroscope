@@ -8,6 +8,10 @@ trick made of it, for tuning.
 
 Precedence is in the file, not in code: on one window the trick with the highest `priority` wins; a detection
 `suppress`es others by tag (overlapping windows, or point events within so many seconds), judged in priority order.
+
+A sequence trick (`phases`) chains windows of several segments: each phase's conditions on its own window, the next
+phase starting after the one before and within so many seconds of its end; the detection spans them all and its
+texts see every phase's features as p1.*, p2.*.
 """
 import os
 from dataclasses import dataclass
@@ -17,7 +21,7 @@ from ..blackbox import Arm
 from . import expr, features, segments
 from .library import SHIPPED, Library, LibraryError, Trick
 
-__all__ = ["check", "detect", "explain", "library", "user_path", "Library", "LibraryError", "SHIPPED", "TEMPLATE"]
+__all__ = ["check", "detect", "evaluate", "explain", "library", "user_path", "Library", "LibraryError", "SHIPPED", "TEMPLATE"]
 
 # what `acroscope tricks init` writes: a pilot's file with the knobs shown and off
 TEMPLATE = """# Your tricks, over acroscope's shipped ones (acroscope/tricks/tricks.toml). `acroscope tricks` shows what is in
@@ -148,11 +152,48 @@ class Run:
             if missing:
                 self.skipped[t.id] = missing
                 continue
+            if t.phases:
+                self._judge_sequence(t)
+                continue
             for i, (win, ns, numbers) in enumerate(self._cut(t.segment)):
                 failed = next((text for text, e in t.when if not e.eval(ns)), None)
                 self.verdicts.setdefault((t.segment, i), []).append((t, failed))
                 if failed is None:
                     self.hits.append(Hit(t, t.segment, i, win, ns, numbers))
+
+    def _judge_sequence(self, t: Trick):
+        """Every chain of windows, one per phase in order, each passing its phase's conditions (with the earlier
+        phases' features as p1.* …), the next starting after the previous and within `within` s of its end."""
+        def chains(k: int, prev: segments.Window | None, earlier: dict):
+            ph = t.phases[k]
+            for i, (win, ns, numbers) in enumerate(self._cut(ph.segment)):
+                if prev is not None and not (prev.arm_from <= win.arm_from <= prev.arm_to + ph.within):
+                    continue
+                ns2 = {**ns, **earlier}
+                if any(not e.eval(ns2) for _, e in ph.when):
+                    continue
+                here = {**earlier, **{f"p{k + 1}.{n}": v for n, v in ns.items() if n in features.WINDOW or n in segments.EXTRAS[self.lib.segments[ph.segment].kind]}}
+                if k + 1 == len(t.phases):
+                    yield [(i, win, numbers)], here
+                else:
+                    for rest, feats in chains(k + 1, win, here):
+                        yield [(i, win, numbers), *rest], feats
+        ended = set()                                           # the last window of a chain that fired: not a new first
+        for chain, feats in chains(0, None, {}):
+            first, last = chain[0][1], chain[-1][1]
+            if (t.phases[0].segment, chain[0][0]) in ended:
+                continue
+            span = segments.Window(first.i0, max(w.i1 for _, w, _ in chain), first.arm_from, max(w.arm_to for _, w, _ in chain))
+            flat, numbers = features.measure(self.arm, span, "span", {})
+            numbers["phases"] = [n for _, _, n in chain]
+            ns = {**self.context, **flat, **feats}
+            key = f"{t.id}:phases"
+            index = tuple(i for i, _, _ in chain)
+            failed = next((text for text, e in t.when if not e.eval(ns)), None)
+            self.verdicts.setdefault((key, index), []).append((t, failed))
+            if failed is None:
+                self.hits.append(Hit(t, key, index, span, ns, numbers))
+                ended.add((t.phases[-1].segment, chain[-1][0]))
 
     def _precedence(self):
         best: dict[tuple, Hit] = {}
@@ -203,8 +244,67 @@ def explain(arm: Arm, lib: Library | None = None, t0: float = 0.0, t1: float = 1
                 tricks.append({"id": t.id, "fired": failed is None, "failed": failed,
                                "lost_to": h.lost_to if h else None, "suppressed_by": h.suppressed_by if h else None})
             out.append({"segment": name, "kind": seg.kind, "arm_from": win.arm_from, "arm_to": win.arm_to, "numbers": numbers, "tricks": tricks})
+    for h in run.hits:                                              # a sequence's chains, as windows of their own
+        if h.trick.phases and h.window.arm_to >= t0 and h.window.arm_from <= t1:
+            out.append({"segment": h.segment, "kind": "phases", "arm_from": h.window.arm_from, "arm_to": h.window.arm_to, "numbers": h.numbers,
+                        "tricks": [{"id": h.trick.id, "fired": True, "failed": None, "lost_to": h.lost_to, "suppressed_by": h.suppressed_by}]})
     out.sort(key=lambda w: (w["arm_from"], w["arm_to"]))
     return {"windows": out, "skipped": run.skipped}
+
+
+# a moment's tag -> the event tags that count as finding it (a barrel roll finds a moment tagged roll)
+FOUND_BY = {"flip": {"flip"}, "backflip": {"flip"}, "frontflip": {"flip"}, "roll": {"roll", "barrel-roll"}, "barrel-roll": {"barrel-roll"},
+            "barrel": {"barrel-roll"}, "powerloop": {"powerloop"}, "split-s": {"split-s"}, "dive": {"dive"}, "orbit": {"orbit"},
+            "crash": {"crash"}, "gyro-kick": {"gyro-kick"}, "motor-loss": {"motor-loss"}}
+
+
+def evaluate(session: dict, load_arm, lib: Library | None = None) -> dict:
+    """The tricks against a session's tagged moments (`acroscope tricks eval`): for every tag a trick emits, the
+    moments found (a detection of that tag overlapping the moment, in video time) and missed, and the detections of
+    trick tags on no tagged moment (on a session where every trick is tagged, the false positives). A moment on a
+    clip without a decoded match is not counted."""
+    lib = lib or library()
+    emits = {t.tag for t in lib.ordered() if t.enabled}
+    events: dict[str, list] = {}                                    # video -> [{tag, start, end, title, arm, arm_from, why}]
+    for m in session.get("matches", []):
+        try:
+            arm = load_arm(m["bbl"], m["arm"])
+        except FileNotFoundError:
+            continue
+        events.setdefault(m["video"], [])
+        for e in detect(arm, lib):
+            events.setdefault(m["video"], []).append({"tag": e["tag"], "start": round(e["arm_from"] + m["offset"], 2), "end": round(e["arm_to"] + m["offset"], 2),
+                                                      "title": e["title"], "arm": m["arm"], "arm_from": e["arm_from"], "why": e["why"]})
+    found, missed, used = {}, [], set()
+    for mo in session.get("moments", []):
+        if mo["video"] not in events:
+            continue
+        for tag in mo.get("tags", []):
+            by = FOUND_BY.get(tag, {tag}) & emits
+            if not by:
+                continue
+            hits = [e for e in events[mo["video"]] if e["tag"] in by and e["start"] <= mo["end"] and e["end"] >= mo["start"]]
+            row = {"id": mo["id"], "video": mo["video"], "start": mo["start"], "end": mo["end"], "title": mo["title"],
+                   "tag": tag if tag in emits else sorted(by)[0]}
+            if hits:
+                found.setdefault(tag, []).append({**row, "found": [h["title"] for h in hits]})
+                used.update(id(h) for h in hits)
+            else:
+                arms = {m["arm"]: round(mo["start"] - m["offset"], 1) for m in session["matches"] if m["video"] == mo["video"]}
+                missed.append({**row, "arms": arms})
+    untagged = []
+    for video, evs in events.items():
+        for e in evs:
+            if id(e) in used or e["tag"] in ("crash", "gyro-kick", "motor-loss"):
+                continue
+            near = [mo for mo in session.get("moments", []) if mo["video"] == video and mo["start"] <= e["end"] and mo["end"] >= e["start"]]
+            untagged.append({**e, "video": video, "moment": f"{near[0]['title']} {near[0].get('tags')}" if near else None})
+    per_tag = {}
+    for tag in sorted(emits):
+        n_found, n_missed = len(found.get(tag, [])), sum(1 for m in missed if m["tag"] == tag)
+        if n_found + n_missed:
+            per_tag[tag] = {"found": n_found, "missed": n_missed}
+    return {"per_tag": per_tag, "found": found, "missed": missed, "untagged": sorted(untagged, key=lambda e: (e["video"], e["start"]))}
 
 
 def check(lib: Library | None = None, only: list[str] | None = None) -> dict:
