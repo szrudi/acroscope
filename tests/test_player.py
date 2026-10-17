@@ -694,6 +694,48 @@ class PlayerTest(unittest.TestCase):
         page.click("#paneMoments h2", position={"x": 20, "y": 8})
         self.assertFalse(page.eval_on_selector("#paneMoments", "p => p.classList.contains('closed')"))
 
+    # ---- the readout under the timeline ------------------------------------------------------------------------------
+
+    READOUT = """() => {
+      series = [{offset: 0, arm: 14, step: 0.1, length: 300, rows: Array(3000).fill([100, 179, 3.62, -1234])}];
+      loopM = 'm1'; readout();
+      const r = document.getElementById('readout'), spans = [...r.children];
+      const box = r.getBoundingClientRect();
+      return {tops: new Set(spans.map(s => Math.round(s.getBoundingClientRect().top))).size, height: box.height,
+              right: box.right, text: r.innerText, page: document.documentElement.scrollWidth};
+    }"""
+
+    def test_the_readout_holds_still(self):
+        """Rudi: each value in a box as wide as its largest, so the labels don't shift as the numbers grow and shrink
+        (9 to -1234 deg/s, 1 to 3 digits of tilt). On the phone the widest of them all still fits the line."""
+        for size in (PHONE, DESKTOP):
+            page = self.open("2026-10-16-swipe", size)
+            at = """(row) => { series = [{offset: 0, arm: 14, step: 0.1, length: 300, rows: Array(3000).fill(row)}]; readout();
+              const r = document.getElementById('readout');
+              return {lefts: [...r.querySelectorAll('span')].map(s => Math.round(s.getBoundingClientRect().left)), over: r.scrollWidth - r.clientWidth}; }"""
+            small, big = page.evaluate(at, [5, 3, 4.2, 9]), page.evaluate(at, [100, 179, 3.62, -1234])
+            self.assertEqual(small["lefts"], big["lefts"], size)
+            self.assertLessEqual(big["over"], 0, size)                          # the widest values: nothing cut off
+
+    def test_the_readout_stays_one_line_on_the_phone(self):
+        """Rudi: under the timeline on the phone the readout broke into two lines with some values and back to one,
+        jumping. On the phone it is one line whatever the values (the widest: a 4-digit gyro, a 3-digit tilt, looping),
+        clipped at the end if it ever has to be, and the page never gets wider than the screen."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        r = page.evaluate(self.READOUT)
+        self.assertEqual(r["tops"], 1, r)
+        self.assertLessEqual(r["height"], 20, r)
+        self.assertLessEqual(r["page"], 412, r)
+        for want in ("arm", "14", "thr", "tilt", "3.62V", "-1234°/s"):       # the short labels, every value in view
+            self.assertIn(want, r["text"])
+        d = self.open("2026-10-16-swipe").evaluate(self.READOUT)             # the desktop keeps its words
+        self.assertIn("throttle", d["text"])
+        # a message in that row (the clip cannot play, its file is missing) is read, not glanced at: it still wraps
+        page.wait_for_function("() => /cannot play this clip/.test(document.getElementById('readout').textContent)")
+        m = page.evaluate("() => { const r = document.getElementById('readout'); return [r.scrollWidth, r.clientWidth, r.getBoundingClientRect().height]; }")
+        self.assertLessEqual(m[0], m[1] + 1, m)                               # nothing cut off
+        self.assertGreater(m[2], 20, m)                                       # on more than one line
+
     # ---- virtual sticks ------------------------------------------------------------------------------------------
 
     def test_virtual_sticks(self):
