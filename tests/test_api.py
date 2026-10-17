@@ -505,6 +505,101 @@ class ApiTest(unittest.TestCase):
         r.tag("2026-10-05-tags", "2026-10-05_001.mp4", 1, 2, "t", ["flip", "custom"])
         self.assertEqual(r.tag_usage("2026-10-05-tags"), {"flip": 1, "custom": 1})
 
+    def test_tricks_api(self):
+        """#45: the tricks in force, and the pilot's layer in the database: read, replaced whole (checked first),
+        cleared; the suggestions follow the layer on the next look."""
+        r = self.r
+        root = Path(self.tmp.name)
+        S = "2026-10-09-tricks"
+        (root / "data" / "videos" / S).mkdir()
+        (root / "data" / "videos" / S / "2026-10-09_001.mp4").write_bytes(b"")
+        (root / "data" / "blackbox" / "roll.bbl").write_bytes(b"")
+        # a 250 deg right roll at 2.0-2.5 s with the stick behind it: a roll attempt by default, a roll to a beginner
+        cols = {f"{f}[{i}]": (lambda t: 0.0) for f in ("accSmooth", "gyroADC", "gyroUnfilt") for i in range(3)}
+        cols |= {"accSmooth[2]": lambda t: 2048.0, "gyroADC[0]": lambda t: 500.0 if 2.0 <= t < 2.5 else 0.0, "gyroUnfilt[0]": lambda t: 500.0 if 2.0 <= t < 2.5 else 0.0}
+        cols |= {f"rcCommand[{i}]": (lambda t: 0.0) for i in range(3)} | {"rcCommand[0]": lambda t: 375.0 if 2.0 <= t < 2.5 else 0.0, "rcCommand[3]": lambda t: 1500.0, "vbatLatest": lambda t: 380.0}
+        cols |= {f"imuQuaternion[{i}]": (lambda t: 0.0) for i in range(3)}
+        fake_arm(root / "cache", "roll", 5.0, 400, cols)
+        r.refresh(S, probe_videos=False)
+        r.set_match(S, "2026-10-09_001.mp4", "roll.bbl", 1, 10.0)
+        events = lambda: [e["title"] for e in json.loads(urllib.request.urlopen(f"{self.url}/api/session/{S}/events?video=001").read())]
+        self.assertEqual(events(), ["right roll attempt, 249 deg"])
+        d = r.tricks()
+        self.assertEqual(d["params"]["flip_min_deg"], {"value": 270, "default": 270, "source": d["sources"][0]})
+        self.assertFalse(d["database"])
+        self.assertIn("roll", [t["id"] for t in d["tricks"]])
+        self.assertIsNone(r.setting("tricks"))
+        empty = json.loads(urllib.request.urlopen(self.url + "/api/tricks/layer").read())
+        self.assertEqual((empty["layer"], empty["updated_at"], len(empty["etag"])), ({}, None, 12))
+        # a bad layer is refused with the place named, and nothing changes
+        with self.assertRaises(RemoteError) as cm:
+            r.set_setting("tricks", {"version": 1, "params": {"flip_min_dg": 240}})
+        self.assertIn("flip_min_dg", str(cm.exception))
+        self.assertIsNone(r.setting("tricks"))
+        with self.assertRaises(RemoteError):
+            r.set_setting("tricks", [1, 2])
+        # the pilot's layer lands and the suggestions follow it, no restart
+        row = r.set_setting("tricks", {"version": 1, "skill": "beginner"})
+        self.assertEqual(row["value"], {"version": 1, "skill": "beginner"})
+        self.assertEqual(r.setting("tricks")["value"], {"version": 1, "skill": "beginner"})
+        self.assertEqual(events(), ["right roll"])
+        d = r.tricks()
+        self.assertEqual((d["skill"], d["database"], d["params"]["flip_min_deg"]["value"], d["params"]["flip_min_deg"]["source"]), ("beginner", True, 240, "preset beginner"))
+        d = r.tricks(craft="OttO")
+        self.assertEqual(d["craft"], "OttO")
+        self.assertTrue(r.delete_setting("tricks"))
+        self.assertFalse(r.delete_setting("tricks"))
+        self.assertEqual(events(), ["right roll attempt, 249 deg"])
+        with self.assertRaises(RemoteError):
+            r.setting("other")
+        # the file is for sharing: the layer out as a tricks file, one in as the layer
+        import tomllib
+        r.set_setting("tricks", {"version": 1, "params": {"flip_min_deg": 240}})
+        resp = urllib.request.urlopen(self.url + "/api/tricks/export")
+        self.assertEqual(resp.headers["Content-Type"], "text/plain; charset=utf-8")
+        self.assertIn('filename="acroscope-tricks.toml"', resp.headers["Content-Disposition"])
+        text = resp.read().decode()
+        self.assertTrue(text.startswith("# acroscope tricks, exported"))
+        self.assertEqual(tomllib.loads(text), {"version": 1, "params": {"flip_min_deg": 240}})
+        post = lambda body: json.loads(urllib.request.urlopen(urllib.request.Request(self.url + "/api/tricks/import", data=json.dumps(body).encode(), method="POST",
+                                                                                      headers={"Content-Type": "application/json"})).read())
+        self.assertEqual(post({"text": 'skill = "beginner"\n', "mode": "merge"})["layer"], {"version": 1, "params": {"flip_min_deg": 240}, "skill": "beginner"})
+        self.assertEqual(post({"text": 'version = 1\nskill = "advanced"\n'})["layer"], {"version": 1, "skill": "advanced"})
+        self.assertEqual(r.setting("tricks")["value"], {"version": 1, "skill": "advanced"})
+        for bad in ({"text": "[params]\nflip_min_dg = 1\n"}, {"text": "not = [toml"}, {"text": 3}, {"text": "version = 1", "mode": "append"}):
+            with self.assertRaises(urllib.error.HTTPError, msg=bad) as cm:
+                post(bad)
+            self.assertEqual(cm.exception.code, 400)
+        self.assertEqual(r.setting("tricks")["value"], {"version": 1, "skill": "advanced"})
+        r.delete_setting("tricks")
+        # the review of #49: no files through the proxy; a write says what it started from; a layer a later release
+        # broke leaves the shipped tricks in force and the suggestions answering
+        for args in (["tricks", "export", "pyproject.toml"], ["tricks", "import", "compose.yaml"]):
+            with self.assertRaises(RemoteError, msg=args):
+                r.cli(args)
+        layer = lambda: json.loads(urllib.request.urlopen(self.url + "/api/tricks/layer").read())
+        etag0 = layer()["etag"]
+        put = lambda body, etag=None: urllib.request.urlopen(urllib.request.Request(self.url + "/api/tricks/layer" + (f"?etag={etag}" if etag else ""),
+                                                                                    data=json.dumps(body).encode(), method="POST", headers={"Content-Type": "application/json"}))
+        first = json.loads(put({"version": 1, "skill": "beginner"}, etag0).read())
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            put({"version": 1, "params": {"flip_min_deg": 250}}, etag0)                      # from the layer before the first write
+        self.assertEqual(cm.exception.code, 409)
+        self.assertEqual(layer()["layer"], {"version": 1, "skill": "beginner"})                # the first write stands
+        put({"version": 1, "params": {"flip_min_deg": 250}}, first["etag"])
+        self.assertEqual(layer()["layer"], {"version": 1, "params": {"flip_min_deg": 250}})
+        import sqlite3
+        db = sqlite3.connect(root / "t.db")
+        db.execute("UPDATE settings SET value = ? WHERE key = 'tricks'", (json.dumps({"version": 1, "params": {"roll_hold_share": 0.85}}),))
+        db.commit(); db.close()
+        d = r.tricks()
+        self.assertIn("roll_hold_share", d["layer_error"])
+        self.assertFalse(d["database"])
+        self.assertEqual(events(), ["right roll attempt, 249 deg"])                             # the shipped tricks, no 500
+        self.assertEqual(layer()["layer"], {"version": 1, "params": {"roll_hold_share": 0.85}})   # still there to repair
+        r.delete_setting("tricks")
+        self.assertIsNone(r.tricks()["layer_error"])
+
 
 if __name__ == "__main__":
     unittest.main()

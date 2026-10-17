@@ -30,6 +30,35 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   dumps, never from sheet thumbnails: three wrong labels once poisoned the rare digits). The aligner: length and
   total alignment, then the boot's uptime (offset can only go down along a boot; a line video = a·uptime + b per
   boot, the two clocks differ by ~0.3 %), then arms with no run derived along the line. `OSD_LAG` = 0.25 s.
+- Trick detection (`acroscope/tricks/`, #22): an engine (`segments.py` cuts an arm into windows, `features.py` measures
+  them in `metrics.summary`'s vocabulary, `expr.py` is the condition language, never `eval`) plus the shipped
+  `tricks.toml`, one entry per trick with `[params]` for the numbers; `library.py` loads and refuses a bad file at
+  load. `events` is `tricks.detect`. A trick change: edit the TOML, `acroscope tricks explain <bbl>:<arm>` to see
+  every window's verdict, add an `examples` entry for the real moment, `acroscope tricks check` (proxied: the
+  server's logs). The pre-#22 detectors were ported window for window: on 234 real arms (eleven logs, 2026-10-07 to
+  10-16) every event's tag, title, why, start and end were identical except the dives' tilt range (every frame now,
+  not 40 samples) and the powerloops' inverted throttle (IMU tilt > 135, not integrated pitch, which for a loop
+  entered from a dive measured the climb). The server's `_events` cache is keyed by the shipped file's mtime and the pilot's layer. The recall work (#31, #29, #20): `acroscope
+  tricks eval <session>` scores the tricks against Rudi's tagged moments; on the eight tagged sessions of October
+  2026 it went from 3 of 28 (10-14 alone) to orbits 24/25, split-S 6/6, rolls 11/13 (the two left are crashes),
+  loops 3/3, barrel roll 1/1, dives 4/7; the 51 "dives" at an arm's first frame (the quad armed on the ground) and
+  the crash tumbles are gone. The tuning loop: `eval` names the misses with arm and time, `explain` shows the
+  window and the condition that failed, a param or a condition changes, the moment becomes an `examples` entry,
+  `check` keeps it. The pilot's layer sits over the shipped file: skill presets, own
+  params, per-craft sections by the header's `Craft name` (`Library.for_craft`). It lives in the database
+  (`settings` row `tricks`, one JSON document shaped like the TOML tables; `tricks.LAYER_SOURCE` is how the server
+  and the local CLI hand it to the library, so the package never opens a database on its own and tests set it
+  explicitly): what `acroscope tricks set | unset | on | off | skill` and the player's configuration page (#45)
+  write, checked by `tricks.check_layer` before it is stored. A tricks file is the exchange format, not storage
+  (Rudi, 2026-10-17): `tricks export | import` and the page's share row, `toml_out.py` writes it. `GET /api/tricks` is `tricks.describe()`. The player's `/config` page
+  (`acroscope/static/config.html`, one file like the player, five tabs) edits that layer whole through
+  `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
+  against what the server then holds.
+- Trick work needs real logs on joan: `acroscope fetch-log <fragment> --to <dir>/blackbox` (runs here, no deploy), then
+  `ACROSCOPE_DATA=<dir> ACROSCOPE_CACHE=<cache> ACROSCOPE_URL=` with the branch's
+  checkout on `PYTHONPATH` (a script run by path imports the main checkout's package otherwise): `arms` decodes, then
+  `events`, `tricks check`, `tricks explain` work offline. `sessions <s> --json` saved from the server gives the
+  matches and moments to score against by hand; `tricks eval` itself needs the database, so it runs on the server.
 - The flight-analysis session's brief in the Drive folder (`~/gdrive/fpv/CLAUDE.md`) carries the acroscope workflow
   that session follows: keep its acroscope bullet in step with CLI changes.
 - Cache: `~/.cache/acroscope` on joan (frames and sheets fetched from the server, the real-data test leftovers);
@@ -64,7 +93,8 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   ingest end to end on a synthetic batch, the aligner on made-up data, the player in a headless browser, and the real-data pins (10-07 schammer by
   hand in `video-blackbox-index.md`; the #4 truths on 10-10 001) through the server. A pin of new behaviour is red
   until the server runs it. Red/green: write the test first for store, API, aligner and player work.
-- Smoke checks with known answers through the server, seconds each: `sessions 10-07` (20 arms, 15 matches, 29
+- Smoke checks with known answers through the server, seconds each: `tricks check` (the tricks file's examples, the
+  10-07 pins among them); `sessions 10-07` (20 arms, 15 matches, 29
   moments); `events 10-07 011` (motor 1 power loss at 1:23.4, hard landing at 1:24.4); `automatch 10-07 008`
   without `--write` (arms 14/15/17 at about +4.75/+20.25/+64.25); `metrics 10-07 007 1:20 1:25 --loop` (-385 deg
   pitch); `automatch 2026-10-10 001` (15 arms, arm 1 at 8.0, arm 9 at 150.3, boot fit a = 0.9971).
@@ -75,7 +105,8 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - orangebox 0.5.0's wheel has a broken script entry point; pip exits 1 after installing. The Dockerfile tolerates it.
 - ffmpeg filter graphs: `:` in drawtext text must be escaped; concat of several inputs needs `trim=end_frame=1` per input.
 - Conventions the metrics ship (`metrics.CONVENTIONS`) are the single place for sign/scaling facts. Keep them true.
-- The player is tested in a headless Chromium (`tests/test_player.py`, Playwright): a server child on a scratch
+- The player and the configuration page are tested in a headless Chromium (`tests/test_player.py`,
+  `tests/test_config_page.py`, Playwright): a server child on a scratch
   data dir, the page driven at a desktop size and at Rudi's phone's (412 x 927 CSS px), the layout measured, the
   dialogs answered, touch gestures dispatched. One-time setup per machine, no root: `scripts/browser-setup.sh`
   (Playwright into `.venv` as the `e2e` extra, the browser into `~/.cache/ms-playwright`, the five libraries

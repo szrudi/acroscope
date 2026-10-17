@@ -7,7 +7,7 @@ metrics, the OSD reader and the aligner against regressions."""
 import json
 import unittest
 
-from acroscope import blackbox, events, metrics, osd, sessions
+from acroscope import blackbox, metrics, osd, sessions, tricks
 from acroscope.config import BLACKBOX_DIR, SERVER_URL, VIDEOS_DIR
 
 BBL = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl"
@@ -38,7 +38,7 @@ def cli_json(*args):
 class RealDataTest(unittest.TestCase):
     def events_of(self, arm: int) -> list[dict]:
         if LOCAL:
-            return events.detect(blackbox.load_arm(BBL, arm))
+            return tricks.detect(blackbox.load_arm(BBL, arm))
         return cli_json("events", "--arm", f"{BBL}:{arm}", "--json")
 
     def test_arm20_motor_loss_and_fall(self):
