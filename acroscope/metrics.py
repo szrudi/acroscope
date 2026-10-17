@@ -14,7 +14,7 @@ LEAN_CONVENTION = "right + = right side down"   # in every metrics snapshot: one
 
 # Fixed facts the agent would otherwise re-derive every session. Stated once, shipped with every metrics result.
 CONVENTIONS = {
-    "roll": "+ = roll right (right stick right). In the camera view the horizon rotates anticlockwise, the right side of the picture drops",
+    "roll": "+ = roll right (right stick right). In the camera view the horizon rotates anticlockwise: its right end rises, as the quad's right side drops (Betaflight's OSD horizon draws it the same way)",
     "pitch": "+ = nose down / forward (right stick forward). In the camera view the horizon rises; a back flip and a powerloop integrate to NEGATIVE pitch",
     "yaw": "+ = nose LEFT (left stick left; gyroADC[2] and rcCommand[2] both). In the camera view the scene slides right",
     "stick_pct": "rcCommand[0..2] / 5: -100..100 % of stick travel; throttle_pct = (rcCommand[3] - 1000) / 10",

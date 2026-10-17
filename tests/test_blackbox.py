@@ -125,6 +125,7 @@ class LeanTest(unittest.TestCase):
     def test_the_conventions_say_which_side(self):
         from acroscope import metrics
         self.assertIn("right side down", metrics.CONVENTIONS["lean"])
+        self.assertIn("right end rises", metrics.CONVENTIONS["roll"])   # the horizon, not "the picture": the video check (#38)
 
 
 if __name__ == "__main__":
