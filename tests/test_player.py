@@ -835,6 +835,24 @@ class PlayerTest(unittest.TestCase):
         self.assertEqual(page.locator("#logsAutomatch").count(), 0)
         self.assertIn("no blackbox file", page.text_content("#logs"))
 
+    def test_log_automatch_says_what_it_left_ambiguous(self):
+        """#41: clips the session plan finds ambiguous, with only lengths to go by, get nothing written; 🎯 says how
+        many it left for a hand match, also when that is every clip."""
+        self.api.attach("2026-10-14-job", self.LOG_A)
+        page = self.open_logs("2026-10-14-job")
+        amb = "x.mp4: ambiguous in the session plan and only lengths to go by: nothing written, left for a hand match\n"
+        answers = iter([{"stdout": "a.mp4: 9/9 frames readable, 1 arm runs, 1 matched (written)\n", "stderr": amb * 2},
+                        {"stdout": "", "stderr": amb * 2}])
+        page.route("**/api/cli", lambda r: r.fulfill(json={"job": "j9"}))
+        page.route("**/api/cli/j9", lambda r: r.fulfill(json={"done": True, "code": 0, **next(answers)}))
+        page.click("#logsAutomatch")
+        page.wait_for_function("() => /left for a hand match/.test(document.getElementById('status').textContent)")
+        self.assertEqual(page.text_content("#status"), "automatch: 1 matched over 1 clip · 2 ambiguous, left for a hand match")
+        page.wait_for_function("() => !document.getElementById('logsAutomatch').disabled")
+        page.click("#logsAutomatch")
+        page.wait_for_function("() => /^automatch: 2 ambiguous/.test(document.getElementById('status').textContent)")
+        self.assertEqual(page.text_content("#status"), "automatch: 2 ambiguous, left for a hand match")
+
     def test_log_automatch_job_gone(self):
         """A job the server does not know (restarted meanwhile): said, and no more polling."""
         self.api.attach("2026-10-14-job", self.LOG_A)

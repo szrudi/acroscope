@@ -661,17 +661,21 @@ def cmd_automatch(a):
     loaded = sessions.load(s)
     clips = a.videos or [v["file"] for v in loaded["videos"] if v.get("duration")]     # in name order: chronological
     results, pending, errors = [], [], []
+    if a.videos:               # named clips by their file first: the plan and every check below go by file (#41)
+        named = []
+        for c in clips:
+            try:
+                named.append(sessions.resolve_clip(s, c))
+            except Exception as e:  # noqa: BLE001  (an unknown name: an error for that clip, the others go on)
+                errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
+                print(f"{c}: {errors[-1]['error']}", file=sys.stderr)
+        clips = named
     if a.unmatched and clips:  # the player's automatch button: never a clip with a match (by hand or not), never a missing one
         matched = {m["video"] for m in loaded["matches"] if m["bbl"] in loaded["blackbox"]}   # a match to a log taken out is none
         gone = {v["file"] for v in loaded["videos"] if v.get("missing_since")}
         picked = []
-        for c in clips:
-            try:
-                f = sessions.resolve_clip(s, c)
-            except Exception as e:  # noqa: BLE001  (an unknown name: an error, as without --unmatched)
-                errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
-                print(f"{c}: {errors[-1]['error']}", file=sys.stderr)
-                continue
+        for f in clips:
+            c = f
             if f in gone:
                 if a.videos:             # named: the file is what was asked for
                     errors.append({"clip": c, "error": "file missing, nothing to read"})
@@ -690,9 +694,33 @@ def cmd_automatch(a):
             return
     elif not clips:
         print(f"{s}: no probed clips, nothing to match", file=sys.stderr)
-    for c in clips:
+    # a session's worth of clips is planned whole first (#26): each clip's arms come from one alignment of the session,
+    # not from the picks of the clips before it; one clip named alone stays bounded by the others' matches
+    plan = None
+    if clips and (len(clips) > 1 or not a.videos):
         try:
-            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending)
+            plan = osd.session_plan(s, a.fps)
+        except Exception as e:  # noqa: BLE001  (no log, a log still syncing: clip by clip, as before)
+            print(f"{s}: no session plan ({type(e).__name__}: {e}), clip by clip", file=sys.stderr)
+    for c in clips:
+        p = (plan or {}).get(c)
+        settled = False
+        try:
+            if p and p["ambiguous"]:
+                # ambiguous in the plan (a runner-up within a second hands its arms to another clip): its own pass in a
+                # window over both alignments decides it, but only with more than lengths to go by, a boot fit over two
+                # arms or more (the gaps between its runs against the arms' uptimes); else nothing is written (#41)
+                r = osd.automatch(s, c, write=False, fps=a.fps, overwrite=a.overwrite, pending=pending, windows=p["windows"])
+                fits = r.get("boot_fits") or {}
+                settled = bool(r["matches"]) and bool(fits) and all(f.get("n", 0) >= 2 and not f.get("rejected") for f in fits.values())
+                if not settled:
+                    print(f"{c}: ambiguous in the session plan and only lengths to go by: nothing "
+                          f"{'written' if a.write else 'proposed'}, left for a hand match", file=sys.stderr)
+                    results.append(dict(r, ambiguous=True, matches=[]))
+                    continue
+            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending, windows=p["windows"] if p else None)
+            if settled:
+                r = dict(r, ambiguous=True)
         except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
             errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
             print(f"{c}: {errors[-1]['error']}", file=sys.stderr)
@@ -702,7 +730,8 @@ def cmd_automatch(a):
             pending += [{"session": s, "video": r["clip"], "name": r["name"], "bbl": m["bbl"], "arm": m["arm"]} for m in r["matches"]]
         if a.json:
             continue
-        print(f"{r['clip']}: {r['readable']}/{r['readings']} frames readable, {len(r['video_arms'])} arm runs, {len(r['matches'])} matched" + (" (written)" if a.write else ""))
+        print(f"{r['clip']}: {r['readable']}/{r['readings']} frames readable, {len(r['video_arms'])} arm runs, {len(r['matches'])} matched"
+              + (" (written)" if a.write else "") + (" (ambiguous in the session plan, settled by its boot fit)" if r.get("ambiguous") else ""))
         f = r.get("flash_full")
         if f:
             print(f"   flash full: STATS shows BLACKBOX 100 % after the run at {fmt_time(f['at'])} in {f['clip']}; "
