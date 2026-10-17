@@ -611,6 +611,122 @@ def arm_window(key: str | None, others: list[tuple[str, int]]) -> tuple[int | No
     return lo, hi
 
 
+PLAN_TOL = 2.0                     # session plan: seconds a run or an arm left without a partner costs
+PLAN_MARGIN = 1.0                  # a pick whose best alternative costs less than this more is ambiguous: nothing written
+
+
+def _plan_cost(runs: list[dict], arms: list[dict], forbid: tuple[int, int] | None = None, tol: float = PLAN_TOL):
+    """Order-preserving alignment of every run of a session's clips (card order) to its arms (log order): a pair
+    costs the length misfit, a run or an arm without a partner costs `tol`. (cost, pairs)."""
+    n, m = len(runs), len(arms)
+    INF = float("inf")
+    D = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        D[i][0] = i * tol
+    for j in range(1, m + 1):
+        D[0][j] = j * tol
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            pair = INF if forbid == (i - 1, j - 1) else D[i - 1][j - 1] + abs(runs[i - 1]["length"] - arms[j - 1]["length"])
+            D[i][j] = min(pair, D[i - 1][j] + tol, D[i][j - 1] + tol)
+    pairs, i, j = [], n, m
+    while i and j:
+        if forbid != (i - 1, j - 1) and D[i][j] == D[i - 1][j - 1] + abs(runs[i - 1]["length"] - arms[j - 1]["length"]):
+            pairs.append((i - 1, j - 1)); i -= 1; j -= 1
+        elif D[i][j] == D[i - 1][j] + tol:
+            i -= 1
+        else:
+            j -= 1
+    return D[n][m], pairs[::-1]
+
+
+def plan_session_pairs(runs: list[dict], arms: list[dict], margin: float = PLAN_MARGIN) -> tuple[list[tuple[int, int]], set]:
+    """The session's runs (each with its `clip`) against its arms in one go (#26): clip by clip, one locally best pick
+    (2026-10-14 009 took arm 17, 0.7 s nearer than arm 7) bounded every later clip out of its arms. Returns (pairs,
+    ambiguous clips). A clip is ambiguous when a runner-up within `margin` hands one of the arms to another clip:
+    then where the clips' windows lie is a coin toss. A close runner-up inside one clip (a dozen short hops of near
+    equal length, 2026-10-16) changes no window; which run is which arm is the clip's own pass to settle."""
+    cost, pairs = _plan_cost(runs, arms)
+
+    def owners(ps):
+        return {ai: runs[ri].get("clip") for ri, ai in ps}
+    best = owners(pairs)
+    ambiguous = set()
+    for ri, ai in pairs:
+        alt_cost, alt = _plan_cost(runs, arms, forbid=(ri, ai))
+        if alt_cost - cost >= margin:
+            continue
+        other = owners(alt)
+        moved = {a for a in set(best) | set(other) if best.get(a) and other.get(a) and best[a] != other[a]}
+        ambiguous |= {best[a] for a in moved} | {other[a] for a in moved}
+    return [(ri, ai) for ri, ai in pairs if runs[ri].get("clip") not in ambiguous], ambiguous
+
+
+def _log_order(bbl: str) -> str:
+    """A log's place in time: the dump's date and time in its name (BTFL_..._YYYYMMDD_HHMMSS_...), else the name."""
+    m = re.search(r"_(\d{8})_(\d{6})_", bbl)
+    return m.group(1) + m.group(2) if m else bbl
+
+
+def session_plan(session: str, fps: float = 2.0) -> dict:
+    """{clip file: {"windows": {bbl: (lo, hi)}, "planned": [(bbl, arm)], "ambiguous": bool}} for every named clip:
+    the arms each clip may hold, from one alignment of the whole session (clips in card order, the attached logs' arms
+    in log order) instead of from the picks of the clips before it. Matches already in the session are fixed points
+    (the clips between two of them align against the arms between); arms another session holds are left out."""
+    s = sessions.load(session)
+    clips = sorted((v for v in s["videos"] if clip_order(v.get("name")) and not v.get("missing_since")), key=lambda v: v["name"])
+    elsewhere = {(b, a) for b, ms in _log_matches(s, None, []).items() for k, a in ms
+                 if not any(v.get("name") == k or v["file"] == k for v in s["videos"])}
+    arms = []
+    for b in sorted(s["blackbox"], key=_log_order):
+        try:
+            idx = blackbox.index_bbl(b)
+        except FileNotFoundError:
+            continue
+        for a in idx["arms"]:
+            if a.get("frames") and a.get("motors_spun", True) and (idx["file"], a["index"]) not in elsewhere:
+                arms.append({"bbl": idx["file"], "index": a["index"], "length": a["length"]})
+    pos = {(a["bbl"], a["index"]): k for k, a in enumerate(arms)}
+    held = {}                                                # clip -> positions of its matches already in the session
+    for m in s["matches"]:
+        if (m["bbl"], m["arm"]) in pos:
+            held.setdefault(m["video"], []).append(pos[(m["bbl"], m["arm"])])
+    assigned = {v["file"]: list(held.get(v["file"], [])) for v in clips}
+    ambiguous = set()
+    seg, lo = [], -1
+    for k, v in enumerate(clips + [None]):                   # segments of clips without matches, between fixed points
+        if v is not None and not held.get(v["file"]):
+            seg.append(v)
+            continue
+        hi = min(held[v["file"]]) if v is not None else len(arms)
+        if seg:
+            runs = [dict(r, clip=c["file"]) for c in seg for r in video_arms(read_timers(sessions.clip_path(session, c["file"]), fps), fps)]
+            window = arms[lo + 1:hi] if hi > lo else []
+            pairs, amb = plan_session_pairs(runs, window)
+            for ri, ai in pairs:
+                assigned[runs[ri]["clip"]].append(lo + 1 + ai)
+            ambiguous |= amb
+        seg = []
+        if v is not None:
+            lo = max(lo, max(held[v["file"]]))
+    out = {}
+    for k, v in enumerate(clips):
+        before = [p for c in clips[:k] if c["file"] not in ambiguous for p in assigned[c["file"]]]
+        after = [p for c in clips[k + 1:] if c["file"] not in ambiguous for p in assigned[c["file"]]]
+        lo_p, hi_p = max(before, default=-1), min(after, default=len(arms))
+        windows = {}
+        for b in s["blackbox"]:
+            mine = [a["index"] for a in arms if a["bbl"] == b]
+            if not mine:
+                continue
+            below = [a["index"] for p, a in enumerate(arms) if a["bbl"] == b and p <= lo_p]
+            above = [a["index"] for p, a in enumerate(arms) if a["bbl"] == b and p >= hi_p]
+            windows[b] = (max(below) if below else None, min(above) if above else None)
+        out[v["file"]] = {"windows": windows, "ambiguous": v["file"] in ambiguous,
+                          "planned": [(arms[p]["bbl"], arms[p]["index"]) for p in sorted(assigned[v["file"]])]}
+    return out
+
+
 def full_point(s: dict, name: str, after: str | None, fps: float, here: tuple) -> dict | None:
     """Where a log that ended with the flash full ends: the first run, in the session's clips after `after` (the last
     clip holding arms of the log) up to this one (`here` = (read_timers result, runs, path)), whose STATS screen
@@ -665,7 +781,7 @@ def _log_matches(session: dict, video: str, pending: list[dict]) -> dict[str, li
 
 
 def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, overwrite: bool = False,
-              pending: list[dict] | None = None) -> dict:
+              pending: list[dict] | None = None, windows: dict | None = None) -> dict:
     """Propose (and with write=True record) matches for one clip from its OSD timers and the session's logs.
     Existing matches of the clip are kept unless overwrite=True (a hand-refined offset beats an OSD one).
     `pending`: proposals of clips before this one in the same run (not written), taken like written ones."""
@@ -679,12 +795,14 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
     # after this one bound its arms (#9: duration-only matches on the cumulative timer went anywhere in the log)
     others = _log_matches(s, path.name, pending or [])
     taken = {(b, a) for b, ms in others.items() for _, a in ms}
-    windows, fulls = {}, {}
+    bounds, fulls = {}, {}
     # a clip comes from one flash dump, so align against each log separately and keep the best alignment
     best = None
     for b in s["blackbox"]:
         idx = blackbox.index_bbl(b)
-        lo, hi = windows[idx["file"]] = arm_window(name, others.get(idx["file"], []))
+        # the arms this clip may hold: from the session plan when there is one (#26), else bounded by the other clips'
+        # matches (#9), which a wrong pick before this clip cascades from
+        lo, hi = bounds[idx["file"]] = windows[idx["file"]] if windows and idx["file"] in windows else arm_window(name, others.get(idx["file"], []))
         # a log whose last arm is cut off ended with the flash full (#9): once a STATS screen shows BLACKBOX 100 %,
         # no later run is in it, and the run at which it shows may only be that last arm
         vs = varms
@@ -754,7 +872,7 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
             if m["bbl"] in attached and (overwrite or (m["bbl"], m["arm"]) not in have):
                 m["written"] = sessions.store().add_match_if_attached(session, m["video"], m["bbl"], m["arm"], m["offset"], m["note"], replace=overwrite)
     return {"clip": path.name, "name": name, "layout": rt["layout"], "readings": len(rows), "boot_fits": fits,
-            "bbl": bbl, "arm_window": windows.get(bbl, (None, None)), "flash_full": full,
+            "bbl": bbl, "arm_window": bounds.get(bbl, (None, None)), "flash_full": full,
             "readable": sum(1 for r in rows if (r["top"] if not LAYOUTS[rt["layout"]]["cumulative"] else r["bottom"]) is not None),
             "video_arms": varms, "matches": matches, "unmatched_video_arms": unmatched}
 

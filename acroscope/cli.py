@@ -507,9 +507,23 @@ def cmd_automatch(a):
             return
     elif not clips:
         print(f"{s}: no probed clips, nothing to match", file=sys.stderr)
-    for c in clips:
+    # a session's worth of clips is planned whole first (#26): each clip's arms come from one alignment of the session,
+    # not from the picks of the clips before it; one clip named alone stays bounded by the others' matches
+    plan = None
+    if clips and (len(clips) > 1 or not a.videos):
         try:
-            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending)
+            plan = osd.session_plan(s, a.fps)
+        except Exception as e:  # noqa: BLE001  (no log, a log still syncing: clip by clip, as before)
+            print(f"{s}: no session plan ({type(e).__name__}: {e}), clip by clip", file=sys.stderr)
+    for c in clips:
+        p = (plan or {}).get(c)
+        if p and p["ambiguous"]:
+            print(f"{c}: ambiguous: two arms fit its run about equally and nothing else in the session decides, nothing "
+                  f"{'written' if a.write else 'proposed'} (match it by hand, or after another clip is matched)")
+            results.append({"clip": c, "ambiguous": True, "matches": []})
+            continue
+        try:
+            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending, windows=p["windows"] if p else None)
         except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
             errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
             print(f"{c}: {errors[-1]['error']}", file=sys.stderr)

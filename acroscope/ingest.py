@@ -573,8 +573,8 @@ def process_batch(batch: str, log=print) -> dict:
         to_match = [v["file"] for v in now_in["videos"] if v["file"] in imported
                     or (attached and v["file"] not in matched and not v.get("missing_since"))]
         db.set_batch(batch, progress={"step": "automatch", "clips": len(to_match)})
-        for c in to_match:
-            _cli("automatch", session, c, "--write")
+        if to_match:                         # in one run: the clips are planned together, not each bounded by the last (#26)
+            _cli("automatch", session, *to_match, "--write")
         for f in batch_entries(d):
             if f.name.startswith(".") or f.name == "import.json":
                 f.unlink()

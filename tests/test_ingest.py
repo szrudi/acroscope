@@ -524,7 +524,7 @@ ingest._cli = _cli"""
         S = "2026-10-14-late"
         c1, c2 = [v["file"] for v in db.load(S)["videos"]]
         ran = lambda: [json.loads(x) for x in calls.read_text().splitlines()]
-        self.assertEqual(ran(), [["automatch", S, c1, "--write"], ["automatch", S, c2, "--write"]])
+        self.assertEqual(ran(), [["automatch", S, c1, c2, "--write"]])    # one run: the clips are planned together (#26)
         calls.unlink()
         db.set_match(S, c1, "BTFL_other.bbl", 1, 2.0)                  # matched by hand meanwhile: not touched again
         b = self.data / "inbox" / "log"
