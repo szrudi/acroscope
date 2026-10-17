@@ -10,14 +10,16 @@ from .blackbox import Arm
 
 AXES = ("roll", "pitch", "yaw")
 
+LEAN_CONVENTION = "right + = right side down"   # in every metrics snapshot: one without it is from before #38 (right negated)
+
 # Fixed facts the agent would otherwise re-derive every session. Stated once, shipped with every metrics result.
 CONVENTIONS = {
-    "roll": "+ = roll right (right stick right). In the camera view the horizon rotates anticlockwise, the right side of the picture drops",
+    "roll": "+ = roll right (right stick right). In the camera view the horizon rotates anticlockwise: its right end rises, as the quad's right side drops (Betaflight's OSD horizon draws it the same way)",
     "pitch": "+ = nose down / forward (right stick forward). In the camera view the horizon rises; a back flip and a powerloop integrate to NEGATIVE pitch",
     "yaw": "+ = nose LEFT (left stick left; gyroADC[2] and rcCommand[2] both). In the camera view the scene slides right",
     "stick_pct": "rcCommand[0..2] / 5: -100..100 % of stick travel; throttle_pct = (rcCommand[3] - 1000) / 10",
     "tilt_deg": "angle between the quad's up and world up: 0 level, 90 knife edge, 180 inverted",
-    "lean": "[forward, right] in degrees from the IMU; negative forward = nose up",
+    "lean": "[forward, right] in degrees from the IMU: forward + = nose down, right + = right side down (a right bank). Right had the wrong sign before 2026-10-17 (#38); moment snapshots from before were corrected",
     "rates_dps": "gyroADC is deg/s as logged (the gyro is already scaled); peaks are absolute values",
     "video_time": "video = arm time + offset (session.json matches); the OSD arm timer shows floor(seconds)",
 }
@@ -62,6 +64,7 @@ def summary(arm: Arm, t0: float, t1: float) -> dict:
         "throttle_pct": {"min": round(min(thr)), "mean": round(_mean(thr)), "max": round(max(thr))},
         "tilt_deg": {"min": round(min(tilt)), "max": round(max(tilt)), "start": round(tilt[0]), "end": round(tilt[-1])},
         "lean_start": [round(x) for x in arm.lean(i0)], "lean_end": [round(x) for x in arm.lean(i1 - 1)],
+        "lean_convention": LEAN_CONVENTION,
         "acc_g": {"min": round(min(acc), 2), "max": round(max(acc), 2)},
         "vbat": {"min": round(min(arm.col("vbatLatest")[i] for i in r) / 100, 2),
                  "max": round(max(arm.col("vbatLatest")[i] for i in r) / 100, 2)},
@@ -192,7 +195,9 @@ def orbit(arm: Arm, t0: float, t1: float, step: float = 0.5) -> list[dict]:
             az += (a - prev + 180) % 360 - 180
         prev = a
         ux, uy, _ = arm.up_body(i)
-        rows.append((arm.t[i], az, math.degrees(math.acos(max(-1.0, min(1.0, tz)))), math.degrees(math.atan2(-uy, -ux))))
+        # the side the quad leans to, from the nose: (-ux, -uy) is down's direction in body axes, and body Y points
+        # left, so right is -(-uy) (#38: it had left and right swapped)
+        rows.append((arm.t[i], az, math.degrees(math.acos(max(-1.0, min(1.0, tz)))), math.degrees(math.atan2(uy, -ux))))
     b = t0
     while b < t1:
         d = [r for r in rows if b <= r[0] < b + step]

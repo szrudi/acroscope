@@ -92,7 +92,8 @@ class Arm:
         return x, y, z, math.sqrt(max(0.0, 1 - x * x - y * y - z * z))
 
     def up_body(self, i: int) -> tuple[float, float, float]:
-        """World-up expressed in body axes. Negative x = leaning forward."""
+        """World-up expressed in body axes, Betaflight's: X forward, Y LEFT, Z up (its rMat[2] row). Negative x = leaning
+        forward; positive y = up leans to the left side, i.e. the right side is down (a right bank)."""
         x, y, z, w = self.quat(i)
         return 2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)
 
@@ -102,9 +103,10 @@ class Arm:
         return 2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)
 
     def lean(self, i: int) -> tuple[float, float]:
-        """(forward, right) lean in degrees from the IMU."""
+        """(forward, right) lean in degrees from the IMU: + = nose down, + = right side down. Right is Betaflight's
+        own roll angle, atan2(uy, uz) (#38: it was negated, a left bank read as right)."""
         ux, uy, uz = self.up_body(i)
-        return -math.degrees(math.atan2(ux, uz)), -math.degrees(math.atan2(uy, uz))
+        return -math.degrees(math.atan2(ux, uz)), math.degrees(math.atan2(uy, uz))
 
     def tilt(self, i: int) -> float:
         """Angle between body-up and world-up, degrees (0 level, 180 inverted)."""

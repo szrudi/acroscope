@@ -64,5 +64,69 @@ class OverviewTest(unittest.TestCase):
         self.assertEqual([(a["index"], a["frames"], a.get("error")) for a in arms], [(1, 500, None), (2, 0, "ValueError: bad")])
 
 
+class LeanTest(unittest.TestCase):
+    """#38: lean[right] had the wrong sign. Betaflight's body axes are X forward, Y LEFT, Z up: world-up in body axes is
+    its rMat[2] row, and its roll angle, + for a right bank, is atan2(uy, uz). Checked on 10-14 016 too: near level and
+    rolling right (gyro roll +), lean[right] fell in 434 of 486 samples."""
+
+    def arm(self, q):
+        """An arm holding one attitude, as the log stores it: imuQuaternion x, y, z * 32767 (w follows)."""
+        import array
+        import math
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        n, rate = 40, 200
+        t = array.array("d", (i / rate for i in range(n)))
+        cols = {f"imuQuaternion[{k}]": array.array("f", [q[k] * 32767] * n) for k in range(3)}
+        meta = {"bbl": "x", "file": "x.bbl", "index": 1, "frames": n, "length": t[-1], "rate": rate, "fields": ["time", *cols]}
+        p = Path(tmp.name) / "a.bin"
+        blackbox._save(meta, t, cols, p)
+        return blackbox._load(p)
+
+    def test_a_known_bank_and_pitch(self):
+        import math
+        h = math.radians(30) / 2
+        right = self.arm((math.sin(h), 0.0, 0.0))                  # about body X: Betaflight's roll +30 = right side down
+        nose_down = self.arm((0.0, math.sin(h), 0.0))              # about body Y (left): + = nose down
+        for a, want in ((right, (0, 30)), (nose_down, (30, 0))):
+            self.assertEqual(tuple(round(x) for x in a.lean(5)), want)
+            self.assertEqual(round(a.tilt(5)), 30)
+        left = self.arm((-math.sin(h), 0.0, 0.0))
+        self.assertEqual(tuple(round(x) for x in left.lean(5)), (0, -30))
+
+    def test_orbit_lean_direction(self):
+        """metrics.orbit's lean direction against the nose: 0 forward, 90 right, -90 left (it had the side flipped)."""
+        import math
+        from acroscope import metrics
+        h = math.radians(30) / 2
+        for q, want in (((math.sin(h), 0.0, 0.0), 90), ((-math.sin(h), 0.0, 0.0), -90), ((0.0, math.sin(h), 0.0), 0)):
+            rows = metrics.orbit(self.arm(q), 0.0, 0.19, step=0.1)
+            self.assertEqual(rows[0]["lean_dir_vs_nose"], want, q)
+
+    def test_a_snapshot_says_its_lean_convention(self):
+        """A moment's metrics snapshot (metrics.summary) carries the lean convention it was made with: the #38
+        correction of stored snapshots flips only those without it, so it can run before or after the deploy, twice."""
+        import array
+        import math
+        from acroscope import metrics
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        n, rate = 200, 200
+        t = array.array("d", (i / rate for i in range(n)))
+        names = [f"{f}[{k}]" for f in ("gyroADC", "accSmooth") for k in range(3)] + [f"rcCommand[{k}]" for k in range(4)] + ["vbatLatest"]
+        cols = {c: array.array("f", [400.0 if c == "vbatLatest" else 0.0] * n) for c in names}
+        cols |= {f"imuQuaternion[{k}]": array.array("f", [math.sin(math.radians(15)) * 32767 if k == 0 else 0.0] * n) for k in range(3)}
+        p = Path(tmp.name) / "a.bin"
+        blackbox._save({"bbl": "x", "file": "x.bbl", "index": 1, "frames": n, "length": t[-1], "rate": rate, "fields": ["time", *cols]}, t, cols, p)
+        snap = metrics.summary(blackbox._load(p), 0.1, 0.9)
+        self.assertEqual(snap["lean_start"], [0, 30])
+        self.assertEqual(snap["lean_convention"], metrics.LEAN_CONVENTION)
+
+    def test_the_conventions_say_which_side(self):
+        from acroscope import metrics
+        self.assertIn("right side down", metrics.CONVENTIONS["lean"])
+        self.assertIn("right end rises", metrics.CONVENTIONS["roll"])   # the horizon, not "the picture": the video check (#38)
+
+
 if __name__ == "__main__":
     unittest.main()
