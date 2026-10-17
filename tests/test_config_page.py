@@ -205,6 +205,17 @@ class ConfigPageTest(unittest.TestCase):
         self.act(page, lambda: page.check("input[name=cskill][value=advanced]"),
                  {"version": 1, "craft": {"OttO": {"size_mm": 75, "params": {"flip_min_deg": 200}, "trick": [{"id": "roll", "enabled": False}], "skill": "advanced"}}})
 
+    def test_a_craft_declared_in_another_case_is_the_same_chip(self):
+        """A section written as `otto` and a log that says `OttO`: one chip, and the knobs write into the section."""
+        self.api.set_setting("tricks", {"version": 1, "craft": {"otto": {"size_mm": 75}}})
+        page = self.open("/config#drones")
+        self.assertEqual(page.eval_on_selector_all("#crafts [data-craft]", "els => els.map(e => e.dataset.craft)"), ["otto"])
+        self.assertEqual(page.input_value("[data-prop=size_mm]"), "75")
+        self.act(page, lambda: (page.fill("[data-prop=weight_g]", "40"), page.press("[data-prop=weight_g]", "Tab")), {"version": 1, "craft": {"otto": {"size_mm": 75, "weight_g": 40}}})
+        row = page.locator("#cparams .prm[data-p=flip_min_deg]")
+        self.act(page, lambda: (row.locator("[data-val]").fill("200"), row.locator("[data-val]").press("Tab")), {"version": 1, "craft": {"otto": {"size_mm": 75, "weight_g": 40, "params": {"flip_min_deg": 200}}}})
+        self.assertEqual(self.events(), ["right roll"])                     # the arm's header says OttO
+
     # ---- tricks --------------------------------------------------------------------------------------------------
 
     def test_tricks_switch_show_check_and_eval(self):

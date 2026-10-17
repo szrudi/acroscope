@@ -70,20 +70,21 @@ def describe(lib: Library, craft: str | None = None) -> dict:
     eff = lib.for_craft(craft)
     sources = lib.param_sources(craft)
     shipped = lib.layers[0][1] if lib.layers else {}
-    seen = set()
+    seen: dict[str, str] = {}                        # by case-folded name: the declared spelling, else the log's first
     for p in blackbox.all_bbls():
         idx = blackbox.index_bbl(p.name, cached_only=True)
         for a in (idx or {}).get("arms", []):
             name = (a.get("headers") or {}).get("Craft name")
             if name:
-                seen.add(name)
+                seen.setdefault(name.casefold(), lib.craft_name(name))
     return {
         "sources": lib.sources, "database": "database" in lib.sources,
         "skill": lib.skill, "skills": lib.skills, "craft": craft,
         "params": {k: {"value": v, "default": shipped.get(k), "source": sources.get(k, "shipped")} for k, v in eff.params.items()},
         "crafts": {n: {**c["props"], "skill": c["skill"], "params": c["params"], "segment": c["segments"], "trick": c["tricks"], "source": c["source"]}
                    for n, c in lib.crafts.items()},
-        "crafts_seen": sorted(seen),
+        "crafts_seen": sorted(seen.values()),
+        "craft_section": lib.craft_name(craft) if craft is not None and lib.craft_name(craft) in lib.crafts else None,
         "craft_context": lib.craft_context(craft),
         "segments": {n: {"kind": sg.kind, **sg.opts} for n, sg in eff.segments.items()},
         "tricks": [{"id": t.id, "tag": t.tag, "segment": t.segment or None, "priority": t.priority, "enabled": t.enabled,
@@ -108,6 +109,14 @@ def export_toml(table: dict | None, note: str = "") -> str:
     return toml_out.dumps(t, header)
 
 
+def craft_key(table: dict | None, name: str) -> str:
+    """The spelling a layer document already uses for this craft (any case), else the name as given."""
+    crafts = (table or {}).get("craft") or {}
+    if name in crafts:
+        return name
+    return next((k for k in crafts if k.casefold() == name.casefold()), name)
+
+
 def merge_tables(base: dict | None, top: dict | None) -> dict:
     """One layer document over another, as the library would stack them: params and properties update, the skill
     is the top's when it has one, tricks merge by id, craft sections and their segments by name."""
@@ -129,6 +138,7 @@ def merge_tables(base: dict | None, top: dict | None) -> dict:
         elif k == "craft" and isinstance(v, dict):
             crafts = out.setdefault("craft", {})
             for name, sec in v.items():
+                name = craft_key(out, name)
                 crafts[name] = merge_tables(crafts.get(name), sec) if isinstance(sec, dict) else copy.deepcopy(sec)
                 crafts[name].pop("version", None)
         elif k == "segment" and isinstance(v, dict):
@@ -164,6 +174,7 @@ def edit_layer(table: dict | None, what: str, *args, craft: str | None = None) -
     t = copy.deepcopy(table) if table else {"version": 1}
     where = t
     if craft:
+        craft = craft_key(t, craft)
         where = t.setdefault("craft", {}).setdefault(craft, {})
     if what == "set":
         name, value = args

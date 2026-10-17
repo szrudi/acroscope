@@ -122,6 +122,23 @@ priority = 20
                 lib_with(bad)
             self.assertIn(needle, str(cm.exception))
 
+    def test_a_craft_name_matches_in_any_case(self):
+        """Betaflight's craft name was `OttO` one day and `Otto` the next: one quad, one section."""
+        lib = lib_with('[craft."OttO"]\nsize_mm = 75\n[craft."OttO".params]\nflip_min_deg = 200\n[[craft."OttO".trick]]\nid = "gyro-kick"\nenabled = false\n')
+        for name in ("OttO", "Otto", "otto", "OTTO"):
+            self.assertEqual(lib.craft_name(name), "OttO")
+            self.assertEqual(lib.for_craft(name).params["flip_min_deg"], 200, name)
+            self.assertFalse(lib.for_craft(name).tricks["gyro-kick"].enabled, name)
+            self.assertEqual(lib.craft_context(name)["craft.size_mm"], 75, name)
+            self.assertEqual(lib.param_sources(name)["flip_min_deg"], "craft OttO", name)
+            self.assertIs(lib.for_craft(name), lib.for_craft("OttO"))
+        self.assertEqual(titles(make_arm(5, gyro=axis(0, pulse(2.0, 2.5, 500)), craft="otto"), lib), ["right roll"])
+        self.assertEqual(lib.craft_name("Y"), "Y")
+        # two spellings in the layers are one section, the first spelling kept
+        lib = lib_with('[craft."OttO"]\nsize_mm = 75\n[craft.otto]\nweight_g = 40\n[craft.otto.params]\nloop_min_dur = 1.2\n')
+        self.assertEqual(list(c for c in lib.crafts if c != "default"), ["OttO"])
+        self.assertEqual((lib.craft_context("OTTO")["craft.size_mm"], lib.craft_context("OTTO")["craft.weight_g"], lib.for_craft("otto").params["loop_min_dur"]), (75, 40, 1.2))
+
     def test_for_craft_is_derived_once(self):
         lib = lib_with('[craft."X"]\nsize_mm = 75\n')
         self.assertIs(lib.for_craft("X"), lib.for_craft("X"))

@@ -97,7 +97,10 @@ const num = v => typeof v === 'number' ? (Number.isInteger(v) ? String(v) : Stri
 
 // ---- the layer document: the edits the CLI makes, on the client's copy, then the whole thing to the server
 const clone = x => JSON.parse(JSON.stringify(x));
-function section(t, c) { return c ? ((t.craft ||= {})[c] ||= {}) : t; }
+const sameCraft = (a, b) => a === b || (a && b && a.toLowerCase() === b.toLowerCase());     // OttO one day, Otto the next: one quad
+const craftKey = (t, c) => Object.keys(t.craft || {}).find(k => sameCraft(k, c)) || c;     // the spelling the layer already uses
+function section(t, c) { return c ? ((t.craft ||= {})[craftKey(t, c)] ||= {}) : t; }
+const layerCraft = c => (L.craft || {})[craftKey(L, c)] || {};
 function tidy(t) {                                   // an emptied table goes, so the layer reads as what was set
   for (const k of ['params', 'trick']) if (t[k] && !Object.keys(t[k]).length) delete t[k];
   if (t.craft) { for (const [c, s] of Object.entries(t.craft)) { tidy(s); if (!Object.keys(s).length) delete t.craft[c]; } if (!Object.keys(t.craft).length) delete t.craft; }
@@ -125,7 +128,7 @@ async function load() {
 // ---- profile: the preset and every number, with its default and where it came from
 function paramRows(params, scopeCraft, usedBy, filter) {
   return Object.entries(params).filter(([k]) => !filter || k.includes(filter) || (usedBy[k] || []).some(t => t.includes(filter))).map(([k, p]) => {
-    const own = scopeCraft ? (L.craft?.[scopeCraft]?.params || {})[k] !== undefined : (L.params || {})[k] !== undefined;
+    const own = scopeCraft ? (layerCraft(scopeCraft).params || {})[k] !== undefined : (L.params || {})[k] !== undefined;
     return `<div class="prm ${own ? 'over' : ''}" data-p="${esc(k)}"><span><span class="nm">${esc(k)}</span><span class="used">${(usedBy[k] || []).map(esc).join(', ') || 'no trick reads it'}</span></span>` +
       `<input type="number" step="any" value="${esc(num(p.value))}" data-val>` +
       `<span class="def" title="the shipped default">${p.default === null || p.default === undefined ? '' : esc(num(p.default))}</span>` +
@@ -161,18 +164,19 @@ function renderProfile() {
 function renderDrones() {
   const box = $('#dronesPanel');
   const declared = Object.keys(D.crafts).filter(c => c !== 'default');
-  const names = [...new Set([...D.crafts_seen, ...declared])].sort();
+  const names = [];                                       // the declared spelling first, then what the logs say, one per quad
+  for (const c of [...declared, ...D.crafts_seen]) if (!names.some(n => sameCraft(n, c))) names.push(c);
+  names.sort((a, b) => a.localeCompare(b));
   const sel = craft || (names[0] ?? null);
   const pending = sel !== null && (sel !== craft || !DC);
   craft = sel;
   box.innerHTML = `<h2>drones</h2><p class="hint">by the craft name in the log header; a quad without a section flies on the defaults. Everything set here is for that quad only.</p>` +
-    `<div class="row" id="crafts">${names.map(c => `<span class="chip ${c === craft ? 'on' : ''}" data-craft="${esc(c)}" title="${D.crafts_seen.includes(c) ? 'seen in the logs' : 'declared, not seen in a log here'}">${esc(c)}${D.crafts[c] ? '' : ' <span class="dim">·</span>'}</span>`).join('') ||
+    `<div class="row" id="crafts">${names.map(c => `<span class="chip ${sameCraft(c, craft) ? 'on' : ''}" data-craft="${esc(c)}" title="${D.crafts_seen.some(x => sameCraft(x, c)) ? 'seen in the logs' : 'declared, not seen in a log here'}">${esc(c)}${declared.some(x => sameCraft(x, c)) ? '' : ' <span class="dim">·</span>'}</span>`).join('') ||
       '<span class="hint">no craft seen in the logs yet: decode a log (open a session in the player)</span>'}</div>` +
     (craft ? (pending ? `<h2>${esc(craft)}</h2><p class="hint">loading…</p>` : renderCraft(craft)) : '');
   box.querySelectorAll('[data-craft]').forEach(el => el.onclick = () => { craft = el.dataset.craft; DC = null; load(); });
   if (pending) { load(); return; }
   if (!craft) return;
-  const sec = L.craft?.[craft] || {};
   box.querySelectorAll('[data-prop]').forEach(inp => inp.onchange = () => setProp(craft, inp.dataset.prop, inp.value.trim() === '' ? null : (inp.type === 'number' ? +inp.value : inp.value)));
   box.querySelectorAll('input[name=cskill]').forEach(r => r.onchange = () => setSkill(r.value, craft));
   wireParams($('#cparams'), craft);
@@ -180,7 +184,7 @@ function renderDrones() {
   box.querySelectorAll('#ctricks input[type=checkbox]').forEach(cb => cb.onchange = () => setTrick(cb.dataset.id, cb.checked, craft));
 }
 function renderCraft(c) {
-  const ctx = DC.craft_context, own = DC.crafts[c] || {}, defaults = DC.crafts.default || {};
+  const ctx = DC.craft_context, own = (DC.craft_section && DC.crafts[DC.craft_section]) || {}, defaults = DC.crafts.default || {};
   const props = [...new Set([...Object.keys(defaults).filter(k => !['skill', 'params', 'segment', 'trick', 'source'].includes(k)), ...Object.keys(own).filter(k => !['skill', 'params', 'segment', 'trick', 'source'].includes(k))])];
   const unit = {size_mm: 'mm, prop to prop', weight_g: 'g, with the battery', hover_pct: '% throttle that holds height'};
   return `<h2>${esc(c)}</h2><div class="kv">` + props.map(k => `<b>${esc(k)}</b><span class="row" style="margin:0"><input type="${typeof (ctx['craft.' + k] ?? 0) === 'number' ? 'number' : 'text'}" step="any" data-prop="${esc(k)}" value="${esc(own[k] ?? '')}" placeholder="${esc(num(defaults[k] ?? ''))}"> <span class="dim">${esc(unit[k] || '')}${own[k] === undefined && defaults[k] !== undefined ? ' (the default)' : ''}</span></span>`).join('') + `</div>` +

@@ -94,6 +94,14 @@ class LayerTest(Layered):
         tricks.edit_layer(original, "set", "b", 2)
         self.assertEqual(original, {"version": 1, "params": {"a": 1}})           # never in place
 
+    def test_crafts_match_in_any_case(self):
+        t = tricks.edit_layer({"version": 1, "craft": {"OttO": {"size_mm": 75}}}, "set", "loop_min_dur", 1.2, craft="otto")
+        self.assertEqual(t, {"version": 1, "craft": {"OttO": {"size_mm": 75, "params": {"loop_min_dur": 1.2}}}})      # into the spelling the layer has
+        self.assertEqual(tricks.craft_key(t, "OTTO"), "OttO")
+        self.assertEqual(tricks.craft_key(t, "AIR65 F"), "AIR65 F")
+        m = tricks.merge_tables({"version": 1, "craft": {"OttO": {"size_mm": 75}}}, {"craft": {"otto": {"weight_g": 40}}})
+        self.assertEqual(m["craft"], {"OttO": {"size_mm": 75, "weight_g": 40}})
+
     def test_parse_value(self):
         self.assertEqual([tricks.parse_value(x) for x in ("240", "-50", "0.85", "true", "false", "beginner")], [240, -50, 0.85, True, False, "beginner"])
 
@@ -128,9 +136,16 @@ class DescribeTest(Layered):
         self.assertEqual(d["craft_context"]["craft.size_mm"], 75)
 
     def test_crafts_seen_in_the_logs(self):
-        idx = {"arms": [{"index": 1, "frames": 10, "headers": {"Craft name": "OttO"}}, {"index": 2, "frames": 10, "headers": {"Craft name": "AIR65 F"}}, {"index": 3, "frames": 0}]}
+        """One entry per quad whatever the header's case; the declared spelling when a section exists."""
+        idx = {"arms": [{"index": 1, "frames": 10, "headers": {"Craft name": "OttO"}}, {"index": 2, "frames": 10, "headers": {"Craft name": "AIR65 F"}},
+                        {"index": 3, "frames": 0}, {"index": 4, "frames": 10, "headers": {"Craft name": "Otto"}}]}
         with mock.patch.object(blackbox, "all_bbls", lambda: [Path("a.bbl"), Path("b.bbl")]), mock.patch.object(blackbox, "index_bbl", lambda b, **k: idx if b == "a.bbl" else None):
-            self.assertEqual(tricks.describe(tricks.library())["crafts_seen"], ["AIR65 F", "OttO"])
+            d = tricks.describe(tricks.library())
+            self.assertEqual(d["crafts_seen"], ["AIR65 F", "OttO"])
+            self.assertIsNone(d["craft_section"])
+            self.db.set_setting("tricks", {"version": 1, "craft": {"otto": {"size_mm": 75}}})
+            d = tricks.describe(tricks.library(), "OTTO")
+            self.assertEqual((d["crafts_seen"], d["craft_section"], d["craft_context"]["craft.size_mm"]), (["AIR65 F", "otto"], "otto", 75))
 
 
 class ShareTest(Layered):

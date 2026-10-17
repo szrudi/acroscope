@@ -311,9 +311,19 @@ class Library:
                     raise LibraryError(_where(source, f"trick {tid}: examples must be a list of tables"))
                 t.examples = [self._example(e, tid, source) for e in v]
 
+    def craft_name(self, name: str | None) -> str | None:
+        """The declared spelling of a craft section for a name from a log header, matched without regard to case
+        (Betaflight's craft name was `OttO` on one day and `Otto` on another); the name itself when none matches."""
+        if name is None:
+            return None
+        if name in self.crafts:
+            return name
+        return next((k for k in self.crafts if k.casefold() == name.casefold()), name)
+
     def _merge_craft(self, name: str, spec, source: str):
         if not isinstance(spec, dict):
             raise LibraryError(_where(source, f"craft.{name} must be a table"))
+        name = self.craft_name(name)                        # a second spelling of a declared craft is the same section
         c = self.crafts.setdefault(name, {"props": {}, "params": {}, "segments": {}, "tricks": [], "skill": None, "source": source})
         c["source"] = source
         for k, v in spec.items():
@@ -464,6 +474,7 @@ class Library:
     def effective_params(self, craft: str | None = None) -> dict:
         """The params in force for a craft: the files in order with the chosen preset over the first (the shipped
         defaults) and under every later one, then the default craft's params, then the craft's own."""
+        craft = self.craft_name(craft)
         default, own = self.crafts.get(DEFAULT_CRAFT, {}), self.crafts.get(craft, {}) if craft is not None else {}
         chosen = own.get("skill") or default.get("skill") or self.skill
         out = {}
@@ -477,6 +488,7 @@ class Library:
 
     def param_sources(self, craft: str | None = None) -> dict:
         """Where each effective param came from: the layer's source, 'preset <name>', or 'craft <name>'."""
+        craft = self.craft_name(craft)
         default, own = self.crafts.get(DEFAULT_CRAFT, {}), self.crafts.get(craft, {}) if craft is not None else {}
         chosen = own.get("skill") or default.get("skill") or self.skill
         out = {}
@@ -504,6 +516,7 @@ class Library:
         for t in lib.tricks.values():
             t.when, t.suppress, t.requires, t.examples = list(t.when), list(t.suppress), list(t.requires), list(t.examples)
         lib._order = self._order
+        craft = self.craft_name(craft)
         lib.params = self.effective_params(craft)
         for name in (DEFAULT_CRAFT, craft):
             c = self.crafts.get(name) if name is not None else None
@@ -519,16 +532,19 @@ class Library:
     def craft_context(self, craft: str | None) -> dict:
         """The craft.* features for an arm: the default section's properties under its own section's."""
         props = dict(self.crafts.get(DEFAULT_CRAFT, {}).get("props", {}))
-        if craft in self.crafts:
-            props.update(self.crafts[craft]["props"])
+        declared = self.craft_name(craft)
+        if declared in self.crafts:
+            props.update(self.crafts[declared]["props"])
         out = {f"craft.{p}": None for p in self.craft_properties()}
         out.update({f"craft.{k}": v for k, v in props.items()})
         out["craft.name"] = craft
         return out
 
     def for_craft(self, craft: str | None) -> "Library":
-        """The library in force for an arm of this craft (by the log header's Craft name), derived once per craft."""
-        key = craft if craft in self.crafts else None
+        """The library in force for an arm of this craft (by the log header's Craft name, any case), derived once
+        per craft."""
+        key = self.craft_name(craft)
+        key = key if key in self.crafts else None
         if key not in self._effective:
             self._effective[key] = self._derive(key)
         return self._effective[key]

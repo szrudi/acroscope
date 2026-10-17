@@ -267,7 +267,8 @@ configuration page and `acroscope tricks set | unset | on | off | skill` write (
 has the same shape as a tricks file: `skill = "beginner"` or `"advanced"`, a preset of the numbers (a beginner's
 trick counts when it is nearly there; an advanced pilot's only when it is clean), your own `[params]` over the
 preset, a `[[trick]]` with an existing `id` to turn one off (`enabled = false`) or change a field, a new `[[trick]]`
-of your own, and `[craft."OttoJr"]` sections keyed by the log header's craft name: properties (`size_mm`,
+of your own, and `[craft."OttoJr"]` sections keyed by the log header's craft name (matched in any case: Betaflight's `OttO` and
+`Otto` are one quad): properties (`size_mm`,
 `weight_g`, `hover_pct`: features too, as `craft.size_mm`, for conditions that scale with the quad), a `skill` for
 that quad, `[craft."OttoJr".params]`, segment options (`[craft."OttoJr".segment.impact] g = 5`) and trick
 overrides. `[craft.default]` is what any quad is unless its section says otherwise. A name that does not exist is
