@@ -155,6 +155,24 @@ class Remote:
     def delete_category(self, name) -> bool:
         return self._call("DELETE", "/api/tag-categories/" + urllib.parse.quote(name, safe=""))["removed"]
 
+    def tricks(self, craft=None) -> dict:
+        return self._call("GET", "/api/tricks", craft=craft)
+
+    def setting(self, key: str) -> dict | None:
+        if key != "tricks":
+            raise RemoteError(f"setting {key!r}: the server keeps only the tricks layer")
+        r = self._call("GET", "/api/tricks/layer")
+        return {"value": r["layer"], "updated_at": r["updated_at"]} if r.get("updated_at") else None
+
+    def set_setting(self, key: str, value) -> dict:
+        if key != "tricks":
+            raise RemoteError(f"setting {key!r}: the server keeps only the tricks layer")
+        r = self._call("POST", "/api/tricks/layer", value)
+        return {"value": r["layer"], "updated_at": r["updated_at"]}
+
+    def delete_setting(self, key: str) -> bool:
+        return self._call("DELETE", "/api/tricks/layer")["removed"]
+
     def tag_usage(self, session=None) -> dict:
         return self._call("GET", "/api/tag-usage", session=session)
 

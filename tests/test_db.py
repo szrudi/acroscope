@@ -21,6 +21,19 @@ class DbTest(unittest.TestCase):
         self.assertEqual(s, {"session": "2026-10-07-x", "date": "2026-10-07", "note": "", "videos": [], "blackbox": [], "matches": [], "moments": []})
         self.assertFalse(self.db.exists("2026-10-07-x"))
 
+    def test_settings(self):
+        """The pilot's tricks layer (#45) and whatever comes next: one JSON document per key, with its stamp."""
+        self.assertIsNone(self.db.setting("tricks"))
+        r = self.db.set_setting("tricks", {"version": 1, "skill": "beginner"})
+        self.assertEqual(r["value"], {"version": 1, "skill": "beginner"})
+        self.assertEqual(self.db.setting("tricks"), r)
+        r2 = self.db.set_setting("tricks", {"version": 1})
+        self.assertEqual(self.db.setting("tricks")["value"], {"version": 1})
+        self.assertGreaterEqual(r2["updated_at"], r["updated_at"])
+        self.assertTrue(self.db.delete_setting("tricks"))
+        self.assertFalse(self.db.delete_setting("tricks"))
+        self.assertIsNone(self.db.setting("tricks"))
+
     def test_clips_matches_moments(self):
         S = "2026-10-07-s"
         self.db.upsert_video(S, "2026-10-07_001.mp4", 10.5, "h264")

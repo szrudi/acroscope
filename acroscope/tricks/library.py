@@ -145,6 +145,7 @@ class Library:
         self.tricks: dict[str, Trick] = {}
         self.sources: list[str] = []
         self.skills: dict[str, dict] = {}                 # preset name -> params
+        self._skill_sources: dict[str, str] = {}
         self.skill: str | None = None                     # the preset in force, and the source that chose it
         self.crafts: dict[str, dict] = {}                 # craft name -> {props, params, segments, tricks, skill}
         self.layers: list = []                            # [(source, params, skill chosen there)] in file order
@@ -152,7 +153,8 @@ class Library:
         self._effective: dict = {}
 
     @classmethod
-    def load(cls, paths=(SHIPPED,)) -> "Library":
+    def load(cls, paths=(SHIPPED,), extra=()) -> "Library":
+        """The files in order, then `extra` [(table, source)] (the pilot's layer from the database), checked as one."""
         lib = cls()
         for p in paths:
             p = Path(p)
@@ -161,6 +163,8 @@ class Library:
             except tomllib.TOMLDecodeError as e:
                 raise LibraryError(f"{p}: {e}") from None
             lib.add(table, str(p))
+        for table, source in extra:
+            lib.add(table, source)
         lib.validate()
         return lib
 
@@ -202,6 +206,7 @@ class Library:
                 if not isinstance(p, dict):
                     raise LibraryError(_where(source, f"skill.{name} must be a table of params"))
                 self.skills.setdefault(name, {}).update(p)
+                self._skill_sources[name] = source
         elif skill is not None:
             raise LibraryError(_where(source, "skill is the name of a preset (skill = \"beginner\") or presets ([skill.beginner])"))
         self.layers.append((source, dict(params), chosen))
@@ -389,12 +394,28 @@ class Library:
                     raise LibraryError(f"param {k!r}: a param is a plain name that is not a feature")
                 if isinstance(v, bool) or not isinstance(v, (int, float, str)):
                     raise LibraryError(f"param {k!r}: must be a number or a string, not {v!r}")
-        for chosen, where in [(self.skill, "skill"), *((c["skill"], f"craft.{n}.skill") for n, c in self.crafts.items())]:
+        chose = next((source for source, _, chosen in reversed(self.layers) if chosen is not None), "")
+        for chosen, where in [(self.skill, _where(chose, "skill")), *((c["skill"], _where(c["source"], f"craft.{n}.skill")) for n, c in self.crafts.items())]:
             if chosen is not None and chosen not in self.skills:
                 raise LibraryError(f"{where} = {chosen!r}: no such preset (have {', '.join(self.skills) or 'none'})")
         self._check_tricks(self)
         for name in self.crafts:
             self._check_tricks(self._derive(name))
+        # a param no trick reads is a typo (flip_min_dg = 240), in a file, a preset or a craft section alike
+        used = set()
+        for t in self.tricks.values():
+            for _, e in [*t.when, *(c for ph in t.phases for c in ph.when)]:
+                used |= e.names
+            for tpl in (t.title, t.why):
+                for e, _ in expr.template_exprs(tpl):
+                    used |= e.names
+        param_source = {k: source for source, params, _ in self.layers for k in params}
+        for group, where in [(self.params, lambda k: _where(param_source.get(k, ""), "params")),
+                             *((p, lambda k, n=n: _where(self._skill_sources.get(n, ""), f"skill.{n}")) for n, p in self.skills.items()),
+                             *((c["params"], lambda k, n=n, c=c: _where(c["source"], f"craft.{n}.params")) for n, c in self.crafts.items())]:
+            for k in group:
+                if k not in used:
+                    raise LibraryError(f"{where(k)}: {k!r} is a param no trick uses (a typo? `acroscope tricks` lists them)")
 
     def _check_tricks(self, lib: "Library"):
         crafts = {f"craft.{p}" for p in self.craft_properties()}
@@ -454,12 +475,30 @@ class Library:
         out.update(own.get("params", {}))
         return out
 
+    def param_sources(self, craft: str | None = None) -> dict:
+        """Where each effective param came from: the layer's source, 'preset <name>', or 'craft <name>'."""
+        default, own = self.crafts.get(DEFAULT_CRAFT, {}), self.crafts.get(craft, {}) if craft is not None else {}
+        chosen = own.get("skill") or default.get("skill") or self.skill
+        out = {}
+        for i, (source, params, _) in enumerate(self.layers):
+            for k in params:
+                out[k] = source
+            if i == 0 and chosen:
+                for k in self.skills.get(chosen, {}):
+                    out[k] = f"preset {chosen}"
+        for k in default.get("params", {}):
+            out[k] = f"craft {DEFAULT_CRAFT}"
+        for k in own.get("params", {}):
+            out[k] = f"craft {craft}"
+        return out
+
     def _derive(self, craft: str | None) -> "Library":
         """A copy of this library with the default craft's layer and then the craft's own applied (params,
         segment options, trick overrides)."""
         import copy
         lib = Library()
         lib.sources, lib.skills, lib.skill, lib.layers, lib.crafts = self.sources, self.skills, self.skill, self.layers, self.crafts
+        lib._skill_sources = self._skill_sources
         lib.segments = {n: Segment(s.name, s.kind, dict(s.opts), s.source) for n, s in self.segments.items()}
         lib.tricks = {tid: copy.copy(t) for tid, t in self.tricks.items()}
         for t in lib.tricks.values():

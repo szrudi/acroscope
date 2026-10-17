@@ -379,6 +379,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"store": repr(sessions.store()), "data": str(VIDEOS_DIR.parent)})
             if parts == ["api", "tags"]:
                 return self._json(sessions.store().tags())
+            if parts == ["api", "tricks"]:
+                return self._json(tricks.describe(tricks.library(), q.get("craft") or None))
+            if parts == ["api", "tricks", "layer"]:
+                row = sessions.store().setting(tricks.LAYER_KEY)
+                return self._json({"layer": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None})
             if parts == ["api", "tag-usage"]:
                 return self._json(sessions.store().tag_usage(q.get("session")))
             if parts[:2] == ["api", "session"] and len(parts) >= 3:
@@ -468,6 +473,13 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "tags"]:
                 b = self._body()
                 return self._json(sessions.store().set_tag(b["name"], b["category"], b.get("color")))
+            if parts == ["api", "tricks", "layer"]:
+                b = self._body()                                  # the pilot's layer, whole: checked as the loader checks a file
+                if not isinstance(b, dict):
+                    return self._json({"error": "the layer is a table"}, 400)
+                tricks.check_layer(b)                             # a LibraryError is a ValueError: 400 with the place named
+                row = sessions.store().set_setting(tricks.LAYER_KEY, b)
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"]})
             if parts == ["api", "tag-categories"]:
                 b = self._body()
                 return self._json(sessions.store().set_category(b["name"], b.get("color")))
@@ -531,6 +543,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"removed": n})
             if parts[:2] == ["api", "tags"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})
+            if parts == ["api", "tricks", "layer"]:
+                return self._json({"removed": sessions.store().delete_setting(tricks.LAYER_KEY)})
             if parts[:2] == ["api", "tag-categories"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_category(parts[2])})
             return self._json({"error": "not found"}, 404)
@@ -542,9 +556,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
 
+def layer_from_store():
+    """The pilot's tricks layer from the database, for tricks.LAYER_SOURCE."""
+    row = sessions.store().setting(tricks.LAYER_KEY)
+    return (row["value"], row["updated_at"]) if row else (None, None)
+
+
 def serve(host="0.0.0.0", port=8070, warm: bool = True):
     if sessions.remote():
         sys.exit("acroscope serve: unset ACROSCOPE_URL, the server owns the database itself")
+    tricks.LAYER_SOURCE = layer_from_store
     srv = ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
     print(f"acroscope player on http://{host}:{port}/  (data {VIDEOS_DIR.parent}, {sessions.store()})")

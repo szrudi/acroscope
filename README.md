@@ -138,6 +138,8 @@ acroscope tricks [list|show <id>|features [kind]|check [id...]|explain <bbl>:<ar
                                                  examples run against the logs, every window of an arm with each trick's
                                                  verdict, the tricks scored against a session's tagged moments, a starter
                                                  file for your own tricks
+acroscope tricks layer | set <param> <value> | unset <param> | on <id> | off <id> | skill <name|none> [--craft X]
+                                                 the pilot's layer in the database, and one change to it (checked first)
 acroscope frame <session> <video> <t>... [--osd] JPEGs of frames; --osd enlarges the OSD strip (arm timer, total, vbat)
 acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling several timestamped frames (one look for the agent)
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
@@ -175,6 +177,10 @@ POST /api/session/<s>/rename            {name}        POST /api/session/<s>/date
 POST /api/session/<s>/move              {video, to}   POST /api/session/<s>/merge  {into}
 DELETE /api/session/<s>/clip?video=     the clip into trash/<date>/<s>/, its matches and moments gone
 GET  /api/inbox                         batches and their status    POST /api/inbox/<batch>/retry
+GET  /api/tricks[?craft=]               the tricks in force: params with default and source, presets, crafts (declared
+                                        and seen in the logs), segments, tricks, the feature names per segment kind
+GET  /api/tricks/layer                  the pilot's layer kept in the database      POST /api/tricks/layer   {the layer, whole}
+DELETE /api/tricks/layer                                                            (a bad layer: 400 with the place named)
 POST /api/scan   POST /api/import       GET /api/store
 ```
 
@@ -254,7 +260,11 @@ around it and a motor "dropping" at the impact; a powerloop is not also a back f
 fields (motor loss needs eRPM) and is skipped on a log without them. A feature the log cannot give is `none`, and a
 condition on it is simply false.
 
-**Your own tricks** go in a file over the shipped one: `acroscope tricks init` writes a starter at
+**Your own tricks** live in two places over the shipped file, both checked at load like the rest. The server's
+database holds the **pilot's layer**, what the player's configuration page and `acroscope tricks set | unset | on |
+off | skill` write (one document shaped like the TOML tables; `tricks layer` shows it, `GET/POST /api/tricks/layer`
+read and replace it, a bad one is refused with the place named and nothing changes). Below it a **file**:
+`acroscope tricks init` writes a starter at
 `~/.config/acroscope/tricks.toml` (or where `ACROSCOPE_TRICKS` points: a file, or a directory of `.toml` files; the
 container reads `/state/tricks.toml`, beside the database). In it: `skill = "beginner"` or `"advanced"`, a preset
 of the numbers (a beginner's trick counts when it is nearly there; an advanced pilot's only when it is clean), your

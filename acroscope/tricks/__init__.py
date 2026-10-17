@@ -13,6 +13,7 @@ A sequence trick (`phases`) chains windows of several segments: each phase's con
 phase starting after the one before and within so many seconds of its end; the detection spans them all and its
 texts see every phase's features as p1.*, p2.*.
 """
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,19 +22,25 @@ from ..blackbox import Arm
 from . import expr, features, segments
 from .library import SHIPPED, Library, LibraryError, Trick
 
-__all__ = ["check", "detect", "evaluate", "explain", "library", "user_path", "Library", "LibraryError", "SHIPPED", "TEMPLATE"]
+__all__ = ["check", "describe", "detect", "evaluate", "explain", "library", "user_path", "Library", "LibraryError", "SHIPPED", "TEMPLATE"]
+
+# The pilot's layer kept in the database (#45): a callable giving ({table}, stamp) or (None, None). The server and the
+# local CLI set it from their store at start; nothing in this package reaches for a database on its own.
+LAYER_SOURCE = None
+LAYER_KEY = "tricks"
 
 # what `acroscope tricks init` writes: a pilot's file with the knobs shown and off
 TEMPLATE = """# Your tricks, over acroscope's shipped ones (acroscope/tricks/tricks.toml). `acroscope tricks` shows what is in
 # force, `acroscope tricks show <id>` one trick, `acroscope tricks explain <bbl>:<arm>` every window's verdict.
-# Uncomment what you need; a name that does not exist is refused when the file loads.
+# Uncomment what you need; a name that does not exist is refused when the file loads. What the player's configuration
+# page and `acroscope tricks set|on|off|skill` write goes to the database and sits over this file.
 version = 1
 
 # skill = "beginner"            # a preset over the defaults: "beginner" (tricks count when nearly there) or
                                 # "advanced" (only when clean); your own [params] below win over it
 
 [params]                        # any number from `acroscope tricks` (its params line)
-# split_s_throttle_max = 50     # my split-S keeps some throttle on
+# orbit_min_deg = 240           # two thirds of a lap was an orbit try
 # flip_min_deg = 250
 
 # [[trick]]                     # turn a trick off, or change one of its fields
@@ -79,15 +86,117 @@ def library_paths() -> list[Path]:
     return [SHIPPED, p]
 
 
+def database_layer() -> tuple:
+    """(the pilot's layer from the database, its stamp), or (None, None) without one."""
+    return LAYER_SOURCE() if LAYER_SOURCE else (None, None)
+
+
 def library() -> Library:
-    """The tricks in force, loaded once and again whenever a file changed (the server keeps running; a pilot
-    edits the file and refreshes)."""
+    """The tricks in force: the shipped file, the pilot's file, the pilot's layer from the database. Loaded once and
+    again whenever any of them changed (the server keeps running; a pilot edits and refreshes)."""
     global _cache
     paths = [p for p in library_paths() if p.is_file()]
-    stamp = tuple((str(p), p.stat().st_mtime_ns) for p in paths)
+    table, db_stamp = database_layer()
+    # the layer's content is in the stamp too: two writes within one second share a time
+    stamp = tuple((str(p), p.stat().st_mtime_ns) for p in paths) + (("database", db_stamp, json.dumps(table, sort_keys=True)),)
     if _cache is None or _cache[0] != stamp:
-        _cache = (stamp, Library.load(paths))
+        _cache = (stamp, Library.load(paths, [(table, "database")] if table else []))
     return _cache[1]
+
+
+def check_layer(table: dict) -> Library:
+    """The library the files plus this layer would make, or a LibraryError saying what is wrong with it."""
+    paths = [p for p in library_paths() if p.is_file()]
+    return Library.load(paths, [(table, "database")])
+
+
+def describe(lib: Library, craft: str | None = None) -> dict:
+    """The library in force as the player and `tricks --json` see it: every param with its default and where its
+    value came from, the presets, the crafts (declared, and seen in the logs), the segments, the tricks with their
+    definitions and sources, the feature names per segment kind."""
+    from .. import blackbox
+    eff = lib.for_craft(craft)
+    sources = lib.param_sources(craft)
+    shipped = lib.layers[0][1] if lib.layers else {}
+    seen = set()
+    for p in blackbox.all_bbls():
+        idx = blackbox.index_bbl(p.name, cached_only=True)
+        for a in (idx or {}).get("arms", []):
+            name = (a.get("headers") or {}).get("Craft name")
+            if name:
+                seen.add(name)
+    return {
+        "sources": lib.sources, "user_file": str(user_path()), "database": "database" in lib.sources,
+        "skill": lib.skill, "skills": lib.skills, "craft": craft,
+        "params": {k: {"value": v, "default": shipped.get(k), "source": sources.get(k, "shipped")} for k, v in eff.params.items()},
+        "crafts": {n: {**c["props"], "skill": c["skill"], "params": c["params"], "segment": c["segments"], "trick": c["tricks"], "source": c["source"]}
+                   for n, c in lib.crafts.items()},
+        "crafts_seen": sorted(seen),
+        "craft_context": lib.craft_context(craft),
+        "segments": {n: {"kind": sg.kind, **sg.opts} for n, sg in eff.segments.items()},
+        "tricks": [{"id": t.id, "tag": t.tag, "segment": t.segment or None, "priority": t.priority, "enabled": t.enabled,
+                    "phases": [{"segment": ph.segment, "within": ph.within, "when": ph.conditions} for ph in t.phases],
+                    "when": t.conditions, "title": t.title, "why": t.why, "requires": eff.requires(t), "note": t.note,
+                    "suppress": [{"tags": list(r.tags), "margin": r.margin, "within": r.within} for r in t.suppress],
+                    "examples": t.examples, "source": t.source,
+                    "params": sorted({n for _, e in [*t.when, *(c for ph in t.phases for c in ph.when)] for n in e.names if n in eff.params})}
+                   for t in eff.ordered()],
+        "features": {k: features.vocabulary(k) for k in segments.KINDS},
+    }
+
+
+def edit_layer(table: dict | None, what: str, *args, craft: str | None = None) -> dict:
+    """One change to the pilot's layer, as the CLI makes it: set/unset a param, a trick on/off, the skill. Returns
+    the new table (not yet checked or stored)."""
+    import copy
+    t = copy.deepcopy(table) if table else {"version": 1}
+    where = t
+    if craft:
+        where = t.setdefault("craft", {}).setdefault(craft, {})
+    if what == "set":
+        name, value = args
+        where.setdefault("params", {})[name] = value
+    elif what == "unset":
+        (name,) = args
+        where.get("params", {}).pop(name, None)
+        if "params" in where and not where["params"]:
+            del where["params"]
+    elif what in ("on", "off"):
+        (tid,) = args
+        tricks = [x for x in where.get("trick", []) if x.get("id") != tid]
+        if what == "off":
+            tricks.append({"id": tid, "enabled": False})
+        if tricks:
+            where["trick"] = tricks
+        else:
+            where.pop("trick", None)
+    elif what == "skill":
+        (name,) = args
+        if name in (None, "none", ""):
+            where.pop("skill", None)
+        else:
+            where["skill"] = name
+    else:
+        raise ValueError(f"edit_layer: {what}")
+    if craft and not where:
+        del t["craft"][craft]
+        if not t["craft"]:
+            del t["craft"]
+    return t
+
+
+def parse_value(text: str):
+    """A param value as typed on the command line: a number, true/false, else the text."""
+    if text in ("true", "false"):
+        return text == "true"
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return text
 
 
 def fingerprint() -> tuple:

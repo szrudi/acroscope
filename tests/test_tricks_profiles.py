@@ -161,7 +161,8 @@ class PathTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     cli.main(["tricks", "init"])                                          # never overwrites
                 # every commented knob in it is valid once switched on
-                on = "\n".join(l[2:] if l.startswith("# ") and not l.startswith("# Y") and not l.startswith("# force") and not l.startswith("# Uncomment") else l for l in tricks.TEMPLATE.splitlines())
+                import re
+                on = "\n".join(l[2:] if re.match(r"# (\w[\w-]* = |\[)", l) else l for l in tricks.TEMPLATE.splitlines())
                 f.write_text(on)
                 os.utime(f, ns=(0, f.stat().st_mtime_ns + 10**9))
                 lib = tricks.library()

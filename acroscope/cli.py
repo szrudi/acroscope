@@ -381,6 +381,18 @@ def cmd_tricks(a):
     """The tricks file(s) in force (#22): list them, show one, the feature names, run the examples, or explain an
     arm window by window. Proxied like `events`: the server's library is the one that detects."""
     what, args = a.what, a.args
+    if not sessions.remote():
+        tricks.LAYER_SOURCE = _layer_from_store
+    if what in ("set", "unset", "on", "off", "skill"):
+        return _edit_tricks(a)
+    if what == "layer":
+        row = sessions.store().setting(tricks.LAYER_KEY)
+        if a.json:
+            return out({"layer": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None})
+        if not row:
+            return print("no pilot's layer in the database (acroscope tricks set|on|off|skill write one)")
+        print(f"# the pilot's layer in the database, {row['updated_at']}")
+        return out(row["value"])
     if what == "init":
         p = tricks.user_path()
         if p.exists():
@@ -392,15 +404,7 @@ def cmd_tricks(a):
     lib = base.for_craft(a.craft)                      # the library in force: the default layer, or a craft's
     if what == "list":
         if a.json:
-            return out({"sources": base.sources, "user_file": str(tricks.user_path()), "skill": base.skill, "skills": base.skills,
-                        "crafts": {n: {**c["props"], "skill": c["skill"], "params": c["params"], "segment": c["segments"],
-                                       "trick": c["tricks"]} for n, c in base.crafts.items()},
-                        "craft": a.craft, "params": lib.params,
-                        "segments": {n: {"kind": s.kind, **s.opts} for n, s in lib.segments.items()},
-                        "tricks": [{"id": t.id, "tag": t.tag, "segment": t.segment, "priority": t.priority, "enabled": t.enabled,
-                                    "when": t.conditions, "title": t.title, "why": t.why, "requires": lib.requires(t),
-                                    "suppress": [{"tags": list(r.tags), "margin": r.margin, "within": r.within} for r in t.suppress],
-                                    "examples": t.examples, "source": t.source} for t in lib.ordered()]})
+            return out(tricks.describe(base, a.craft))
         print(f"# {', '.join(base.sources)}" + ("" if tricks.user_path().is_file() else f"  (no {tricks.user_path()}: acroscope tricks init)"))
         crafts = [n for n in base.crafts if n != "default"]
         print(f"# skill: {base.skill or 'none (the defaults)'}; presets: {', '.join(base.skills) or 'none'}; crafts: {', '.join(crafts) or 'none'}"
@@ -509,7 +513,36 @@ def cmd_tricks(a):
                     fate = f"suppressed by {t['suppressed_by']}"
                 print(f"    {t['id']:16} {fate}")
         return
-    raise SystemExit(f"tricks: {what}: not a subcommand (list, show, features, check, explain, eval, init)")
+    raise SystemExit(f"tricks: {what}: not a subcommand (list, show, features, check, explain, eval, init, layer, set, unset, on, off, skill)")
+
+
+def _layer_from_store():
+    row = sessions.store().setting(tricks.LAYER_KEY)
+    return (row["value"], row["updated_at"]) if row else (None, None)
+
+
+def _edit_tricks(a):
+    """set <param> <value> | unset <param> | on <id> | off <id> | skill <name|none>, into the pilot's layer in the
+    database ([--craft X]: that craft's section). Checked as a file is before it is stored; a refusal changes nothing."""
+    what, args = a.what, a.args
+    need = {"set": 2, "unset": 1, "on": 1, "off": 1, "skill": 1}[what]
+    if len(args) != need:
+        raise SystemExit(f"acroscope tricks {what} takes {need} argument{'s' if need > 1 else ''}" + (" (<param> <value>)" if what == "set" else ""))
+    if what == "set":
+        args = (args[0], tricks.parse_value(args[1]))
+    store = sessions.store()
+    row = store.setting(tricks.LAYER_KEY)
+    table = tricks.edit_layer(row["value"] if row else None, what, *args, craft=a.craft)
+    tricks.check_layer(table)                          # a LibraryError names the place
+    store.set_setting(tricks.LAYER_KEY, table)
+    tricks.LAYER_SOURCE = _layer_from_store
+    lib = tricks.library().for_craft(a.craft)
+    if what in ("set", "unset"):
+        print(f"{args[0]} = {lib.params.get(args[0])}" + (f" for {a.craft}" if a.craft else ""))
+    elif what in ("on", "off"):
+        print(f"{args[0]}: {'on' if lib.tricks[args[0]].enabled else 'off'}" + (f" for {a.craft}" if a.craft else ""))
+    else:
+        print(f"skill: {tricks.library().crafts.get(a.craft, {}).get('skill') if a.craft else tricks.library().skill}")
 
 
 def cmd_frame(a):
@@ -779,9 +812,11 @@ def parser() -> argparse.ArgumentParser:
     p = sp.add_parser("events", help="suggested moments from the tricks file (flips, loops, split-S, dives, crashes, kicks, motor loss)")
     p.add_argument("session", nargs="?"); p.add_argument("video", nargs="?"); p.add_argument("--arm", help="bbl:N")
     p.add_argument("--matched-only", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_events)
-    p = sp.add_parser("tricks", help="the tricks in force: list | show <id> | features [kind] | check [id...] | explain <bbl>:<arm> [from] [to] | eval <session> | init")
-    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "features", "check", "explain", "eval", "init"]); p.add_argument("args", nargs="*")
-    p.add_argument("--craft", help="list/show the library in force for this craft (by the log header's Craft name)")
+    p = sp.add_parser("tricks", help="the tricks in force: list | show <id> | features [kind] | check [id...] | explain <bbl>:<arm> [from] [to] | eval <session> | init | "
+                                     "layer | set <param> <value> | unset <param> | on <id> | off <id> | skill <name|none>")
+    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "features", "check", "explain", "eval", "init", "layer", "set", "unset", "on", "off", "skill"])
+    p.add_argument("args", nargs="*")
+    p.add_argument("--craft", help="the library in force for this craft (by the log header's Craft name); with set/unset/on/off/skill: write into its section")
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_tricks)
     p = sp.add_parser("frame", help="extract frames as JPEG (prints the paths); --osd crops and enlarges the OSD strip")
     p.add_argument("session"); p.add_argument("video"); p.add_argument("times", nargs="+"); p.add_argument("--osd", action="store_true")
