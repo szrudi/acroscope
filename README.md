@@ -23,8 +23,8 @@ log: ⤓ downloads the .bbl (for Blackbox Explorer), ⇄ moves it to another ses
 matches here are deleted, the file stays). A log taken out of a session stays out: the refresh attaches a session's
 same-date logs only when it has none, and never one taken out by hand.
 
-The blackbox is a supporting layer: it shows which flights the clips cover and feeds the metrics. Deep log reading
-stays in the Betaflight App's blackbox viewer.
+The blackbox is a supporting layer: it shows which flights the clips cover and feeds the metrics and the trick
+engine (see *Tricks*). Deep log reading stays in the Betaflight App's blackbox viewer.
 
 ## Data layout
 
@@ -132,7 +132,10 @@ acroscope decode <bbl> <arm> [--csv]             cache one arm; --csv dumps it l
 acroscope match <session> <video> <bbl> <arm> <offset>   record a video <-> arm match
 acroscope metrics <session> <video> <from> <to> [--profile [STEP]] [--loop] [--orbit]
 acroscope metrics --arm <bbl>:<n> <from> <to>    same, in arm seconds without a session
-acroscope events <session> [video]               detector suggestions (flip, roll, powerloop, split-s, dive, crash, gyro-kick, motor-loss)
+acroscope events <session> [video]               the tricks file's suggestions (flip, roll, powerloop, split-s, dive, crash, gyro-kick, motor-loss)
+acroscope tricks [list|show <id>|features [kind]|check [id...]|explain <bbl>:<arm> [from] [to]]
+                                                 the tricks in force, one in full, the names a condition may use, the
+                                                 examples run against the logs, every window of an arm with each trick's verdict
 acroscope frame <session> <video> <t>... [--osd] JPEGs of frames; --osd enlarges the OSD strip (arm timer, total, vbat)
 acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling several timestamped frames (one look for the agent)
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
@@ -211,6 +214,44 @@ record `acroscope match <session> <clip> <bbl> <arm> <offset> --boot`, and refin
 The digit templates live in `acroscope/static/osd-templates.json`; `acroscope osd-learn scripts/osd-labels.json`
 rebuilds them when the OSD font or layout changes (label a few frames by eye first, and label the exact frame the
 reader sees: `acroscope osd` and the ASCII dumps in the labels workflow, not a JPEG from another extraction).
+
+## Tricks
+
+`acroscope events` runs the **trick engine** (`acroscope/tricks/`) over an arm: a handful of **segmenters** cut it
+into candidate windows (`rotation`: roll or pitch over a rate; `sustained`: one axis past a rate with gaps allowed;
+`throttle_cut`; `impact`: a g spike with a gyro jolt; `kick`; `motor_drop`), each window is **measured** in the same
+vocabulary `metrics` uses (`rotation_deg.roll`, `throttle_pct.min`, `tilt_deg.max`, … plus what the scan itself found,
+and the arm's rate profile from the log's header, `arm.rates_max_dps.roll`), and the **tricks file** judges the windows.
+One entry per trick, in `acroscope/tricks/tricks.toml`:
+
+```toml
+[[trick]]
+id       = "split-s"
+tag      = "split-s"
+segment  = "fast-rotation"                       # [segment.fast-rotation]: kind = "rotation", threshold = 100, …
+when     = ["split_s_roll_min <= abs(rotation_deg.roll) <= split_s_roll_max",
+            "rotation_deg.pitch <= split_s_pull_deg", "throttle_pct.min < split_s_throttle_max"]
+title    = "split-S"
+why      = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} deg in {duration} s, throttle {throttle_pct.min} %"
+priority = 20                                    # wins over a plain roll on the same window
+examples = [{ log = "…20261007_212530….bbl", arm = 13, at = 29.0 }]
+```
+
+The numbers live in `[params]` (`flip_min_deg = 270`, `tumble_dps = 1500`, …), so tuning is editing a number, not
+code. Conditions and the `{…}` holes in titles use a small language of their own (comparisons chained like Python's,
+`and`/`or`/`not`, `abs min max round sqrt`), never Python: a tricks file from the internet cannot run code, and a
+name it uses that is not a feature of its segment kind is refused when the file loads, with the entry named.
+Precedence is in the file too: `priority` on one window, `suppress` across tricks (a crash swallows the rotation
+around it and a motor "dropping" at the impact; a powerloop is not also a back flip). A trick `requires` log
+fields (motor loss needs eRPM) and is skipped on a log without them. A feature the log cannot give is `none`, and a
+condition on it is simply false.
+
+`acroscope tricks` lists the tricks in force, `tricks show <id>` one in full, `tricks features [kind]` the names a
+condition may use, `tricks explain <bbl>:<arm> [from] [to]` every window with each trick's verdict (fired, the
+condition it failed, lost to a higher priority, suppressed by whom), and `tricks check` runs every trick's
+`examples` (a real log, an arm, a moment) against the logs on the machine: a shared trick without an example is a
+guess. Each event says which `trick` fired; its `numbers` are the window's measurement, the same snapshot `metrics`
+gives for that window, so an accepted suggestion stores it.
 
 ## Player
 

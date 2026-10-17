@@ -1,0 +1,197 @@
+# acroscope's tricks: what `acroscope events` looks for, one entry per trick (acroscope/tricks/library.py has the
+# format, `acroscope tricks features` the names a condition may use). These entries reproduce the detectors that
+# were code before #22, tuned on the Air65 logs of October 2026. Numbers to tune are in [params]; each entry's
+# `examples` are real moments `acroscope tricks check` verifies.
+version = 1
+
+[params]
+tumble_dps = 1500            # a roll or pitch rate over this is a tumble, not a trick
+flip_min_deg = 270           # a flip or a roll turns at least this much on its axis
+yaw_share = 0.5              # yaw over this share of the main rotation makes it a flip or roll "with yaw"
+split_s_roll_min = 150       # a split-S: a half roll in this band...
+split_s_roll_max = 300
+split_s_pull_deg = -60       # ...with at least this much pull back (pitch; a pull back is negative)...
+split_s_throttle_max = 35    # ...and the throttle down to under this, %
+loop_min_deg = 300           # a powerloop pitches back at least this much...
+loop_min_dur = 1.5           # ...over at least this long, s (faster is a back flip)
+dive_min_tilt = 40           # a dive points down at least this much on average, deg from level
+landing_window_s = 2.5       # an impact this close to the arm's end is how most arms end: a landing, not a crash
+
+[segment.fast-rotation]      # stretches where roll or pitch runs over 100 deg/s, gaps under 0.3 s bridged
+kind = "rotation"
+threshold = 100
+min_dur = 0.3
+gap = 0.3
+
+[segment.pitch-back]         # pitching back steadily (faster than 40 deg/s), gaps under 0.6 s bridged
+kind = "sustained"
+axis = "pitch"
+rate = -40
+gap = 0.6
+
+[segment.throttle-cut]       # throttle under 5 % for 1.2 s or more; blips under 0.3 s do not end it
+kind = "throttle_cut"
+below = 5
+min_dur = 1.2
+blip = 0.3
+
+[segment.impact]             # over 4 g with the raw gyro jolting over 500 deg/s within 50 ms: contact
+kind = "impact"
+
+[segment.yaw-kick]           # the raw yaw over 400 deg/s, twice roll and pitch, with the yaw stick centred
+kind = "kick"
+
+[segment.motor-drop]         # one motor's eRPM halves within 50 ms at full command and stays down 0.4 s
+kind = "motor_drop"
+
+# ---- crashes ----------------------------------------------------------------------------------------------------
+
+[[trick]]
+id = "crash"
+tag = "crash"
+segment = "impact"
+when = ["to_arm_end_s >= landing_window_s"]
+title = "impact"
+why = "{impact_g:.1f} g with {jolt_dps:.0f} dps gyro jolt at arm {arm_t:.2f} s"
+priority = 30
+# a rotation across a crash is the crash, not a trick; a motor "dropping" at the impact is the impact
+suppress = [{ tags = ["flip", "roll", "split-s"], margin = 1.0 }, { tags = ["motor-loss"], within = 0.5 }]
+examples = [{ log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 18, at = 64.7, note = "4.4 g mid-flight, the arm goes on for 38 s" }]
+
+[[trick]]
+id = "hard-landing"
+tag = "crash"
+segment = "impact"
+when = ["to_arm_end_s < landing_window_s"]
+title = "hard landing (arm end)"
+why = "{impact_g:.1f} g with {jolt_dps:.0f} dps gyro jolt at arm {arm_t:.2f} s of {arm.length:.1f}"
+priority = 30
+suppress = [{ tags = ["flip", "roll", "split-s"], margin = 1.0 }, { tags = ["motor-loss"], within = 0.5 }]
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 71.4, note = "the ground 1 s after the motor loss, 0.6 s before the arm ends (the 10-07 pin)" },
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 11, at = 7.4, note = "the 10-07 011 smoke check: hard landing at 1:24.4 of the clip" },
+]
+
+# ---- rotations --------------------------------------------------------------------------------------------------
+
+[[trick]]
+id = "powerloop"
+tag = "powerloop"
+segment = "pitch-back"
+when = ["duration >= loop_min_dur", "rotation_deg.pitch <= -loop_min_deg"]
+title = "powerloop"
+why = "{rotation_deg.pitch} deg pitch in {duration} s, peak {peak_rate_dps.pitch} dps, throttle inverted {throttle_inverted_pct.mean} %"
+priority = 20
+suppress = [{ tags = ["flip", "roll", "split-s"], margin = 0 }]     # a slow loop is not also a back flip
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 13, at = 29.0, note = "27.0-31.7, -385 deg" },
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 13, at = 41.5, note = "39.8-43.9" },
+]
+
+[[trick]]
+id = "split-s"
+tag = "split-s"
+segment = "fast-rotation"
+when = [
+  "max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "split_s_roll_min <= abs(rotation_deg.roll) <= split_s_roll_max",
+  "rotation_deg.pitch <= split_s_pull_deg",
+  "throttle_pct.min < split_s_throttle_max",
+]
+title = "split-S"
+why = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} / yaw {rotation_deg.yaw:+} deg in {duration} s, peak {max(peak_rate_dps.roll, peak_rate_dps.pitch)} dps, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 20                # wins over a plain roll on the same window
+
+[[trick]]
+id = "flip"
+tag = "flip"
+segment = "fast-rotation"
+when = [
+  "max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "axis == 'pitch'",
+  "abs(rotation_deg.pitch) >= flip_min_deg",
+  "abs(rotation_deg.yaw) <= yaw_share * abs(rotation_deg.pitch)",
+]
+title = "{direction} flip"
+why = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} / yaw {rotation_deg.yaw:+} deg in {duration} s, peak {max(peak_rate_dps.roll, peak_rate_dps.pitch)} dps, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 10
+
+[[trick]]
+id = "flip-with-yaw"
+tag = "flip"
+segment = "fast-rotation"
+when = [
+  "max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "axis == 'pitch'",
+  "abs(rotation_deg.pitch) >= flip_min_deg",
+  "abs(rotation_deg.yaw) > yaw_share * abs(rotation_deg.pitch)",
+]
+title = "{direction} flip with yaw"
+why = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} / yaw {rotation_deg.yaw:+} deg in {duration} s, peak {max(peak_rate_dps.roll, peak_rate_dps.pitch)} dps, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 10
+
+[[trick]]
+id = "roll"
+tag = "roll"
+segment = "fast-rotation"
+when = [
+  "max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "axis == 'roll'",
+  "abs(rotation_deg.roll) >= flip_min_deg",
+  "abs(rotation_deg.yaw) <= yaw_share * abs(rotation_deg.roll)",
+]
+title = "{direction} roll"
+why = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} / yaw {rotation_deg.yaw:+} deg in {duration} s, peak {max(peak_rate_dps.roll, peak_rate_dps.pitch)} dps, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 10
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 1, at = 6.5, note = "right roll, clip 003 1:32.7 (offset 86.5)" },
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 1, at = 8.3, note = "left roll, 1:34.5" },
+]
+
+[[trick]]
+id = "roll-with-yaw"
+tag = "roll"
+segment = "fast-rotation"
+when = [
+  "max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "axis == 'roll'",
+  "abs(rotation_deg.roll) >= flip_min_deg",
+  "abs(rotation_deg.yaw) > yaw_share * abs(rotation_deg.roll)",
+]
+title = "{direction} roll with yaw"
+why = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} / yaw {rotation_deg.yaw:+} deg in {duration} s, peak {max(peak_rate_dps.roll, peak_rate_dps.pitch)} dps, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 10
+examples = [{ log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 29.5, note = "roll +304 with yaw +197" }]
+
+# ---- throttle ---------------------------------------------------------------------------------------------------
+
+[[trick]]
+id = "dive"
+tag = "dive"
+segment = "throttle-cut"
+when = ["tilt_deg.mean >= dive_min_tilt"]
+title = "dive"
+why = "throttle cut for {duration} s, tilt {tilt_deg.min}-{tilt_deg.max} deg"
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 14.0 },
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 47.0 },
+]
+
+# ---- technical --------------------------------------------------------------------------------------------------
+
+[[trick]]
+id = "gyro-kick"
+tag = "gyro-kick"
+segment = "yaw-kick"
+when = []
+title = "gyro yaw kick"
+why = "raw yaw {raw_yaw_dps} dps with the yaw stick centred"
+
+[[trick]]
+id = "motor-loss"
+tag = "motor-loss"
+segment = "motor-drop"
+when = []
+title = "motor {motor} power loss"
+why = "motor {motor} eRPM {erpm_before:.0f} -> {erpm_after:.0f} in {opt.window * 1000:.0f} ms at full command, held {opt.hold} s, no impact"
+examples = [{ log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 70.4, note = "motor 1, the repaired one; the 10-07 pin" }]

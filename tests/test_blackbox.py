@@ -220,8 +220,10 @@ class RatesTest(unittest.TestCase):
         self.assertAlmostEqual(kiss["max_dps"][0], 666.7)
         quick = blackbox.rates({"rates_type": 4, "rc_rates": [100] * 3, "rates": [67] * 3, "rc_expo": [30] * 3})
         self.assertEqual((quick["max_dps"][0], quick["centre_dps"][0]), (670.0, 140.0))
-        # the firmware clamps the setpoint at 1998 deg/s
+        # the firmware clamps the setpoint at 1998 deg/s, or lower when the header's rate_limits say so
         self.assertEqual(blackbox.rates({"rates_type": 0, "rc_rates": [250] * 3, "rates": [99] * 3, "rc_expo": [0] * 3})["max_dps"][0], 1998.0)
+        limited = blackbox.rates({"rates_type": 3, "rc_rates": [7] * 3, "rates": [67] * 3, "rc_expo": [0] * 3, "rate_limits": [500, 1998, 1998]})
+        self.assertEqual(limited["max_dps"], [500.0, 670.0, 670.0])
 
     def test_unknown_or_missing(self):
         self.assertIsNone(blackbox.rates({"rc_rates": [7, 7, 7], "rates": [67, 67, 67], "rc_expo": [0, 0, 0]}))   # decoded before #22

@@ -30,6 +30,15 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   dumps, never from sheet thumbnails: three wrong labels once poisoned the rare digits). The aligner: length and
   total alignment, then the boot's uptime (offset can only go down along a boot; a line video = a·uptime + b per
   boot, the two clocks differ by ~0.3 %), then arms with no run derived along the line. `OSD_LAG` = 0.25 s.
+- Trick detection (`acroscope/tricks/`, #22): an engine (`segments.py` cuts an arm into windows, `features.py` measures
+  them in `metrics.summary`'s vocabulary, `expr.py` is the condition language, never `eval`) plus the shipped
+  `tricks.toml`, one entry per trick with `[params]` for the numbers; `library.py` loads and refuses a bad file at
+  load. `events` is `tricks.detect`. A trick change: edit the TOML, `acroscope tricks explain <bbl>:<arm>` to see
+  every window's verdict, add an `examples` entry for the real moment, `acroscope tricks check` (proxied: the
+  server's logs). The pre-#22 detectors were ported window for window: on 234 real arms (eleven logs, 2026-10-07 to
+  10-16) every event's tag, title, why, start and end were identical except the dives' tilt range (every frame now,
+  not 40 samples) and the powerloops' inverted throttle (IMU tilt > 135, not integrated pitch, which for a loop
+  entered from a dive measured the climb). The server's `_events` cache is keyed by the tricks files' mtimes.
 - The flight-analysis session's brief in the Drive folder (`~/gdrive/fpv/CLAUDE.md`) carries the acroscope workflow
   that session follows: keep its acroscope bullet in step with CLI changes.
 - Cache: `~/.cache/acroscope` on joan (frames and sheets fetched from the server, the real-data test leftovers);
@@ -64,7 +73,8 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   ingest end to end on a synthetic batch, the aligner on made-up data, the player in a headless browser, and the real-data pins (10-07 schammer by
   hand in `video-blackbox-index.md`; the #4 truths on 10-10 001) through the server. A pin of new behaviour is red
   until the server runs it. Red/green: write the test first for store, API, aligner and player work.
-- Smoke checks with known answers through the server, seconds each: `sessions 10-07` (20 arms, 15 matches, 29
+- Smoke checks with known answers through the server, seconds each: `tricks check` (the tricks file's examples, the
+  10-07 pins among them); `sessions 10-07` (20 arms, 15 matches, 29
   moments); `events 10-07 011` (motor 1 power loss at 1:23.4, hard landing at 1:24.4); `automatch 10-07 008`
   without `--write` (arms 14/15/17 at about +4.75/+20.25/+64.25); `metrics 10-07 007 1:20 1:25 --loop` (-385 deg
   pitch); `automatch 2026-10-10 001` (15 arms, arm 1 at 8.0, arm 9 at 150.3, boot fit a = 0.9971).

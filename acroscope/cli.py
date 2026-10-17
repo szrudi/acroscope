@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import blackbox, events as ev, ingest, metrics, osd, sessions, video, xspf
+from . import blackbox, ingest, metrics, osd, sessions, tricks, video, xspf
 from .config import CACHE_DIR, DATA_DIR, DB_PATH, SERVER_URL, TAGS
 from .remote import RemoteError
 
@@ -365,7 +365,7 @@ def cmd_events(a):
                     if (blackbox.index_bbl(b)["file"], r["index"]) not in seen and r["frames"]:
                         arms.append((None, blackbox.load_arm(b, r["index"])))
     for m, arm in arms:
-        for e in ev.detect(arm):
+        for e in tricks.detect(arm):
             r = {"bbl": arm.bbl[25:40], "arm": arm.index, **e}
             if m:
                 r["video"], r["start"], r["end"] = m["video"], round(e["arm_from"] + m["offset"], 2), round(e["arm_to"] + m["offset"], 2)
@@ -375,6 +375,101 @@ def cmd_events(a):
     for r in rows:
         where = f"{r['video'][-7:-4]} {fmt_time(r['start'])}-{fmt_time(r['end'])}" if "video" in r else f"arm {r['arm']:2} {r['arm_from']:6.2f}-{r['arm_to']:6.2f} (no clip)"
         print(f"{where:28} {r['tag']:10} {r['title']:24} | {r['why']}")
+
+
+def cmd_tricks(a):
+    """The tricks file(s) in force (#22): list them, show one, the feature names, run the examples, or explain an
+    arm window by window. Proxied like `events`: the server's library is the one that detects."""
+    lib = tricks.library()
+    what, args = a.what, a.args
+    if what == "list":
+        if a.json:
+            return out({"sources": lib.sources, "params": lib.params,
+                        "segments": {n: {"kind": s.kind, **s.opts} for n, s in lib.segments.items()},
+                        "tricks": [{"id": t.id, "tag": t.tag, "segment": t.segment, "priority": t.priority, "enabled": t.enabled,
+                                    "when": t.conditions, "title": t.title, "why": t.why, "requires": lib.requires(t),
+                                    "suppress": [{"tags": list(r.tags), "margin": r.margin, "within": r.within} for r in t.suppress],
+                                    "examples": t.examples, "source": t.source} for t in lib.ordered()]})
+        print(f"# {', '.join(lib.sources)}")
+        print(f"{'id':16} {'tag':11} {'segment':16} {'kind':13} prio  on   ex  conditions")
+        for t in lib.ordered():
+            seg = lib.segments[t.segment]
+            print(f"{t.id:16} {t.tag:11} {t.segment[:16]:16} {seg.kind:13} {t.priority:4}  {'yes' if t.enabled else 'no ':3} {len(t.examples):3}  {len(t.when)}")
+        print(f"params: {', '.join(f'{k}={v}' for k, v in lib.params.items())}")
+        return
+    if what == "show":
+        for tid in args or [None]:
+            t = lib.tricks.get(tid)
+            if not t:
+                raise FileNotFoundError(f"{tid}: no such trick (have {', '.join(lib.tricks)})")
+            seg = lib.segments[t.segment]
+            print(f"[[trick]] {t.id}  ({t.source})")
+            print(f"  tag       {t.tag}    priority {t.priority}    {'enabled' if t.enabled else 'DISABLED'}")
+            print(f"  segment   {t.segment}: {seg.kind} {' '.join(f'{k}={v}' for k, v in seg.opts.items())}")
+            for c in t.conditions:
+                print(f"  when      {c}")
+            print(f"  title     {t.title}\n  why       {t.why}")
+            for r in t.suppress:
+                print(f"  suppress  {', '.join(r.tags)}: " + (f"windows within {r.margin} s" if r.margin is not None else f"instants within {r.within} s"))
+            if lib.requires(t):
+                print(f"  requires  {', '.join(lib.requires(t))}")
+            for e in t.examples:
+                where = f"at {e['at']}" if "at" in e else f"{'none in' if e.get('absent') else 'in'} {e['from']}-{e['to']}"
+                print(f"  example   {e['log']} arm {e['arm']} {where}" + (f"  ({e['note']})" if e.get("note") else ""))
+            if t.note:
+                print(f"  note      {t.note}")
+        return
+    if what == "features":
+        from .tricks import features, segments
+        kinds = args or list(segments.KINDS)
+        if a.json:
+            return out({k: features.vocabulary(k) for k in kinds})
+        for k in kinds:
+            print(f"# {k}: {', '.join(f'{o}={d}' for o, d in segments.KINDS[k].items())}")
+            last = ""
+            for name, desc in features.vocabulary(k).items():
+                print(f"  {name:28} {desc or last}")
+                last = desc or last
+        return
+    if what == "check":
+        res = tricks.check(lib, args or None)
+        if a.json:
+            out(res)
+        else:
+            for r in res["results"]:
+                print(f"{r['status']:8} {r['trick']:16} {r['log'][18:40]} arm {r['arm']:2} {r['where']:14} {r.get('found', '')}")
+            print(f"{res['passed']} passed, {res['failed']} failed, {res['unchecked']} unchecked (log not here)")
+        if res["failed"]:
+            sys.exit(1)
+        return
+    if what == "explain":
+        if not args:
+            raise SystemExit("acroscope tricks explain <bbl>:<arm> [from] [to]")
+        bbl, _, n = args[0].rpartition(":")
+        arm = blackbox.load_arm(bbl, int(n))
+        t0 = parse_time(args[1]) if len(args) > 1 else 0.0
+        t1 = parse_time(args[2]) if len(args) > 2 else 1e9
+        ex = tricks.explain(arm, lib, t0, t1)
+        if a.json:
+            return out(ex)
+        for tid, missing in ex["skipped"].items():
+            print(f"# {tid}: skipped, the log has no {', '.join(missing)}")
+        for w in ex["windows"]:
+            n = w["numbers"]
+            rot, pk, thr, tilt = n.get("rotation_deg", {}), n.get("peak_rate_dps", {}), n.get("throttle_pct", {}), n.get("tilt_deg", {})
+            line = (f"{w['segment']} {w['arm_from']:.2f}-{w['arm_to']:.2f} ({n.get('duration', 0)} s)  roll {rot.get('roll', 0):+} pitch {rot.get('pitch', 0):+} "
+                    f"yaw {rot.get('yaw', 0):+}  peak {max(pk.values(), default=0)}  thr {thr.get('min')}-{thr.get('max')}  tilt {tilt.get('min')}-{tilt.get('max')}")
+            extras = {k: v for k, v in n.items() if k in ("axis", "direction", "arm_t", "impact_g", "jolt_dps", "raw_yaw_dps", "motor", "erpm_before", "erpm_after")}
+            print(line + ("  " + " ".join(f"{k}={v}" for k, v in extras.items()) if extras else ""))
+            for t in w["tricks"]:
+                fate = "fired" if t["fired"] else f"failed: {t['failed']}"
+                if t["lost_to"]:
+                    fate = f"lost to {t['lost_to']}"
+                elif t["suppressed_by"]:
+                    fate = f"suppressed by {t['suppressed_by']}"
+                print(f"    {t['id']:16} {fate}")
+        return
+    raise SystemExit(f"tricks: {what}: not a subcommand (list, show, features, check, explain)")
 
 
 def cmd_frame(a):
@@ -558,7 +653,7 @@ def cmd_serve(a):
 
 # with ACROSCOPE_URL set these run on the server (they need the clips, the logs or the cache); frames and sheets
 # come back as files into the local cache under the same relative path
-PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach", "tag", "recut"}
+PROXIED = {"arms", "decode", "metrics", "events", "tricks", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach", "tag", "recut"}
 
 
 def _proxy(argv: list[str]) -> None:
@@ -641,9 +736,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", type=float, nargs="?", const=0.2, metavar="STEP", help="per-STEP table (default 0.2 s)")
     p.add_argument("--loop", action="store_true", help="add the powerloop summary"); p.add_argument("--orbit", action="store_true", help="add the orbit table")
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_metrics)
-    p = sp.add_parser("events", help="suggested moments from the detectors (flips, loops, split-S, dives, crashes, kicks, motor loss)")
+    p = sp.add_parser("events", help="suggested moments from the tricks file (flips, loops, split-S, dives, crashes, kicks, motor loss)")
     p.add_argument("session", nargs="?"); p.add_argument("video", nargs="?"); p.add_argument("--arm", help="bbl:N")
     p.add_argument("--matched-only", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_events)
+    p = sp.add_parser("tricks", help="the tricks file in force: list | show <id> | features [kind] | check [id...] | explain <bbl>:<arm> [from] [to]")
+    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "features", "check", "explain"]); p.add_argument("args", nargs="*")
+    p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_tricks)
     p = sp.add_parser("frame", help="extract frames as JPEG (prints the paths); --osd crops and enlarges the OSD strip")
     p.add_argument("session"); p.add_argument("video"); p.add_argument("times", nargs="+"); p.add_argument("--osd", action="store_true")
     p.add_argument("--scale", type=int, default=1); p.set_defaults(f=cmd_frame)

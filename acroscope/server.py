@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import blackbox, events as ev, ingest, metrics, sessions, video
+from . import blackbox, ingest, metrics, sessions, tricks, video
 from .config import BLACKBOX_DIR, CACHE_DIR, VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
@@ -29,7 +29,7 @@ _busy_lock = threading.Lock()
 SCAN_EVERY = 300                 # seconds between background walks of the data dir
 # CLI commands a client may run here (they need the clips, the logs or the cache, which only the server has);
 # each runs in a child process, so the reader's pure-Python work never holds this process's GIL
-PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach", "tag", "recut"}
+PROXIED = {"arms", "decode", "metrics", "events", "tricks", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach", "tag", "recut"}
 INBOX_EVERY = 20                 # seconds between looks at inbox/ for a complete batch
 
 
@@ -226,8 +226,10 @@ def _under(root: Path, *parts: str) -> Path:
 
 
 @lru_cache(maxsize=64)
-def _events(bbl: str, arm: int) -> list[dict]:
-    return ev.detect(blackbox.load_arm(bbl, arm))
+def _events(bbl: str, arm: int, stamp: tuple) -> list[dict]:
+    """The suggestions for an arm under the tricks file as it is (`stamp`: the library files' mtimes, so an edited
+    file shows on the next look without a restart)."""
+    return tricks.detect(blackbox.load_arm(bbl, arm))
 
 
 @lru_cache(maxsize=16)
@@ -414,7 +416,7 @@ class Handler(BaseHTTPRequestHandler):
                     for m in s["matches"]:
                         if (q.get("video") and m["video"] != q["video"]) or not _indexed(m["bbl"]):
                             continue
-                        for e in _events(m["bbl"], m["arm"]):
+                        for e in _events(m["bbl"], m["arm"], tricks.fingerprint()):
                             rows.append({**e, "video": m["video"], "start": round(e["arm_from"] + m["offset"], 2), "end": round(e["arm_to"] + m["offset"], 2)})
                     return self._json(rows)
                 if parts[3] == "series":

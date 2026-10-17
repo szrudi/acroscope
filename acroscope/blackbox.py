@@ -23,7 +23,7 @@ from .config import BLACKBOX_DIR, NAMES_ONLY, cache
 logging.getLogger("orangebox").setLevel(logging.ERROR)
 
 HEADER_KEYS = ["Firmware revision", "Craft name", "looptime", "pid_process_denom", "P interval", "P ratio",
-               "rates_type", "rates", "rc_rates", "rc_expo", "thr_mid", "thr_expo", "rollPID", "pitchPID", "yawPID",
+               "rates_type", "rates", "rc_rates", "rc_expo", "rate_limits", "thr_mid", "thr_expo", "thr_hover", "rollPID", "pitchPID", "yawPID",
                "gyro_notch1_hz", "motorOutput", "acc_1G", "vbat_scale", "gyro_scale"]
 MAGIC = b"ACRO1\n"
 INDEX_VERSION = 3        # 3: rates_type read and the rate profile (max and centre rate per axis) in every arm's meta (#22)
@@ -57,10 +57,12 @@ def rates(headers: dict) -> dict | None:
         kind = RATES_TYPES[int(headers["rates_type"])]
         rc, sup, expo = ([float(v) for v in headers[k]] for k in ("rc_rates", "rates", "rc_expo"))
         assert len(rc) == len(sup) == len(expo) == 3
+        limits = [float(v) for v in headers.get("rate_limits") or [SETPOINT_RATE_LIMIT] * 3]
+        assert len(limits) == 3
     except (KeyError, IndexError, TypeError, ValueError, AssertionError):
         return None
     mx, ce = [], []
-    for r, s, e in zip(rc, sup, expo):
+    for r, s, e, lim in zip(rc, sup, expo, limits):
         e /= 100
         if kind == "betaflight":
             rr = r / 100
@@ -81,7 +83,7 @@ def rates(headers: dict) -> dict | None:
             mid = r * 2
             top = max(s * 10, mid)
             mid *= 1 - e
-        mx.append(round(min(top, SETPOINT_RATE_LIMIT), 1))
+        mx.append(round(min(top, lim, SETPOINT_RATE_LIMIT), 1))
         ce.append(round(mid, 1))
     return {"type": kind, "max_dps": mx, "centre_dps": ce}
 
