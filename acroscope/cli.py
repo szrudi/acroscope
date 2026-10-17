@@ -233,12 +233,13 @@ def cmd_category(a):
 
 def cmd_arms(a):
     idx = blackbox.index_bbl(a.bbl, force=a.force, progress=lambda m: print(m, file=sys.stderr))
-    if a.json:
-        return out(idx)
     try:
-        size = {s["index"]: _bytes(s["size"]) for s in blackbox.segments(a.bbl)}
+        nbytes = {s["index"]: s["size"] for s in blackbox.segments(a.bbl)}
     except Exception:  # noqa: BLE001  (the sizes are extra: a listing from the cache without the file still prints)
-        size = {}
+        nbytes = {}
+    if a.json:       # the agent reads this, not the listing: each segment says its size in bytes (#21)
+        return out(idx | {"arms": [r | ({"size": nbytes[r["index"]]} if r["index"] in nbytes else {}) for r in idx["arms"]]})
+    size = {i: _bytes(n) for i, n in nbytes.items()}
     print(f"{idx['file']}  ({_segment_count(idx['arms'])})")
     for r in idx["arms"]:
         if not r.get("frames"):      # a segment without frames is no arm: say why, so missing and unreadable differ (#21)

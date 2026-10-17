@@ -174,6 +174,11 @@ class SegmentListingTest(unittest.TestCase):
         self.assertIn("no frames: empty", rows[4])
         self.assertIn("300 KB", rows[1])
 
+    def test_arms_json_carries_the_sizes(self):
+        """`arms --json` says each segment's size in bytes too: the agent reads the JSON, not the listing (#21)."""
+        arms = json.loads(self.cli("arms", "L.bbl", "--json"))["arms"]
+        self.assertEqual([a.get("size") for a in arms], [300_000, 6144, 280_000, 512])
+
     def test_sessions_says_what_a_segment_without_frames_is(self):
         from acroscope import sessions
         from acroscope.db import Db
