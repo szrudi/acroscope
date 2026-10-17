@@ -133,13 +133,13 @@ acroscope match <session> <video> <bbl> <arm> <offset>   record a video <-> arm 
 acroscope metrics <session> <video> <from> <to> [--profile [STEP]] [--loop] [--orbit]
 acroscope metrics --arm <bbl>:<n> <from> <to>    same, in arm seconds without a session
 acroscope events <session> [video]               the tricks file's suggestions (flip, roll, powerloop, split-s, dive, crash, gyro-kick, motor-loss)
-acroscope tricks [list|show <id>|features [kind]|check [id...]|explain <bbl>:<arm> [from] [to]|eval <session>|init] [--craft X]
+acroscope tricks [list|show <id>|features [kind]|check [id...]|explain <bbl>:<arm> [from] [to]|eval <session>] [--craft X]
                                                  the tricks in force, one in full, the names a condition may use, the
                                                  examples run against the logs, every window of an arm with each trick's
-                                                 verdict, the tricks scored against a session's tagged moments, a starter
-                                                 file for your own tricks
+                                                 verdict, the tricks scored against a session's tagged moments
 acroscope tricks layer | set <param> <value> | unset <param> | on <id> | off <id> | skill <name|none> [--craft X]
                                                  the pilot's layer in the database, and one change to it (checked first)
+acroscope tricks export [file] | import <file> [--merge]   the layer as a tricks file to share, and one brought in
 acroscope frame <session> <video> <t>... [--osd] JPEGs of frames; --osd enlarges the OSD strip (arm timer, total, vbat)
 acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling several timestamped frames (one look for the agent)
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
@@ -181,6 +181,7 @@ GET  /api/tricks[?craft=]               the tricks in force: params with default
                                         and seen in the logs), segments, tricks, the feature names per segment kind
 GET  /api/tricks/layer                  the pilot's layer kept in the database      POST /api/tricks/layer   {the layer, whole}
 DELETE /api/tricks/layer                                                            (a bad layer: 400 with the place named)
+GET  /api/tricks/export                 the layer as a tricks file (TOML)           POST /api/tricks/import  {text, mode: replace|merge}
 POST /api/scan   POST /api/import       GET /api/store
 ```
 
@@ -260,21 +261,22 @@ around it and a motor "dropping" at the impact; a powerloop is not also a back f
 fields (motor loss needs eRPM) and is skipped on a log without them. A feature the log cannot give is `none`, and a
 condition on it is simply false.
 
-**Your own tricks** live in two places over the shipped file, both checked at load like the rest. The server's
-database holds the **pilot's layer**, what the player's configuration page and `acroscope tricks set | unset | on |
-off | skill` write (one document shaped like the TOML tables; `tricks layer` shows it, `GET/POST /api/tricks/layer`
-read and replace it, a bad one is refused with the place named and nothing changes). Below it a **file**:
-`acroscope tricks init` writes a starter at
-`~/.config/acroscope/tricks.toml` (or where `ACROSCOPE_TRICKS` points: a file, or a directory of `.toml` files; the
-container reads `/state/tricks.toml`, beside the database). In it: `skill = "beginner"` or `"advanced"`, a preset
-of the numbers (a beginner's trick counts when it is nearly there; an advanced pilot's only when it is clean), your
-own `[params]` over the preset, a `[[trick]]` with an existing `id` to turn one off (`enabled = false`) or change a
-field, a new `[[trick]]` of your own, and `[craft."OttoJr"]` sections keyed by the log header's craft name:
-properties (`size_mm`, `weight_g`, `hover_pct`: features too, as `craft.size_mm`, for conditions that scale with the
-quad), a `skill` for that quad, `[craft."OttoJr".params]`, segment options (`[craft."OttoJr".segment.impact] g = 5`)
-and trick overrides. `[craft.default]` is what any quad is unless its section says otherwise. A name that does not
-exist is refused when the file loads; `acroscope tricks` shows what is in force (`--craft OttoJr` for one quad), and
-the server reads an edited file on the next look, no restart.
+**Your own tricks** are the **pilot's layer** over the shipped file, kept in the server's database: what the
+configuration page and `acroscope tricks set | unset | on | off | skill` write (`tricks layer` shows it,
+`GET/POST /api/tricks/layer` read and replace it, a bad one is refused with the place named and nothing changes). It
+has the same shape as a tricks file: `skill = "beginner"` or `"advanced"`, a preset of the numbers (a beginner's
+trick counts when it is nearly there; an advanced pilot's only when it is clean), your own `[params]` over the
+preset, a `[[trick]]` with an existing `id` to turn one off (`enabled = false`) or change a field, a new `[[trick]]`
+of your own, and `[craft."OttoJr"]` sections keyed by the log header's craft name: properties (`size_mm`,
+`weight_g`, `hover_pct`: features too, as `craft.size_mm`, for conditions that scale with the quad), a `skill` for
+that quad, `[craft."OttoJr".params]`, segment options (`[craft."OttoJr".segment.impact] g = 5`) and trick
+overrides. `[craft.default]` is what any quad is unless its section says otherwise. A name that does not exist is
+refused, and the server judges by the new layer on the next look, no restart.
+
+**Sharing** is what the file is for: `acroscope tricks export [file]` (or the page's export) writes your layer as a
+tricks file others can read, `acroscope tricks import <file> [--merge]` (or the page's import) brings one in, whole
+or over your own, checked like everything else. `acroscope tricks` shows what is in force (`--craft OttoJr` for one
+quad).
 
 The player's `/config` page (see *Configuration page*) is the same library with knobs.
 
@@ -298,8 +300,8 @@ in five tabs: **profile** (the skill preset, every number with the shipped defau
 from, filtered by number or trick), **drones** (the crafts seen in the logs by their header name: properties, a preset
 and numbers for that quad, its tricks on and off), **tricks** (the list in force with switches, each one's definition
 and examples, "check the examples" against the server's logs, and the tricks scored against a session's tagged
-moments: found, missed with arm and time, detections on no moment), **settings** (what this browser remembers, and the
-raw layer as the server keeps it) and **tags** (the tag manager, moved here from the player). Every change goes to
+moments: found, missed with arm and time, detections on no moment), **settings** (what this browser remembers, your layer
+exported as a tricks file or one imported, and the raw layer as the server keeps it) and **tags** (the tag manager, moved here from the player). Every change goes to
 the server as the whole layer, checked as a tricks file is; a refused one shows its message and changes nothing. The
 player's suggestions follow on the next look.
 

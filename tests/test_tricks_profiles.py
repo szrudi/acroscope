@@ -1,5 +1,5 @@
-"""Profiles over the shipped tricks (#22 step 3): a pilot's file (ACROSCOPE_TRICKS, else ~/.config), skill presets,
-and craft sections keyed by the log header's Craft name, each tried on a scripted arm."""
+"""Profiles over the shipped tricks (#22 step 3): the pilot's layer as a second table over the shipped one (skill
+presets, own params, craft sections keyed by the log header's Craft name), each tried on a scripted arm."""
 import io
 import os
 import tempfile
@@ -129,59 +129,17 @@ priority = 20
         self.assertIsNot(lib.for_craft("X"), lib.for_craft(None))
 
 
-class PathTest(unittest.TestCase):
-    def test_where_the_pilots_file_is(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            f = Path(tmp) / "mine.toml"
-            with mock.patch.dict(os.environ, {"ACROSCOPE_TRICKS": str(f)}):
-                self.assertEqual(tricks.library_paths(), [SHIPPED, f])
-            d = Path(tmp) / "tricks.d"
-            d.mkdir()
-            (d / "b.toml").write_text("version = 1\n")
-            (d / "a.toml").write_text("version = 1\n")
-            with mock.patch.dict(os.environ, {"ACROSCOPE_TRICKS": str(d)}):
-                self.assertEqual(tricks.library_paths(), [SHIPPED, d / "a.toml", d / "b.toml"])
-            with mock.patch.dict(os.environ, {"ACROSCOPE_TRICKS": ""}):
-                self.assertEqual(tricks.user_path(), Path("~/.config/acroscope/tricks.toml").expanduser())
-            # a file that is not there is simply not a layer
-            with mock.patch.dict(os.environ, {"ACROSCOPE_TRICKS": str(f)}), mock.patch.object(tricks, "_cache", None):
-                self.assertEqual(tricks.library().sources, [str(SHIPPED)])
-
-    def test_init_writes_a_file_that_loads(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            f = Path(tmp) / "cfg" / "tricks.toml"
-            out = io.StringIO()
-            with mock.patch.dict(os.environ, {"ACROSCOPE_TRICKS": str(f)}), mock.patch.object(sessions, "SERVER_URL", ""), \
-                    mock.patch.object(tricks, "_cache", None), redirect_stdout(out):
-                from acroscope import cli
-                cli.main(["tricks", "init"])
-                self.assertEqual(out.getvalue().strip(), str(f))
-                self.assertEqual(f.read_text(), tricks.TEMPLATE)
-                self.assertEqual(tricks.library().sources, [str(SHIPPED), str(f)])      # loads as written (everything off)
-                with self.assertRaises(SystemExit):
-                    cli.main(["tricks", "init"])                                          # never overwrites
-                # every commented knob in it is valid once switched on
-                import re
-                on = "\n".join(l[2:] if re.match(r"# (\w[\w-]* = |\[)", l) else l for l in tricks.TEMPLATE.splitlines())
-                f.write_text(on)
-                os.utime(f, ns=(0, f.stat().st_mtime_ns + 10**9))
-                lib = tricks.library()
-                self.assertEqual(lib.skill, "beginner")
-                self.assertIn("hard-roll", lib.tricks)
-                self.assertFalse(lib.for_craft("OttoJr").tricks["motor-loss"].enabled)
-                self.assertEqual(lib.for_craft("OttoJr").segments["impact"].opts["g"], 5)
-
-
 class CliTest(unittest.TestCase):
     def cli(self, user: str, *args) -> str:
+        """The CLI with `user` (TOML) as the pilot's layer, handed in as the database would."""
+        import tomllib
         out = io.StringIO()
-        with tempfile.TemporaryDirectory() as tmp:
-            f = Path(tmp) / "tricks.toml"
-            f.write_text(user)
-            with mock.patch.dict(os.environ, {"ACROSCOPE_TRICKS": str(f)}), mock.patch.object(sessions, "SERVER_URL", ""), \
-                    mock.patch.object(tricks, "_cache", None), mock.patch.object(blackbox, "load_arm", lambda b, n: ROLL_250_X), redirect_stdout(out):
-                from acroscope import cli
-                cli.main(list(args))
+        table = tomllib.loads(user)
+        with mock.patch.object(sessions, "SERVER_URL", ""), mock.patch.object(tricks, "_cache", None), \
+                mock.patch.object(tricks, "LAYER_SOURCE", lambda: (table, "t") if table else (None, None)), \
+                mock.patch.object(blackbox, "load_arm", lambda b, n: ROLL_250_X), redirect_stdout(out):
+            from acroscope import cli
+            cli.main(list(args))
         return out.getvalue()
 
     def test_list_shows_the_layers_in_force(self):
@@ -194,13 +152,13 @@ class CliTest(unittest.TestCase):
         self.assertIn("flip_min_deg=200", for_x)
         self.assertIn("craft.size_mm=75", for_x)
         self.assertIn("craft.name=X", for_x)
-        text = self.cli("version = 1\n", "tricks")
+        text = self.cli("", "tricks")
         self.assertIn("# skill: none (the defaults)", text)
 
     def test_explain_uses_the_arms_craft(self):
         text = self.cli('[craft."X".params]\nflip_min_deg = 200\n', "tricks", "explain", "SYNTH.bbl:1")
         self.assertRegex(text, r"\broll\s+fired")
-        text = self.cli("version = 1\n", "tricks", "explain", "SYNTH.bbl:1")
+        text = self.cli("", "tricks", "explain", "SYNTH.bbl:1")
         self.assertRegex(text, r"\broll\s+failed: abs\(rotation_peak_deg.roll\) >= flip_min_deg")
 
 

@@ -72,8 +72,7 @@ class ConfigPageTest(unittest.TestCase):
         (root / "data" / "blackbox" / "roll.bbl").write_bytes(b"")
         save_arm(make_arm(8, gyro=axis(0, pulse(2.0, 2.5, 500)), craft="OttO"), root / "cache", "roll")     # 250 deg: an attempt, a roll to a beginner
         cls.port = free_port()
-        env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"), ACROSCOPE_CACHE=str(root / "cache"),
-                   ACROSCOPE_URL="", ACROSCOPE_TRICKS=str(root / "none.toml"))
+        env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"), ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="")
         cls.proc = subprocess.Popen([sys.executable, "-m", "acroscope.cli", "serve", "--host", "127.0.0.1", "--port", str(cls.port), "--no-warm"],
                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.url = f"http://127.0.0.1:{cls.port}"
@@ -252,6 +251,20 @@ class ConfigPageTest(unittest.TestCase):
         self.assertIn("database", page.text_content("#settingsPanel .kv"))
         page.on("dialog", lambda d: d.accept())
         self.act(page, lambda: page.click("#layerClear"), {})
+        # share: the export link, and a tricks file pasted in, replacing then merging
+        self.assertEqual(page.get_attribute("#exportLink", "href"), "/api/tricks/export")
+        self.assertEqual(page.get_attribute("#exportLink", "download"), "acroscope-tricks.toml")
+        self.assertTrue(page.is_disabled("#importReplace"))
+        page.fill("#importText", 'version = 1\nskill = "beginner"\n[params]\norbit_min_deg = 240\n')
+        self.assertFalse(page.is_disabled("#importReplace"))
+        self.act(page, lambda: page.click("#importReplace"), {"version": 1, "skill": "beginner", "params": {"orbit_min_deg": 240}})
+        self.assertEqual(page.locator("#params, #settingsPanel").count(), 1)                     # still on settings
+        page.fill("#importText", "[params]\nflip_min_deg = 250\n")
+        self.act(page, lambda: page.click("#importMerge"), {"version": 1, "skill": "beginner", "params": {"orbit_min_deg": 240, "flip_min_deg": 250}})
+        page.fill("#importText", "[params]\nflip_min_dg = 250\n")
+        page.click("#importReplace")
+        page.wait_for_function("() => document.querySelector('#err').textContent.includes('flip_min_dg')")
+        self.assertEqual(self.layer(), {"version": 1, "skill": "beginner", "params": {"orbit_min_deg": 240, "flip_min_deg": 250}})
         page.uncheck("#stSticks")
         self.assertEqual(page.evaluate("() => localStorage.getItem('acro.sticks')"), "0")
         page.check("#stAll")

@@ -381,7 +381,7 @@ def cmd_tricks(a):
     """The tricks file(s) in force (#22): list them, show one, the feature names, run the examples, or explain an
     arm window by window. Proxied like `events`: the server's library is the one that detects."""
     what, args = a.what, a.args
-    if not sessions.remote():
+    if not sessions.remote() and tricks.LAYER_SOURCE is None:          # the local database's layer, unless a source is set already
         tricks.LAYER_SOURCE = _layer_from_store
     if what in ("set", "unset", "on", "off", "skill"):
         return _edit_tricks(a)
@@ -393,19 +393,14 @@ def cmd_tricks(a):
             return print("no pilot's layer in the database (acroscope tricks set|on|off|skill write one)")
         print(f"# the pilot's layer in the database, {row['updated_at']}")
         return out(row["value"])
-    if what == "init":
-        p = tricks.user_path()
-        if p.exists():
-            raise SystemExit(f"{p} exists; edit it (acroscope tricks shows what is in force)")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(tricks.TEMPLATE)
-        return print(p)
+    if what in ("export", "import"):
+        return _share_tricks(a)
     base = tricks.library()
     lib = base.for_craft(a.craft)                      # the library in force: the default layer, or a craft's
     if what == "list":
         if a.json:
             return out(tricks.describe(base, a.craft))
-        print(f"# {', '.join(base.sources)}" + ("" if tricks.user_path().is_file() else f"  (no {tricks.user_path()}: acroscope tricks init)"))
+        print(f"# {', '.join(base.sources)}")
         crafts = [n for n in base.crafts if n != "default"]
         print(f"# skill: {base.skill or 'none (the defaults)'}; presets: {', '.join(base.skills) or 'none'}; crafts: {', '.join(crafts) or 'none'}"
               + (f"; showing {a.craft}" if a.craft else ""))
@@ -513,7 +508,28 @@ def cmd_tricks(a):
                     fate = f"suppressed by {t['suppressed_by']}"
                 print(f"    {t['id']:16} {fate}")
         return
-    raise SystemExit(f"tricks: {what}: not a subcommand (list, show, features, check, explain, eval, init, layer, set, unset, on, off, skill)")
+    raise SystemExit(f"tricks: {what}: not a subcommand (list, show, features, check, explain, eval, layer, set, unset, on, off, skill, export, import)")
+
+
+def _share_tricks(a):
+    """export [path]: the pilot's layer as a tricks file (stdout, or the file); import <path> [--merge]: a tricks file
+    as the layer, whole or over the current one. Both run on this machine against the store (remote or local):
+    the file is here, the layer is there."""
+    store = sessions.store()
+    row = store.setting(tricks.LAYER_KEY)
+    if a.what == "export":
+        text = tricks.export_toml(row["value"] if row else None, f"from {store!r}")
+        if a.args:
+            Path(a.args[0]).write_text(text)
+            return print(a.args[0])
+        return sys.stdout.write(text)
+    if len(a.args) != 1:
+        raise SystemExit("acroscope tricks import <file.toml> [--merge]")
+    text = Path(a.args[0]).read_text()
+    table = tricks.import_table(text, row["value"] if row else None, "merge" if a.merge else "replace")
+    store.set_setting(tricks.LAYER_KEY, table)
+    print(f"{'merged into' if a.merge else 'replaced'} the pilot's layer: {len(table.get('params', {}))} params, {len(table.get('trick', []))} trick entries, "
+          f"{len(table.get('craft', {}))} crafts" + (f", skill {table['skill']}" if table.get("skill") else ""))
 
 
 def _layer_from_store():
@@ -535,7 +551,6 @@ def _edit_tricks(a):
     table = tricks.edit_layer(row["value"] if row else None, what, *args, craft=a.craft)
     tricks.check_layer(table)                          # a LibraryError names the place
     store.set_setting(tricks.LAYER_KEY, table)
-    tricks.LAYER_SOURCE = _layer_from_store
     lib = tricks.library().for_craft(a.craft)
     if what in ("set", "unset"):
         print(f"{args[0]} = {lib.params.get(args[0])}" + (f" for {a.craft}" if a.craft else ""))
@@ -812,9 +827,10 @@ def parser() -> argparse.ArgumentParser:
     p = sp.add_parser("events", help="suggested moments from the tricks file (flips, loops, split-S, dives, crashes, kicks, motor loss)")
     p.add_argument("session", nargs="?"); p.add_argument("video", nargs="?"); p.add_argument("--arm", help="bbl:N")
     p.add_argument("--matched-only", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_events)
-    p = sp.add_parser("tricks", help="the tricks in force: list | show <id> | features [kind] | check [id...] | explain <bbl>:<arm> [from] [to] | eval <session> | init | "
-                                     "layer | set <param> <value> | unset <param> | on <id> | off <id> | skill <name|none>")
-    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "features", "check", "explain", "eval", "init", "layer", "set", "unset", "on", "off", "skill"])
+    p = sp.add_parser("tricks", help="the tricks in force: list | show <id> | features [kind] | check [id...] | explain <bbl>:<arm> [from] [to] | eval <session> | "
+                                     "layer | set <param> <value> | unset <param> | on <id> | off <id> | skill <name|none> | export [file] | import <file> [--merge]")
+    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "features", "check", "explain", "eval", "layer", "set", "unset", "on", "off", "skill", "export", "import"])
+    p.add_argument("--merge", action="store_true", help="import: over the current layer instead of replacing it")
     p.add_argument("args", nargs="*")
     p.add_argument("--craft", help="the library in force for this craft (by the log header's Craft name); with set/unset/on/off/skill: write into its section")
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_tricks)
@@ -851,7 +867,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv=None):
     a = parser().parse_args(argv)
     args = list(sys.argv[1:] if argv is None else argv)
-    if a.cmd in PROXIED and sessions.remote():
+    if a.cmd in PROXIED and sessions.remote() and not (a.cmd == "tricks" and a.what in ("export", "import")):
         return _proxy(args)
     try:
         a.f(a)

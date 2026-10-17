@@ -44,19 +44,18 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   loops 3/3, barrel roll 1/1, dives 4/7; the 51 "dives" at an arm's first frame (the quad armed on the ground) and
   the crash tumbles are gone. The tuning loop: `eval` names the misses with arm and time, `explain` shows the
   window and the condition that failed, a param or a condition changes, the moment becomes an `examples` entry,
-  `check` keeps it. A pilot's file sits over the shipped one
-  (`ACROSCOPE_TRICKS`, in the container `/state/tricks.toml` beside the database; locally
-  `~/.config/acroscope/tricks.toml`, `tricks init` writes a starter): skill presets, own params, per-craft
-  sections by the header's `Craft name` (`Library.for_craft`). Over the file, the pilot's layer in the database (`settings` row
-  `tricks`, one JSON document shaped like the TOML tables; `tricks.LAYER_SOURCE` is how the server and the local CLI
-  hand it to the library, so the package never opens a database on its own and tests set it explicitly): what
-  `acroscope tricks set | unset | on | off | skill` and the player's configuration page (#45) write, checked by
-  `tricks.check_layer` before it is stored. `GET /api/tricks` is `tricks.describe()`. The player's `/config` page
+  `check` keeps it. The pilot's layer sits over the shipped file: skill presets, own
+  params, per-craft sections by the header's `Craft name` (`Library.for_craft`). It lives in the database
+  (`settings` row `tricks`, one JSON document shaped like the TOML tables; `tricks.LAYER_SOURCE` is how the server
+  and the local CLI hand it to the library, so the package never opens a database on its own and tests set it
+  explicitly): what `acroscope tricks set | unset | on | off | skill` and the player's configuration page (#45)
+  write, checked by `tricks.check_layer` before it is stored. A tricks file is the exchange format, not storage
+  (Rudi, 2026-10-17): `tricks export | import` and the page's share row, `toml_out.py` writes it. `GET /api/tricks` is `tricks.describe()`. The player's `/config` page
   (`acroscope/static/config.html`, one file like the player, five tabs) edits that layer whole through
   `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
   against what the server then holds.
 - Trick work needs real logs on joan: `acroscope fetch-log <fragment> --to <dir>/blackbox` (runs here, no deploy), then
-  `ACROSCOPE_DATA=<dir> ACROSCOPE_CACHE=<cache> ACROSCOPE_URL= ACROSCOPE_TRICKS=/nonexistent` with the branch's
+  `ACROSCOPE_DATA=<dir> ACROSCOPE_CACHE=<cache> ACROSCOPE_URL=` with the branch's
   checkout on `PYTHONPATH` (a script run by path imports the main checkout's package otherwise): `arms` decodes, then
   `events`, `tricks check`, `tricks explain` work offline. `sessions <s> --json` saved from the server gives the
   matches and moments to score against by hand; `tricks eval` itself needs the database, so it runs on the server.

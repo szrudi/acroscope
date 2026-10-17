@@ -288,6 +288,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":           # a HEAD with a body corrupts the next request on a keep-alive connection
             self.wfile.write(body)
 
+    def _text(self, text: str, filename: str | None = None, code=200):
+        """A text body made here (a tricks file exported), as a download when `filename` is given."""
+        body = text.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     def _file(self, path: Path, ctype=None, cache="no-store", download=False):
         if not path.is_file():
             return self._json({"error": f"{path.name}: not found"}, 404)
@@ -386,6 +399,9 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "tricks", "layer"]:
                 row = sessions.store().setting(tricks.LAYER_KEY)
                 return self._json({"layer": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None})
+            if parts == ["api", "tricks", "export"]:                   # the layer as a tricks file: what is shared
+                row = sessions.store().setting(tricks.LAYER_KEY)
+                return self._text(tricks.export_toml(row["value"] if row else None), "acroscope-tricks.toml")
             if parts == ["api", "tag-usage"]:
                 return self._json(sessions.store().tag_usage(q.get("session")))
             if parts[:2] == ["api", "session"] and len(parts) >= 3:
@@ -481,6 +497,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"error": "the layer is a table"}, 400)
                 tricks.check_layer(b)                             # a LibraryError is a ValueError: 400 with the place named
                 row = sessions.store().set_setting(tricks.LAYER_KEY, b)
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"]})
+            if parts == ["api", "tricks", "import"]:                   # a tricks file's text as the layer, whole or merged over it
+                b = self._body()
+                if not isinstance(b, dict) or not isinstance(b.get("text"), str):
+                    return self._json({"error": "import takes {text: the tricks file, mode: replace|merge}"}, 400)
+                current = sessions.store().setting(tricks.LAYER_KEY)
+                table = tricks.import_table(b["text"], current["value"] if current else None, b.get("mode", "replace"))
+                row = sessions.store().set_setting(tricks.LAYER_KEY, table)
                 return self._json({"layer": row["value"], "updated_at": row["updated_at"]})
             if parts == ["api", "tag-categories"]:
                 b = self._body()

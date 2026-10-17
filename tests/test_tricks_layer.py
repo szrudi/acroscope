@@ -34,7 +34,6 @@ class Layered(unittest.TestCase):
             return (row["value"], row["updated_at"]) if row else (None, None)
         for p in (mock.patch.object(sessions, "_store", self.db), mock.patch.object(sessions, "SERVER_URL", ""),
                   mock.patch.object(tricks, "_cache", None), mock.patch.object(tricks, "LAYER_SOURCE", source),
-                  mock.patch.dict(os.environ, {"ACROSCOPE_TRICKS": str(Path(self.tmp.name) / "none.toml")}),
                   mock.patch.object(blackbox, "all_bbls", lambda: [])):
             p.start()
             self.addCleanup(p.stop)
@@ -132,6 +131,78 @@ class DescribeTest(Layered):
         idx = {"arms": [{"index": 1, "frames": 10, "headers": {"Craft name": "OttO"}}, {"index": 2, "frames": 10, "headers": {"Craft name": "AIR65 F"}}, {"index": 3, "frames": 0}]}
         with mock.patch.object(blackbox, "all_bbls", lambda: [Path("a.bbl"), Path("b.bbl")]), mock.patch.object(blackbox, "index_bbl", lambda b, **k: idx if b == "a.bbl" else None):
             self.assertEqual(tricks.describe(tricks.library())["crafts_seen"], ["AIR65 F", "OttO"])
+
+
+class ShareTest(Layered):
+    """A tricks file is the exchange format: the layer out as TOML, a TOML in as the layer, whole or merged."""
+
+    def test_export(self):
+        import tomllib
+        text = tricks.export_toml({"version": 1, "skill": "beginner", "params": {"flip_min_deg": 240}, "craft": {"AIR65 F": {"size_mm": 65}}}, "from here")
+        self.assertTrue(text.startswith("# acroscope tricks, exported 20"))
+        self.assertIn(": from here\n", text)
+        self.assertIn("import it with `acroscope tricks import`", text)
+        self.assertEqual(tomllib.loads(text), {"version": 1, "skill": "beginner", "params": {"flip_min_deg": 240}, "craft": {"AIR65 F": {"size_mm": 65}}})
+        self.assertEqual(tomllib.loads(tricks.export_toml(None)), {"version": 1})
+        self.assertEqual(tomllib.loads(tricks.export_toml({"params": {"a": 1}})), {"version": 1, "params": {"a": 1}})     # version first, always there
+
+    def test_merge_tables(self):
+        base = {"version": 1, "skill": "beginner", "params": {"a": 1, "b": 2}, "trick": [{"id": "roll", "enabled": False}, {"id": "x", "priority": 3}],
+                "craft": {"X": {"size_mm": 65, "params": {"c": 3}, "trick": [{"id": "dive", "enabled": False}], "segment": {"impact": {"g": 4}}}}}
+        top = {"skill": "advanced", "params": {"b": 20, "d": 4}, "trick": [{"id": "roll", "enabled": True}, {"id": "y"}],
+               "craft": {"X": {"weight_g": 30, "params": {"e": 5}, "trick": [{"id": "dive", "priority": 1}], "segment": {"impact": {"jolt_dps": 600}}}, "Y": {"size_mm": 75}}}
+        m = tricks.merge_tables(base, top)
+        self.assertEqual(m["skill"], "advanced")
+        self.assertEqual(m["params"], {"a": 1, "b": 20, "d": 4})
+        self.assertEqual(m["trick"], [{"id": "roll", "enabled": True}, {"id": "x", "priority": 3}, {"id": "y"}])
+        self.assertEqual(m["craft"]["X"], {"size_mm": 65, "weight_g": 30, "params": {"c": 3, "e": 5}, "trick": [{"id": "dive", "enabled": False, "priority": 1}], "segment": {"impact": {"g": 4, "jolt_dps": 600}}})
+        self.assertEqual(m["craft"]["Y"], {"size_mm": 75})
+        self.assertEqual(base["params"], {"a": 1, "b": 2})                     # never in place
+        self.assertEqual(tricks.merge_tables(None, {"params": {"a": 1}}), {"version": 1, "params": {"a": 1}})
+        self.assertEqual(tricks.merge_tables({"version": 1}, None), {"version": 1})
+
+    def test_import_table(self):
+        current = {"version": 1, "params": {"flip_min_deg": 240}}
+        self.assertEqual(tricks.import_table('version = 1\nskill = "beginner"\n', current, "replace"), {"version": 1, "skill": "beginner"})
+        self.assertEqual(tricks.import_table('skill = "beginner"\n', current, "merge"), {"version": 1, "params": {"flip_min_deg": 240}, "skill": "beginner"})
+        with self.assertRaises(LibraryError) as cm:
+            tricks.import_table("not = [toml", current)
+        self.assertIn("not a tricks file", str(cm.exception))
+        with self.assertRaises(LibraryError) as cm:
+            tricks.import_table("[params]\nflip_min_dg = 1\n", current)
+        self.assertIn("flip_min_dg", str(cm.exception))
+        with self.assertRaises(ValueError):
+            tricks.import_table("version = 1\n", current, "append")
+
+    def test_cli_export_and_import(self):
+        import tomllib
+        out = io.StringIO()
+        with mock.patch.object(blackbox, "load_arm", lambda b, n: ROLL_250), redirect_stdout(out):
+            from acroscope import cli
+            cli.main(["tricks", "set", "flip_min_deg", "240"])
+            cli.main(["tricks", "export"])
+        text = out.getvalue().split("\n", 1)[1]
+        self.assertEqual(tomllib.loads(text), {"version": 1, "params": {"flip_min_deg": 240}})
+        f = Path(self.tmp.name) / "shared.toml"
+        f.write_text('version = 1\nskill = "beginner"\n[params]\norbit_min_deg = 240\n')
+        out = io.StringIO()
+        with mock.patch.object(blackbox, "load_arm", lambda b, n: ROLL_250), redirect_stdout(out):
+            cli.main(["tricks", "import", str(f), "--merge"])
+            cli.main(["tricks", "export", str(f.with_name("out.toml"))])
+        self.assertIn("merged into the pilot's layer: 2 params, 0 trick entries, 0 crafts, skill beginner", out.getvalue())
+        self.assertEqual(self.db.setting("tricks")["value"], {"version": 1, "params": {"flip_min_deg": 240, "orbit_min_deg": 240}, "skill": "beginner"})
+        self.assertEqual(tomllib.loads(f.with_name("out.toml").read_text()), {"version": 1, "params": {"flip_min_deg": 240, "orbit_min_deg": 240}, "skill": "beginner"})
+        out = io.StringIO()
+        with mock.patch.object(blackbox, "load_arm", lambda b, n: ROLL_250), redirect_stdout(out):
+            cli.main(["tricks", "import", str(f)])
+        self.assertIn("replaced the pilot's layer: 1 params", out.getvalue())
+        self.assertEqual(self.db.setting("tricks")["value"], {"version": 1, "skill": "beginner", "params": {"orbit_min_deg": 240}})
+        f.write_text("[params]\nflip_min_dg = 1\n")
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err), self.assertRaises(SystemExit):
+            cli.main(["tricks", "import", str(f)])
+        self.assertIn("flip_min_dg", err.getvalue())
+        self.assertEqual(self.db.setting("tricks")["value"], {"version": 1, "skill": "beginner", "params": {"orbit_min_deg": 240}})   # a refused import changes nothing
 
 
 class CliWriteTest(Layered):

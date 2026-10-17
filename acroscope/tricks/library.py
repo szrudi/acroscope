@@ -37,7 +37,7 @@ Every name a condition or template uses must be a feature of the trick's segment
 param; every segment option must exist for its kind; an unknown key is an error. So a typo fails at load, with
 the file and the entry named, never silently as a trick that cannot fire.
 
-Profiles, the layers over the shipped file (a pilot's file: ACROSCOPE_TRICKS, else ~/.config/acroscope/tricks.toml):
+Profiles, the pilot's layer over the shipped file (kept in the database; a tricks file is its export and import):
 
     skill = "beginner"            # a preset of params the shipped file defines in [skill.beginner]; your own
                                   # [params] win over it

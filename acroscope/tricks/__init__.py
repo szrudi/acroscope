@@ -22,68 +22,20 @@ from ..blackbox import Arm
 from . import expr, features, segments
 from .library import SHIPPED, Library, LibraryError, Trick
 
-__all__ = ["check", "describe", "detect", "evaluate", "explain", "library", "user_path", "Library", "LibraryError", "SHIPPED", "TEMPLATE"]
+__all__ = ["check", "describe", "detect", "evaluate", "explain", "export_toml", "import_table", "library", "merge_tables", "Library", "LibraryError", "SHIPPED"]
 
 # The pilot's layer kept in the database (#45): a callable giving ({table}, stamp) or (None, None). The server and the
 # local CLI set it from their store at start; nothing in this package reaches for a database on its own.
 LAYER_SOURCE = None
 LAYER_KEY = "tricks"
 
-# what `acroscope tricks init` writes: a pilot's file with the knobs shown and off
-TEMPLATE = """# Your tricks, over acroscope's shipped ones (acroscope/tricks/tricks.toml). `acroscope tricks` shows what is in
-# force, `acroscope tricks show <id>` one trick, `acroscope tricks explain <bbl>:<arm>` every window's verdict.
-# Uncomment what you need; a name that does not exist is refused when the file loads. What the player's configuration
-# page and `acroscope tricks set|on|off|skill` write goes to the database and sits over this file.
-version = 1
-
-# skill = "beginner"            # a preset over the defaults: "beginner" (tricks count when nearly there) or
-                                # "advanced" (only when clean); your own [params] below win over it
-
-[params]                        # any number from `acroscope tricks` (its params line)
-# orbit_min_deg = 240           # two thirds of a lap was an orbit try
-# flip_min_deg = 250
-
-# [[trick]]                     # turn a trick off, or change one of its fields
-# id = "gyro-kick"
-# enabled = false
-
-# [[trick]]                     # or add one of your own (acroscope tricks features: the names a condition may use)
-# id = "hard-roll"
-# tag = "roll"
-# segment = "fast-rotation"
-# when = ["axis == 'roll'", "abs(rotation_deg.roll) >= 330", "peak_rate_dps.roll >= 0.8 * arm.rates_max_dps.roll"]
-# title = "{direction} roll at full rate"
-# why = "roll {rotation_deg.roll:+} deg at {peak_rate_dps.roll} dps"
-# priority = 15
-
-# [craft."OttoJr"]              # by the Craft name in the log header: these arms only
-# size_mm = 75                  # the craft.* features (craft.size_mm, …) for conditions that scale with the quad
-# weight_g = 40
-# skill = "advanced"            # a preset for this quad
-# [craft."OttoJr".params]
-# loop_min_dur = 1.2
-# [craft."OttoJr".segment.impact]
-# g = 5                         # a heavier quad hits harder before it is a crash
-# [[craft."OttoJr".trick]]
-# id = "motor-loss"
-# enabled = false
-"""
 
 _cache: tuple[tuple, Library] | None = None
 
 
-def user_path() -> Path:
-    """Where a pilot's own tricks file lives: ACROSCOPE_TRICKS (a file, or a directory of .toml files read in name
-    order), else ~/.config/acroscope/tricks.toml. The server reads its own (the container's /state/tricks.toml)."""
-    return Path(os.environ.get("ACROSCOPE_TRICKS") or "~/.config/acroscope/tricks.toml").expanduser()
-
-
 def library_paths() -> list[Path]:
-    """The shipped file, then the pilot's (a file, or every .toml of a directory, sorted)."""
-    p = user_path()
-    if p.is_dir():
-        return [SHIPPED, *sorted(p.glob("*.toml"))]
-    return [SHIPPED, p]
+    """The shipped file; the pilot's layer comes from the database (LAYER_SOURCE), a tricks file is for sharing."""
+    return [SHIPPED]
 
 
 def database_layer() -> tuple:
@@ -92,8 +44,8 @@ def database_layer() -> tuple:
 
 
 def library() -> Library:
-    """The tricks in force: the shipped file, the pilot's file, the pilot's layer from the database. Loaded once and
-    again whenever any of them changed (the server keeps running; a pilot edits and refreshes)."""
+    """The tricks in force: the shipped file and the pilot's layer from the database. Loaded once and again whenever
+    either changed (the server keeps running; a pilot edits and refreshes)."""
     global _cache
     paths = [p for p in library_paths() if p.is_file()]
     table, db_stamp = database_layer()
@@ -126,7 +78,7 @@ def describe(lib: Library, craft: str | None = None) -> dict:
             if name:
                 seen.add(name)
     return {
-        "sources": lib.sources, "user_file": str(user_path()), "database": "database" in lib.sources,
+        "sources": lib.sources, "database": "database" in lib.sources,
         "skill": lib.skill, "skills": lib.skills, "craft": craft,
         "params": {k: {"value": v, "default": shipped.get(k), "source": sources.get(k, "shipped")} for k, v in eff.params.items()},
         "crafts": {n: {**c["props"], "skill": c["skill"], "params": c["params"], "segment": c["segments"], "trick": c["tricks"], "source": c["source"]}
@@ -143,6 +95,66 @@ def describe(lib: Library, craft: str | None = None) -> dict:
                    for t in eff.ordered()],
         "features": {k: features.vocabulary(k) for k in segments.KINDS},
     }
+
+
+def export_toml(table: dict | None, note: str = "") -> str:
+    """The pilot's layer as a tricks file others can read: what `acroscope tricks export` and the page's export give."""
+    from datetime import date
+    from . import toml_out
+    header = f"acroscope tricks, exported {date.today().isoformat()}" + (f": {note}" if note else "") + \
+        "\nA layer over the shipped acroscope/tricks/tricks.toml: import it with `acroscope tricks import` or the configuration page."
+    t = dict(table or {})
+    t = {"version": t.pop("version", 1), **t}
+    return toml_out.dumps(t, header)
+
+
+def merge_tables(base: dict | None, top: dict | None) -> dict:
+    """One layer document over another, as the library would stack them: params and properties update, the skill
+    is the top's when it has one, tricks merge by id, craft sections and their segments by name."""
+    import copy
+    out = copy.deepcopy(base) if base else {"version": 1}
+    top = top or {}
+    for k, v in top.items():
+        if k == "params" and isinstance(v, dict):
+            out.setdefault("params", {}).update(v)
+        elif k == "trick" and isinstance(v, list):
+            have = out.setdefault("trick", [])
+            for item in v:
+                tid = item.get("id") if isinstance(item, dict) else None
+                mine = next((x for x in have if isinstance(x, dict) and x.get("id") == tid), None) if tid is not None else None
+                if mine is None:
+                    have.append(copy.deepcopy(item))
+                else:
+                    mine.update(copy.deepcopy(item))
+        elif k == "craft" and isinstance(v, dict):
+            crafts = out.setdefault("craft", {})
+            for name, sec in v.items():
+                crafts[name] = merge_tables(crafts.get(name), sec) if isinstance(sec, dict) else copy.deepcopy(sec)
+                crafts[name].pop("version", None)
+        elif k == "segment" and isinstance(v, dict):
+            segs = out.setdefault("segment", {})
+            for name, opts in v.items():
+                segs.setdefault(name, {}).update(opts) if isinstance(opts, dict) else segs.__setitem__(name, copy.deepcopy(opts))
+        elif k == "version":
+            out["version"] = v
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def import_table(text: str, current: dict | None, mode: str = "replace") -> dict:
+    """A tricks file's text as the pilot's new layer: `replace` takes it whole, `merge` puts it over the current
+    layer. Checked as a file is (check_layer); returns the table to store."""
+    import tomllib
+    try:
+        table = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise LibraryError(f"not a tricks file: {e}") from None
+    if mode not in ("replace", "merge"):
+        raise ValueError(f"import: mode is replace or merge, not {mode!r}")
+    table = merge_tables(current, table) if mode == "merge" else table
+    check_layer(table)
+    return table
 
 
 def edit_layer(table: dict | None, what: str, *args, craft: str | None = None) -> dict:

@@ -551,6 +551,26 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(events(), ["right roll attempt, 249 deg"])
         with self.assertRaises(RemoteError):
             r.setting("other")
+        # the file is for sharing: the layer out as a tricks file, one in as the layer
+        import tomllib
+        r.set_setting("tricks", {"version": 1, "params": {"flip_min_deg": 240}})
+        resp = urllib.request.urlopen(self.url + "/api/tricks/export")
+        self.assertEqual(resp.headers["Content-Type"], "text/plain; charset=utf-8")
+        self.assertIn('filename="acroscope-tricks.toml"', resp.headers["Content-Disposition"])
+        text = resp.read().decode()
+        self.assertTrue(text.startswith("# acroscope tricks, exported"))
+        self.assertEqual(tomllib.loads(text), {"version": 1, "params": {"flip_min_deg": 240}})
+        post = lambda body: json.loads(urllib.request.urlopen(urllib.request.Request(self.url + "/api/tricks/import", data=json.dumps(body).encode(), method="POST",
+                                                                                      headers={"Content-Type": "application/json"})).read())
+        self.assertEqual(post({"text": 'skill = "beginner"\n', "mode": "merge"})["layer"], {"version": 1, "params": {"flip_min_deg": 240}, "skill": "beginner"})
+        self.assertEqual(post({"text": 'version = 1\nskill = "advanced"\n'})["layer"], {"version": 1, "skill": "advanced"})
+        self.assertEqual(r.setting("tricks")["value"], {"version": 1, "skill": "advanced"})
+        for bad in ({"text": "[params]\nflip_min_dg = 1\n"}, {"text": "not = [toml"}, {"text": 3}, {"text": "version = 1", "mode": "append"}):
+            with self.assertRaises(urllib.error.HTTPError, msg=bad) as cm:
+                post(bad)
+            self.assertEqual(cm.exception.code, 400)
+        self.assertEqual(r.setting("tricks")["value"], {"version": 1, "skill": "advanced"})
+        r.delete_setting("tricks")
 
 
 if __name__ == "__main__":

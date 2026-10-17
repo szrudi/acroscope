@@ -260,11 +260,25 @@ function renderSettings() {
     `<div class="row"><label><input type="checkbox" id="stSticks" ${ls('acro.sticks') !== '0' ? 'checked' : ''}> the sticks from the log over the picture</label></div>` +
     `<div class="row"><label><input type="checkbox" id="stAll" ${ls('acro.allClips') === '1' ? 'checked' : ''}> the moments list shows all clips of the session</label></div>` +
     `<div class="row"><span class="dim">last session ${esc(ls('acro.session') || '–')}, clip ${esc(ls('acro.clip') || '–')}</span><button class="small" id="forget">forget</button></div>` +
-    `<h2>your layer</h2><p class="hint">everything this page set, as the server keeps it (the shape of a tricks file's tables). Edit it here when the knobs above do not reach; a bad one is refused and nothing changes.</p>` +
-    `<div class="kv">${D.sources.map(s => `<b>${esc(s === 'database' ? 'database' : s.endsWith('tricks.toml') && s.includes('/tricks/') ? 'shipped' : 'file')}</b><span class="dim">${esc(s)}</span>`).join('')}` +
-    (D.sources.includes(D.user_file) ? '' : `<b>file</b><span class="dim">${esc(D.user_file)} (none: <code>acroscope tricks init</code> writes a starter)</span>`) + `</div>` +
+    `<h2>share</h2><p class="hint">your layer as a tricks file (TOML): give it to another pilot, keep it, or bring one in. Import replaces your layer, or merges over it.</p>` +
+    `<div class="row"><a class="btn" id="exportLink" href="/api/tricks/export" download="acroscope-tricks.toml">export tricks.toml</a>` +
+    `<input type="file" id="importFile" accept=".toml,text/plain" style="font-size:12px"><button id="importReplace" disabled>import, replacing</button><button id="importMerge" disabled>import, merging</button></div>` +
+    `<textarea id="importText" placeholder="or paste a tricks file here" style="min-height:90px"></textarea>` +
+    `<h2>your layer</h2><p class="hint">everything this page set, as the server keeps it (the shape of a tricks file's tables, as JSON). Edit it here when the knobs above do not reach; a bad one is refused and nothing changes.</p>` +
+    `<div class="kv">${D.sources.map(s => `<b>${esc(s === 'database' ? 'database' : 'shipped')}</b><span class="dim">${esc(s)}</span>`).join('')}</div>` +
     `<textarea id="layerText">${esc(JSON.stringify(L, null, 1))}</textarea>` +
-    `<div class="row"><button class="primary" id="layerSave">save</button><button id="layerClear" title="back to the shipped tricks and the file">clear everything set here</button></div>`;
+    `<div class="row"><button class="primary" id="layerSave">save</button><button id="layerClear" title="back to the shipped tricks">clear everything set here</button></div>`;
+  const importText = async () => { const f = $('#importFile').files[0]; return f ? await f.text() : $('#importText').value; };
+  const armImport = () => { const on = $('#importFile').files.length || $('#importText').value.trim(); $('#importReplace').disabled = $('#importMerge').disabled = !on; };
+  $('#importFile').onchange = armImport; $('#importText').oninput = armImport;
+  const doImport = async (mode) => {
+    err('');
+    const r = await api('/api/tricks/import', {method: 'POST', body: JSON.stringify({text: await importText(), mode})});
+    if (r.error) { err(r.error); return; }
+    L = r.layer; await load();
+  };
+  $('#importReplace').onclick = () => doImport('replace');
+  $('#importMerge').onclick = () => doImport('merge');
   $('#stSticks').onchange = e => { try { localStorage.setItem('acro.sticks', e.target.checked ? '1' : '0'); } catch {} };
   $('#stAll').onchange = e => { try { localStorage.setItem('acro.allClips', e.target.checked ? '1' : ''); } catch {} };
   $('#forget').onclick = () => { try { ['acro.session', 'acro.clip', 'acro.tab', 'acro.mtab'].forEach(k => localStorage.removeItem(k)); } catch {} renderSettings(); };
