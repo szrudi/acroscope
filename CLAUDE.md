@@ -90,3 +90,7 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   boot offset across cut static exactly. Legacy `cuts.json` sidecars next to older clips are not read.
 - An MCP server over the same store and metrics, for agents other than Claude Code.
 - The container runs as root (the dataset is root-owned); a non-root user is a to-do with the homelab side.
+- No authentication on the server itself: Authelia guards only the public vhost; `10.10.10.17:8070` (the door the CLI
+  uses) answers every read and write to anyone who can route to CT 109, by design. Path checks are the only
+  authorisation. The plan for a token, a localhost default bind and an origin check on writes is in the 2026-10-17
+  comment on #10 (verified there, with what reaches the port).
