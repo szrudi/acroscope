@@ -61,7 +61,7 @@
   #strip { width:100%; height:54px; display:block; cursor:pointer; border-radius:4px; background:#0f1115 }
   .readout { display:flex; gap:18px; color:var(--dim); font-variant-numeric:tabular-nums; font-size:13px; min-height:20px }
   body.phone .readout:empty { display:none }   /* until the video reports a time: no empty row (and its gaps) under the controls; the desktop keeps the row so nothing jumps */
-  .readout b { color:var(--fg); font-weight:500 } .readout b.n { display:inline-block; text-align:right }
+  .readout b { color:var(--fg); font-weight:500 } .readout b.n { display:inline-block; text-align:left }   /* left: a label sits against its own value, the spare room trails (right-aligned, "30.1s thr" read as one) */
   .rorow { display:flex; gap:8px; align-items:flex-start } .rorow .readout { flex:1 }
   #sticksTog.on { background:var(--acc); color:#1a1200; border-color:var(--acc) }
   body.phone #sticksTog { display:none } body.phone .rorow:has(.readout:empty) { display:none }   /* the phone has its button in the controls */
@@ -133,7 +133,7 @@
   body.phone header { height:auto; min-height:44px; flex-wrap:wrap; padding:6px 10px; gap:8px } body.phone header select { flex:1; min-width:0; font-size:16px }
   body.phone .tagbar .mgr { margin-left:0 } body.phone .tagbar .cat { margin-left:4px }   /* no push to the right edge: in a wrapping row that is a row of its own */
   body.phone video { max-height:34vh }
-  body.phone header #status { width:100%; font-size:12px } body.phone .readout { font-size:12px; gap:6px; flex-wrap:nowrap; white-space:nowrap; overflow:hidden; min-width:0 }   /* one line whatever the values: a wrap came and went with them */
+  body.phone header #status { width:100%; font-size:12px } body.phone .readout { font-size:11.5px; gap:6px; flex-wrap:nowrap; white-space:nowrap; overflow:hidden; min-width:0 }   /* one line whatever the values: a wrap came and went with them */
   body.phone .readout:has(.msg) { display:block; white-space:normal }   /* a message (cannot play, file missing) still wraps: it is read, not glanced at */
   body.phone .snote { display:none } body.phone #editor { position:fixed; left:0; right:0; bottom:46px; max-height:60vh; overflow:auto; z-index:4; border-radius:8px 8px 0 0 }
   @media (pointer: coarse) {
@@ -601,8 +601,8 @@ function armAt(t) { // series entry whose arm covers video time t
 }
 // the numbers under the timeline at the current frame; on the phone one line with short labels whatever the values
 // (it wrapped with some values and not others, and jumped between one line and two)
-// Each value sits in a box as wide as its largest (Rudi), right-aligned, so the labels hold still as the numbers grow
-// and shrink (9 to -1234 deg/s)
+// Each value sits in a box as wide as its largest (Rudi), so the labels hold still as the numbers grow and shrink (9 to
+// -1234 deg/s); left-aligned, so each label stays against its own value
 function readout() {
   const t = v.currentTime; const [s, a] = armAt(t), ph = document.body.classList.contains('phone');
   const n = (x, ch) => `<b class="n" style="min-width:${ch}ch">${x}</b>`, u = ph ? '' : ' ';   // the phone: units tight
@@ -611,8 +611,8 @@ function readout() {
     const r = s.rows[Math.max(0, Math.min(s.rows.length - 1, Math.round(a / s.step)))];
     // widths in digits ('ch'), plus room for the symbols, which are wider than a digit
     h += `<span>arm ${n(s.arm, 2)} ${n(a.toFixed(1) + u + 's', ph ? 6 : 7)}</span>`;
-    if (r) h += `<span>${ph ? 'thr' : 'throttle'} ${n(r[0] + u + '%', ph ? 5 : 6)}</span><span>tilt ${n(r[1] + '°', 4.5)}</span>`
-      + `<span>${ph ? '' : 'vbat '}${n(r[2].toFixed(2) + u + 'V', ph ? 5.5 : 6.5)}</span><span>${ph ? '' : 'gyro '}${n(r[3] + u + '°/s', ph ? 9 : 10)}</span>`;   // °/s names it
+    if (r) h += `<span>${ph ? 'thr' : 'throttle'} ${n(r[0] + u + '%', ph ? 4.6 : 6)}</span><span>tilt ${n(r[1] + '°', 4)}</span>`
+      + `<span>${ph ? '' : 'vbat '}${n(r[2].toFixed(2) + u + 'V', ph ? 5 : 6.5)}</span><span>gyro ${n(r[3] + u + '°/s', ph ? 8.2 : 10)}</span>`;
   } else if (series.length) h += '<span>between arms</span>'; else h += '<span>no log</span>';
   if (loopM) h += '<span style="color:var(--acc)">looping</span>';
   $('#readout').innerHTML = h;

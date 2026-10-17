@@ -717,6 +717,27 @@ class PlayerTest(unittest.TestCase):
             self.assertEqual(small["lefts"], big["lefts"], size)
             self.assertLessEqual(big["over"], 0, size)                          # the widest values: nothing cut off
 
+    def test_a_label_sits_against_its_own_value(self):
+        """Rudi (phone screenshot): with the values right-aligned in their boxes, a short value sat at the far end of
+        its box and its label read as the previous value's ("30.1s thr", "0% tilt"). Each label is followed directly
+        by its value: the gap between a label and its value is a space's width, whatever the value."""
+        page = self.open("2026-10-16-swipe", PHONE)
+        gaps = page.evaluate("""() => { series = [{offset: 0, arm: 14, step: 0.1, length: 300, rows: Array(3000).fill([0, 5, 4.2, 9])}]; readout();
+          const r = document.getElementById('readout'), out = [];
+          for (const b of r.querySelectorAll('b.n')) {
+            const range = document.createRange(); range.selectNodeContents(b); const text = range.getBoundingClientRect();
+            const prev = b.previousSibling;                                 // the label text, or another value
+            if (prev && prev.nodeType === 3 && prev.textContent.trim()) {
+              const lr = document.createRange(); lr.selectNodeContents(prev); out.push([prev.textContent.trim(), Math.round(text.left - lr.getBoundingClientRect().right)]);
+            }
+          }
+          return [out, r.textContent]; }""")                               # in one go: the test clip's error may overwrite it
+        gaps, text = gaps
+        self.assertTrue(gaps, gaps)
+        for label, gap in gaps:
+            self.assertLessEqual(gap, 6, (label, gaps))
+        self.assertIn("gyro", text)
+
     def test_the_readout_stays_one_line_on_the_phone(self):
         """Rudi: under the timeline on the phone the readout broke into two lines with some values and back to one,
         jumping. On the phone it is one line whatever the values (the widest: a 4-digit gyro, a 3-digit tilt, looping),
@@ -726,7 +747,7 @@ class PlayerTest(unittest.TestCase):
         self.assertEqual(r["tops"], 1, r)
         self.assertLessEqual(r["height"], 20, r)
         self.assertLessEqual(r["page"], 412, r)
-        for want in ("arm", "14", "thr", "tilt", "3.62V", "-1234°/s"):       # the short labels, every value in view
+        for want in ("arm", "14", "thr", "tilt", "3.62V", "gyro", "-1234°/s"):  # the short labels, every value in view
             self.assertIn(want, r["text"])
         d = self.open("2026-10-16-swipe").evaluate(self.READOUT)             # the desktop keeps its words
         self.assertIn("throttle", d["text"])
