@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>acroscope · configuration</title>
+<meta name="theme-color" content="#14161a">
+<link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
+<style>
+  :root { --bg:#14161a; --panel:#1c1f25; --line:#2b3039; --fg:#e6e8ec; --dim:#9aa3b2; --acc:#f5a524; --acc2:#4cc2ff; --bad:#ff6b6b; --ok:#5fd68b; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; min-height:100vh; min-height:100dvh; display:flex; flex-direction:column }
+  header { display:flex; align-items:center; gap:14px; padding:0 14px; height:44px; border-bottom:1px solid var(--line); background:var(--panel); flex:none }
+  header h1 { font-size:16px; margin:0; color:var(--acc); letter-spacing:.5px; white-space:nowrap } header h1 a { color:inherit; text-decoration:none } header h1 span { color:var(--dim); font-weight:400 }
+  header #status { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--dim); font-size:13px }
+  .tabs { display:flex; border-bottom:1px solid var(--line); background:var(--panel); flex:none }
+  .tabs span { flex:1; text-align:center; padding:9px 0; font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); cursor:pointer; user-select:none }
+  .tabs span.on { color:var(--fg); box-shadow:inset 0 -2px 0 var(--acc) }
+  main { flex:1; min-height:0; overflow:auto; padding:12px 14px 24px; max-width:1100px; width:100%; margin:0 auto }
+  section[data-panel] { display:none } section[data-panel].on { display:block }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin:16px 0 8px } h2:first-child { margin-top:4px }
+  p.hint { color:var(--dim); font-size:13px; margin:0 0 10px }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0 }
+  input, textarea, select { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 8px; font:inherit }
+  input[type=number] { width:96px; font-variant-numeric:tabular-nums } textarea { width:100%; min-height:160px; resize:vertical; font:12px ui-monospace, monospace }
+  input[type=color] { width:28px; height:24px; padding:0; border:0; background:none; cursor:pointer }
+  button { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:5px 10px; cursor:pointer; font:inherit }
+  button:hover { background:#343a46 } button.primary { background:var(--acc); color:#1a1200; border-color:var(--acc); font-weight:600 }
+  button.small { padding:2px 7px; font-size:12px } button:disabled, button:disabled:hover { opacity:.45; cursor:default; background:#2a2f38 }
+  a.btn { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:2px 7px; font-size:12px; line-height:1.4; text-decoration:none; white-space:nowrap } a.btn:hover { background:#343a46 }
+  .chip { display:inline-block; padding:2px 9px; border-radius:12px; border:1px solid var(--c, var(--line)); cursor:pointer; font-size:12px; user-select:none }
+  .chip.on { background:var(--c, var(--acc2)); color:#111; border-color:var(--c, var(--acc2)) }
+  .tag { display:inline-block; padding:0 7px; border-radius:10px; font-size:11px; background:#2f3542; color:var(--c, var(--acc2)) }
+  .src { font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:10px; padding:0 7px; white-space:nowrap }
+  .src.db { color:var(--acc); border-color:var(--acc) } .src.preset { color:var(--acc2); border-color:var(--acc2) } .src.craft { color:var(--ok); border-color:var(--ok) }
+  #err { display:none; color:var(--bad); background:#2a1d1d; border:1px solid var(--bad); border-radius:8px; padding:8px 12px; margin:0 0 10px; white-space:pre-wrap }
+  #err.on { display:block }
+  .prm { display:grid; grid-template-columns:minmax(0, 1fr) 110px 70px minmax(90px, auto); gap:4px 10px; align-items:center; padding:5px 0; border-bottom:1px solid var(--line) }
+  .prm .nm { font-weight:500 } .prm .used { color:var(--dim); font-size:11px; display:block } .prm .def { color:var(--dim); font-variant-numeric:tabular-nums; font-size:12px }
+  .prm .act { display:flex; gap:6px; align-items:center; justify-content:flex-end }
+  .prm.over input { border-color:var(--acc) }
+  .trk { border-bottom:1px solid var(--line); padding:6px 0 }
+  .trk .head { display:grid; grid-template-columns:24px minmax(0, 1fr) auto; gap:8px; align-items:center; cursor:pointer }
+  .trk .head .id { font-weight:600 } .trk .head .meta { color:var(--dim); font-size:12px } .trk.off .head .id, .trk.off .head .meta { opacity:.5; text-decoration:line-through }
+  .trk .det { display:none; padding:6px 0 4px 32px; color:var(--dim); font-size:12px } .trk.open .det { display:block }
+  .trk .det code { color:var(--fg); font:12px ui-monospace, monospace; background:#0f1115; padding:1px 5px; border-radius:4px; display:inline-block; margin:1px 0 }
+  .trk .det .k { color:var(--dim); display:inline-block; min-width:72px }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:13px } .kv b { color:var(--dim); font-weight:500 }
+  table.ev { border-collapse:collapse; font-size:13px; margin:6px 0 } table.ev td, table.ev th { padding:3px 10px 3px 0; text-align:left; border-bottom:1px solid var(--line) } table.ev th { color:var(--dim); font-weight:500 }
+  .ok { color:var(--ok) } .bad { color:var(--bad) } .dim { color:var(--dim) }
+  .list .m { padding:4px 0; border-bottom:1px solid var(--line); font-size:13px } .list .m .t { color:var(--dim); font-variant-numeric:tabular-nums; margin-right:8px }
+  #tagsPanel .row { gap:6px }
+  body.phone header { height:auto; min-height:44px; flex-wrap:wrap; padding:6px 10px; gap:8px } body.phone header #status { width:100%; font-size:12px }
+  body.phone main { padding:10px 10px 70px; order:1 } body.phone .tabs { order:2; position:fixed; left:0; right:0; bottom:0; padding-bottom:env(safe-area-inset-bottom); z-index:3 }
+  body.phone .prm { grid-template-columns:minmax(0, 1fr) 90px; } body.phone .prm .def { grid-column:1; } body.phone .prm .act { grid-column:2; justify-content:flex-end }
+  body.phone input[type=number] { width:88px; font-size:16px } body.phone select { font-size:16px }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/"><img src="/static/brand/icon.svg" alt="" style="height:22px;vertical-align:-5px;margin-right:6px" onerror="this.remove()">acroscope</a> <span>› configuration</span></h1>
+  <span id="status"></span>
+  <a class="btn" href="/" id="toPlayer">← player</a>
+</header>
+<div class="tabs" id="tabs"><span data-tab="profile">profile</span><span data-tab="drones">drones</span><span data-tab="tricks">tricks</span><span data-tab="settings">settings</span><span data-tab="tags">tags</span></div>
+<main>
+  <div id="err"></div>
+  <section data-panel="profile" id="profilePanel"></section>
+  <section data-panel="drones" id="dronesPanel"></section>
+  <section data-panel="tricks" id="tricksPanel"></section>
+  <section data-panel="settings" id="settingsPanel"></section>
+  <section data-panel="tags" id="tagsPanel"></section>
+</main>
+<script>
+// The configuration page (#45): profile (the preset and the numbers), drones (per craft), tricks (on/off, their
+// definitions, the examples checked, the eval against a session), settings (the browser's, the raw layer), tags.
+// Everything the pilot sets goes to the server as the whole layer document (POST /api/tricks/layer), shaped like
+// the tricks file's tables; the server checks it as it checks a file and refuses a bad one with the place named.
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const api = (p, o) => fetch(p, o).then(r => r.json());
+const SKILLS = ['none', 'beginner', 'advanced'];
+let D = null, DC = null, L = {version: 1}, TAGS = {categories: [], tags: []}, SESS = [], craft = null, tab = null, openTricks = new Set();
+// D: the library in force for any quad (profile, tricks); DC: for the craft chosen on the drones tab
+
+function err(msg) { const e = $('#err'); e.textContent = msg || ''; e.classList.toggle('on', !!msg); }
+function status(msg) { $('#status').textContent = msg || ''; }
+function srcBadge(s) {
+  const cls = s === 'database' ? 'db' : s.startsWith('preset') ? 'preset' : s.startsWith('craft') ? 'craft' : '';
+  const label = s === 'database' ? 'yours' : s.startsWith('preset') || s.startsWith('craft') ? s : s.endsWith('tricks.toml') && s.includes('/tricks/') ? 'shipped' : 'file';
+  return `<span class="src ${cls}" title="${esc(s)}">${esc(label)}</span>`;
+}
+const tagColor = t => { const d = TAGS.tags.find(x => x.name === t); return d?.color || TAGS.categories.find(c => c.name === d?.category)?.color || '#9aa3b2'; };
+const pill = t => `<span class="tag" style="--c:${esc(tagColor(t))}">${esc(t)}</span>`;
+const num = v => typeof v === 'number' ? (Number.isInteger(v) ? String(v) : String(+v.toFixed(3))) : String(v);
+
+// ---- the layer document: the edits the CLI makes, on the client's copy, then the whole thing to the server
+const clone = x => JSON.parse(JSON.stringify(x));
+function section(t, c) { return c ? ((t.craft ||= {})[c] ||= {}) : t; }
+function tidy(t) {                                   // an emptied table goes, so the layer reads as what was set
+  for (const k of ['params', 'trick']) if (t[k] && !Object.keys(t[k]).length) delete t[k];
+  if (t.craft) { for (const [c, s] of Object.entries(t.craft)) { tidy(s); if (!Object.keys(s).length) delete t.craft[c]; } if (!Object.keys(t.craft).length) delete t.craft; }
+  return t;
+}
+async function save(next) {
+  err('');
+  const r = await api('/api/tricks/layer', {method: 'POST', body: JSON.stringify(tidy(next))});
+  if (r.error) { err(r.error); return false; }
+  L = r.layer; await load(); return true;
+}
+const edit = f => { const t = clone(L); t.version ??= 1; f(t); return save(t); };
+const setParam = (name, value, c) => edit(t => { if (value === null) { const p = section(t, c).params || {}; delete p[name]; } else (section(t, c).params ||= {})[name] = value; });
+const setTrick = (id, on, c) => edit(t => { const s = section(t, c); s.trick = (s.trick || []).filter(x => x.id !== id); if (!on) s.trick.push({id, enabled: false}); });
+const setSkill = (name, c) => edit(t => { const s = section(t, c); if (!name || name === 'none' || name === 'inherit') delete s.skill; else s.skill = name; });
+const setProp = (c, key, value) => edit(t => { const s = section(t, c); if (value === null || value === '') delete s[key]; else s[key] = value; });
+
+async function load() {
+  [D, DC, {layer: L}, TAGS] = await Promise.all([api('/api/tricks'), craft ? api('/api/tricks?craft=' + encodeURIComponent(craft)) : null, api('/api/tricks/layer'), api('/api/tags')]);
+  if (D.error) { err(D.error); return; }
+  L = L || {version: 1};
+  render();
+}
+
+// ---- profile: the preset and every number, with its default and where it came from
+function paramRows(params, scopeCraft, usedBy, filter) {
+  return Object.entries(params).filter(([k]) => !filter || k.includes(filter) || (usedBy[k] || []).some(t => t.includes(filter))).map(([k, p]) => {
+    const own = scopeCraft ? (L.craft?.[scopeCraft]?.params || {})[k] !== undefined : (L.params || {})[k] !== undefined;
+    return `<div class="prm ${own ? 'over' : ''}" data-p="${esc(k)}"><span><span class="nm">${esc(k)}</span><span class="used">${(usedBy[k] || []).map(esc).join(', ') || 'no trick reads it'}</span></span>` +
+      `<input type="number" step="any" value="${esc(num(p.value))}" data-val>` +
+      `<span class="def" title="the shipped default">${p.default === null || p.default === undefined ? '' : esc(num(p.default))}</span>` +
+      `<span class="act">${srcBadge(p.source)}${own ? '<button class="small" data-reset title="back to what the layers below say">↺</button>' : ''}</span></div>`;
+  }).join('') || '<p class="hint">no such number</p>';
+}
+function wireParams(box, scopeCraft) {
+  box.querySelectorAll('.prm').forEach(row => {
+    const inp = row.querySelector('[data-val]');
+    inp.onchange = () => { const v = inp.value.trim(); if (v === '') return; setParam(row.dataset.p, +v, scopeCraft); };
+    const r = row.querySelector('[data-reset]'); if (r) r.onclick = () => setParam(row.dataset.p, null, scopeCraft);
+  });
+}
+function usedByMap() { const m = {}; for (const t of D.tricks) for (const p of t.params) (m[p] ||= []).push(t.id); return m; }
+function skillRadios(name, current, inherit) {
+  const opts = inherit ? [['inherit', 'as the profile'], ...SKILLS.filter(s => s !== 'none').map(s => [s, s]), ['none', 'the defaults']] : SKILLS.map(s => [s, s === 'none' ? 'none (the defaults)' : s]);
+  return opts.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}" ${(current || (inherit ? 'inherit' : 'none')) === v ? 'checked' : ''}> ${esc(l)}</label>`).join(' ');
+}
+function renderProfile() {
+  const box = $('#profilePanel'), filter = box.querySelector('#pfilter')?.value || '';
+  const skill = L.skill || 'none';
+  box.innerHTML = `<h2>skill</h2><p class="hint">a preset over the shipped numbers, under your own: a beginner's trick counts when it is nearly there, an advanced pilot's only when clean</p>` +
+    `<div class="row" id="skill">${skillRadios('skill', skill, false)}</div>` +
+    `<h2>numbers</h2><p class="hint">what the tricks are judged by; your value, the shipped default, and where the value in force came from. Edit a value to set yours; ↺ takes it back.</p>` +
+    `<div class="row"><input id="pfilter" placeholder="filter by number or trick" value="${esc(filter)}" style="width:240px"></div>` +
+    `<div id="params">${paramRows(D.params, null, usedByMap(), filter)}</div>`;
+  box.querySelectorAll('input[name=skill]').forEach(r => r.onchange = () => setSkill(r.value));
+  wireParams($('#params'), null);
+  $('#pfilter').oninput = () => { $('#params').innerHTML = paramRows(D.params, null, usedByMap(), $('#pfilter').value); wireParams($('#params'), null); };
+}
+
+// ---- drones: a craft by the log header's name, its properties, preset, numbers and tricks
+function renderDrones() {
+  const box = $('#dronesPanel');
+  const declared = Object.keys(D.crafts).filter(c => c !== 'default');
+  const names = [...new Set([...D.crafts_seen, ...declared])].sort();
+  const sel = craft || (names[0] ?? null);
+  const pending = sel !== null && (sel !== craft || !DC);
+  craft = sel;
+  box.innerHTML = `<h2>drones</h2><p class="hint">by the craft name in the log header; a quad without a section flies on the defaults. Everything set here is for that quad only.</p>` +
+    `<div class="row" id="crafts">${names.map(c => `<span class="chip ${c === craft ? 'on' : ''}" data-craft="${esc(c)}" title="${D.crafts_seen.includes(c) ? 'seen in the logs' : 'declared, not seen in a log here'}">${esc(c)}${D.crafts[c] ? '' : ' <span class="dim">·</span>'}</span>`).join('') ||
+      '<span class="hint">no craft seen in the logs yet: decode a log (open a session in the player)</span>'}</div>` +
+    (craft ? (pending ? `<h2>${esc(craft)}</h2><p class="hint">loading…</p>` : renderCraft(craft)) : '');
+  box.querySelectorAll('[data-craft]').forEach(el => el.onclick = () => { craft = el.dataset.craft; DC = null; load(); });
+  if (pending) { load(); return; }
+  if (!craft) return;
+  const sec = L.craft?.[craft] || {};
+  box.querySelectorAll('[data-prop]').forEach(inp => inp.onchange = () => setProp(craft, inp.dataset.prop, inp.value.trim() === '' ? null : (inp.type === 'number' ? +inp.value : inp.value)));
+  box.querySelectorAll('input[name=cskill]').forEach(r => r.onchange = () => setSkill(r.value, craft));
+  wireParams($('#cparams'), craft);
+  $('#cfilter').oninput = () => { $('#cparams').innerHTML = paramRows(DC.params, craft, usedByMap(), $('#cfilter').value); wireParams($('#cparams'), craft); };
+  box.querySelectorAll('#ctricks input[type=checkbox]').forEach(cb => cb.onchange = () => setTrick(cb.dataset.id, cb.checked, craft));
+}
+function renderCraft(c) {
+  const ctx = DC.craft_context, own = DC.crafts[c] || {}, defaults = DC.crafts.default || {};
+  const props = [...new Set([...Object.keys(defaults).filter(k => !['skill', 'params', 'segment', 'trick', 'source'].includes(k)), ...Object.keys(own).filter(k => !['skill', 'params', 'segment', 'trick', 'source'].includes(k))])];
+  const unit = {size_mm: 'mm, prop to prop', weight_g: 'g, with the battery', hover_pct: '% throttle that holds height'};
+  return `<h2>${esc(c)}</h2><div class="kv">` + props.map(k => `<b>${esc(k)}</b><span class="row" style="margin:0"><input type="${typeof (ctx['craft.' + k] ?? 0) === 'number' ? 'number' : 'text'}" step="any" data-prop="${esc(k)}" value="${esc(own[k] ?? '')}" placeholder="${esc(num(defaults[k] ?? ''))}"> <span class="dim">${esc(unit[k] || '')}${own[k] === undefined && defaults[k] !== undefined ? ' (the default)' : ''}</span></span>`).join('') + `</div>` +
+    `<h2>skill</h2><div class="row">${skillRadios('cskill', own.skill || 'inherit', true)}</div>` +
+    `<h2>numbers for ${esc(c)}</h2><div class="row"><input id="cfilter" placeholder="filter" style="width:200px"></div><div id="cparams">${paramRows(DC.params, c, usedByMap(), '')}</div>` +
+    `<h2>tricks for ${esc(c)}</h2><div id="ctricks">${DC.tricks.map(t => `<div class="row"><label><input type="checkbox" data-id="${esc(t.id)}" ${t.enabled ? 'checked' : ''}> ${esc(t.id)}</label> ${pill(t.tag)} ${srcBadge(t.source)}</div>`).join('')}</div>`;
+}
+
+// ---- tricks: the list in force, each one's definition, the examples checked, the eval against a session
+function renderTricks() {
+  const box = $('#tricksPanel');
+  box.innerHTML = `<h2>tricks in force</h2><p class="hint">what <code>acroscope events</code> looks for. Off here is off for every quad (the drones tab has per-quad switches); the name opens the definition.</p>` +
+    `<div id="tricks">` + D.tricks.map(t => {
+      const seg = t.phases.length ? t.phases.map(p => p.segment).join(' › ') : t.segment;
+      const conds = t.phases.length ? t.phases.map((p, i) => `<div><span class="k">phase ${i + 1}</span> ${esc(p.segment)}${i ? ` within ${p.within} s` : ''}</div>` + p.when.map(c => `<div><span class="k"></span><code>${esc(c)}</code></div>`).join('')).join('') : '';
+      return `<div class="trk ${t.enabled ? '' : 'off'} ${openTricks.has(t.id) ? 'open' : ''}" data-id="${esc(t.id)}"><div class="head">` +
+        `<input type="checkbox" data-on ${t.enabled ? 'checked' : ''} title="${t.enabled ? 'on' : 'off'}">` +
+        `<span><span class="id">${esc(t.id)}</span> ${pill(t.tag)} <span class="meta">${esc(seg)} · priority ${t.priority}${t.examples.length ? ` · ${t.examples.length} example${t.examples.length > 1 ? 's' : ''}` : ''}</span></span>` +
+        `<span>${srcBadge(t.source)}</span></div>` +
+        `<div class="det">${conds}` + t.when.map(c => `<div><span class="k">when</span><code>${esc(c)}</code></div>`).join('') +
+        `<div><span class="k">title</span><code>${esc(t.title)}</code></div><div><span class="k">why</span><code>${esc(t.why)}</code></div>` +
+        (t.params.length ? `<div><span class="k">numbers</span>${t.params.map(esc).join(', ')}</div>` : '') +
+        (t.requires.length ? `<div><span class="k">needs</span>${t.requires.map(esc).join(', ')}</div>` : '') +
+        t.suppress.map(r => `<div><span class="k">suppresses</span>${r.tags.map(esc).join(', ')}: ${r.margin !== null ? `windows within ${r.margin} s` : `instants within ${r.within} s`}</div>`).join('') +
+        t.examples.map(e => `<div><span class="k">example</span>${esc(e.log.replace(/^BTFL_BLACKBOX_LOG_/, '').replace(/\.bbl$/, ''))} arm ${e.arm} ${e.at !== undefined ? `at ${e.at}` : `${e.absent ? 'none in' : 'in'} ${e.from}-${e.to}`}${e.note ? ` <span class="dim">(${esc(e.note)})</span>` : ''}</div>`).join('') +
+        (t.note ? `<div><span class="k">note</span>${esc(t.note)}</div>` : '') + `</div></div>`;
+    }).join('') + `</div>` +
+    `<h2>examples</h2><p class="hint">every trick's examples (a real log, an arm, a moment) run against the logs on the server: a shared trick without an example is a guess</p>` +
+    `<div class="row"><button id="checkBtn">check the examples</button><span id="checkOut" class="dim"></span></div><div id="checkList" class="list"></div>` +
+    `<h2>against a session's moments</h2><p class="hint">the tricks scored against what you tagged: found, missed (with the arm and time, for <code>acroscope tricks explain</code>), and detections on no tagged moment</p>` +
+    `<div class="row"><select id="evalSession">${SESS.map(s => `<option value="${esc(s.session)}">${esc(s.session)} (${s.moments} moments)</option>`).join('')}</select><button id="evalBtn" ${SESS.length ? '' : 'disabled'}>evaluate</button><span id="evalOut" class="dim"></span></div><div id="evalList"></div>`;
+  box.querySelectorAll('.trk').forEach(el => {
+    el.querySelector('[data-on]').onchange = e => setTrick(el.dataset.id, e.target.checked, null);
+    el.querySelector('.head').onclick = e => { if (e.target.closest('input')) return; openTricks.has(el.dataset.id) ? openTricks.delete(el.dataset.id) : openTricks.add(el.dataset.id); el.classList.toggle('open'); };
+  });
+  $('#checkBtn').onclick = runCheck;
+  $('#evalBtn').onclick = runEval;
+}
+async function runJob(args, out) {
+  out.textContent = 'running…';
+  const {job, error} = await api('/api/cli', {method: 'POST', body: JSON.stringify({args, async: true})});
+  if (error) { out.textContent = error; return null; }
+  for (;;) {
+    await new Promise(r => setTimeout(r, 500));
+    const r = await api('/api/cli/' + job);
+    if (r.error) { out.textContent = r.error; return null; }
+    if (r.done) {
+      if (r.code !== 0 && !r.stdout.trim()) { out.textContent = (r.stderr || 'failed').trim().split('\n').pop(); return null; }
+      try { return JSON.parse(r.stdout); } catch { out.textContent = 'unreadable result'; return null; }
+    }
+    out.textContent = `running… ${Math.round(r.seconds || 0)} s`;
+  }
+}
+async function runCheck() {
+  const res = await runJob(['tricks', 'check', '--json'], $('#checkOut'));
+  if (!res) return;
+  $('#checkOut').innerHTML = `<span class="${res.failed ? 'bad' : 'ok'}">${res.passed} passed, ${res.failed} failed</span>, ${res.unchecked} unchecked (log not on the server)`;
+  $('#checkList').innerHTML = res.results.map(r => `<div class="m"><span class="${r.status === 'ok' ? 'ok' : r.status === 'FAILED' ? 'bad' : 'dim'}">${esc(r.status)}</span> ${esc(r.trick)} · ${esc(r.log.replace(/^BTFL_BLACKBOX_LOG_/, '').replace(/\.bbl$/, ''))} arm ${r.arm} ${esc(r.where)}${r.found ? ` → ${esc(r.found)}` : ''}${r.note ? ` <span class="dim">(${esc(r.note)})</span>` : ''}</div>`).join('');
+}
+const fmt = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); };
+async function runEval() {
+  const s = $('#evalSession').value;
+  const res = await runJob(['tricks', 'eval', s, '--json'], $('#evalOut'));
+  if (!res) return;
+  const rows = Object.entries(res.per_tag);
+  $('#evalOut').textContent = rows.length ? '' : 'no tagged tricks on matched clips in this session';
+  $('#evalList').innerHTML = (rows.length ? `<table class="ev"><tr><th>tag</th><th>found</th><th>missed</th></tr>` + rows.map(([tag, c]) => `<tr><td>${pill(tag)}</td><td class="ok">${c.found}</td><td class="${c.missed ? 'bad' : ''}">${c.missed}</td></tr>`).join('') + `</table>` : '') +
+    (res.missed.length ? `<h2>missed</h2><div class="list">` + res.missed.map(m => `<div class="m"><span class="t">${esc(m.video.slice(-7, -4))} ${fmt(m.start)}–${fmt(m.end)}</span>${pill(m.tag)} ${esc(m.title)} <span class="dim">arms ${Object.entries(m.arms).map(([a, t]) => `${a} @ ${t}`).join(', ')}</span></div>`).join('') + `</div>` : '') +
+    (res.untagged.length ? `<h2>detections on no tagged moment (${res.untagged.length})</h2><div class="list">` + res.untagged.map(e => `<div class="m"><span class="t">${esc(e.video.slice(-7, -4))} ${fmt(e.start)}–${fmt(e.end)}</span>${pill(e.tag)} ${esc(e.title)} <span class="dim">arm ${e.arm} @ ${e.arm_from}${e.moment ? ` · in: ${esc(e.moment)}` : ''}</span></div>`).join('') + `</div>` : '');
+}
+
+// ---- settings: what this browser remembers, and the raw layer
+function renderSettings() {
+  const box = $('#settingsPanel');
+  const ls = k => { try { return localStorage.getItem(k); } catch { return null; } };
+  box.innerHTML = `<h2>this browser</h2><p class="hint">what the player keeps on this device</p>` +
+    `<div class="row"><label><input type="checkbox" id="stSticks" ${ls('acro.sticks') !== '0' ? 'checked' : ''}> the sticks from the log over the picture</label></div>` +
+    `<div class="row"><label><input type="checkbox" id="stAll" ${ls('acro.allClips') === '1' ? 'checked' : ''}> the moments list shows all clips of the session</label></div>` +
+    `<div class="row"><span class="dim">last session ${esc(ls('acro.session') || '–')}, clip ${esc(ls('acro.clip') || '–')}</span><button class="small" id="forget">forget</button></div>` +
+    `<h2>your layer</h2><p class="hint">everything this page set, as the server keeps it (the shape of a tricks file's tables). Edit it here when the knobs above do not reach; a bad one is refused and nothing changes.</p>` +
+    `<div class="kv">${D.sources.map(s => `<b>${esc(s === 'database' ? 'database' : s.endsWith('tricks.toml') && s.includes('/tricks/') ? 'shipped' : 'file')}</b><span class="dim">${esc(s)}</span>`).join('')}` +
+    (D.sources.includes(D.user_file) ? '' : `<b>file</b><span class="dim">${esc(D.user_file)} (none: <code>acroscope tricks init</code> writes a starter)</span>`) + `</div>` +
+    `<textarea id="layerText">${esc(JSON.stringify(L, null, 1))}</textarea>` +
+    `<div class="row"><button class="primary" id="layerSave">save</button><button id="layerClear" title="back to the shipped tricks and the file">clear everything set here</button></div>`;
+  $('#stSticks').onchange = e => { try { localStorage.setItem('acro.sticks', e.target.checked ? '1' : '0'); } catch {} };
+  $('#stAll').onchange = e => { try { localStorage.setItem('acro.allClips', e.target.checked ? '1' : ''); } catch {} };
+  $('#forget').onclick = () => { try { ['acro.session', 'acro.clip', 'acro.tab', 'acro.mtab'].forEach(k => localStorage.removeItem(k)); } catch {} renderSettings(); };
+  $('#layerSave').onclick = async () => { let t; try { t = JSON.parse($('#layerText').value); } catch (e) { err('not JSON: ' + e.message); return; } await save(t); };
+  $('#layerClear').onclick = async () => { if (!confirm('Clear everything set on this page? The shipped tricks and the file stay.')) return; err(''); await api('/api/tricks/layer', {method: 'DELETE'}); await load(); };
+}
+
+// ---- tags: categories and tags with their colours (moved here from the player)
+function renderTags() {
+  const box = $('#tagsPanel');
+  const sel = (cur) => `<select data-cat>${TAGS.categories.map(c => `<option ${c.name === cur ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`;
+  box.innerHTML = `<h2>categories</h2>` +
+    TAGS.categories.map(c => `<div class="row" data-cn="${esc(c.name)}"><span style="min-width:110px">${esc(c.name)}</span><input type="color" value="${esc(c.color)}" data-ccolor>` +
+      `<button class="small" data-cdel title="remove (only when empty)">✕</button></div>`).join('') +
+    `<div class="row"><input id="newCat" placeholder="new category" style="width:160px"><input type="color" id="newCatColor" value="#4cc2ff"><button class="small" id="addCat">add</button></div>` +
+    `<h2>tags</h2><p class="hint">a tag without its own colour takes the category's; a tag on moments that is not defined here is fine too</p>` +
+    TAGS.tags.map(t => `<div class="row" data-tn="${esc(t.name)}"><span style="min-width:110px">${pill(t.name)}</span>${sel(t.category)}<input type="color" value="${esc(tagColor(t.name))}" data-tcolor>` +
+      `<button class="small" data-tclear title="use the category colour">↺</button><button class="small" data-tdel title="drop the definition (moments keep the tag)">✕</button></div>`).join('') +
+    `<div class="row"><input id="newTag" placeholder="new tag" style="width:160px">${sel(TAGS.categories[0]?.name)}<button class="small" id="addTag">add</button></div>`;
+  const post = async (p, body) => { const r = await api(p, {method: 'POST', body: JSON.stringify(body)}); if (r.error) err(r.error); else err(''); return r; };
+  const del = async (p) => { const r = await api(p, {method: 'DELETE'}); if (r.error) err(r.error); else err(''); return r; };
+  const reload = async () => { TAGS = await api('/api/tags'); renderTags(); };
+  box.querySelectorAll('[data-cn]').forEach(row => {
+    row.querySelector('[data-ccolor]').onchange = async e => { await post('/api/tag-categories', {name: row.dataset.cn, color: e.target.value}); reload(); };
+    row.querySelector('[data-cdel]').onclick = async () => { await del('/api/tag-categories/' + encodeURIComponent(row.dataset.cn)); reload(); };
+  });
+  box.querySelectorAll('[data-tn]').forEach(row => {
+    const save = async (color) => { await post('/api/tags', {name: row.dataset.tn, category: row.querySelector('[data-cat]').value, color}); reload(); };
+    row.querySelector('[data-cat]').onchange = () => save(null);
+    row.querySelector('[data-tcolor]').onchange = e => save(e.target.value);
+    row.querySelector('[data-tclear]').onclick = () => save('');
+    row.querySelector('[data-tdel]').onclick = async () => { await del('/api/tags/' + encodeURIComponent(row.dataset.tn)); reload(); };
+  });
+  $('#addCat').onclick = async () => { const n = $('#newCat').value.trim(); if (!n) return; await post('/api/tag-categories', {name: n, color: $('#newCatColor').value}); reload(); };
+  $('#addTag').onclick = async () => { const n = $('#newTag').value.trim(); if (!n) return; await post('/api/tags', {name: n, category: $('#addTag').previousElementSibling.value}); reload(); };
+}
+
+// ---- tabs
+let renders = 0;                                      // counts the redraws, for the tests to wait on
+function render() {
+  if (!D) return;
+  renders++;
+  status(`${D.tricks.filter(t => t.enabled).length} of ${D.tricks.length} tricks on · ${D.skill ? 'skill ' + D.skill : 'the default numbers'}${D.database ? ' · your layer in the database' : ''}`);
+  ({profile: renderProfile, drones: renderDrones, tricks: renderTricks, settings: renderSettings, tags: renderTags})[tab]();
+}
+function show(t) {
+  tab = t;
+  document.querySelectorAll('#tabs span').forEach(x => x.classList.toggle('on', x.dataset.tab === t));
+  document.querySelectorAll('section[data-panel]').forEach(s => s.classList.toggle('on', s.dataset.panel === t));
+  try { localStorage.setItem('acro.cfgtab', t); } catch {}
+  if (location.hash !== '#' + t) history.replaceState(null, '', '#' + t);
+  render();
+}
+document.querySelectorAll('#tabs span').forEach(x => x.onclick = () => show(x.dataset.tab));
+const phoneQuery = matchMedia('(max-width: 1000px)');
+const setPhone = () => document.body.classList.toggle('phone', phoneQuery.matches);
+phoneQuery.addEventListener('change', setPhone);
+setPhone();
+(async () => {
+  status('loading…');
+  const first = location.hash.slice(1);
+  tab = ['profile', 'drones', 'tricks', 'settings', 'tags'].includes(first) ? first : (() => { try { return localStorage.getItem('acro.cfgtab'); } catch { return null; } })() || 'profile';
+  SESS = (await api('/api/sessions')).filter(s => s.moments).map(s => ({session: s.session, moments: s.moments}));
+  await load();
+  show(tab);
+})();
+</script>
+</body>
+</html>

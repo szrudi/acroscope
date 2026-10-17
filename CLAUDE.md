@@ -51,7 +51,10 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   `tricks`, one JSON document shaped like the TOML tables; `tricks.LAYER_SOURCE` is how the server and the local CLI
   hand it to the library, so the package never opens a database on its own and tests set it explicitly): what
   `acroscope tricks set | unset | on | off | skill` and the player's configuration page (#45) write, checked by
-  `tricks.check_layer` before it is stored. `GET /api/tricks` is `tricks.describe()`.
+  `tricks.check_layer` before it is stored. `GET /api/tricks` is `tricks.describe()`. The player's `/config` page
+  (`acroscope/static/config.html`, one file like the player, five tabs) edits that layer whole through
+  `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
+  against what the server then holds.
 - Trick work needs real logs on joan: `acroscope fetch-log <fragment> --to <dir>/blackbox` (runs here, no deploy), then
   `ACROSCOPE_DATA=<dir> ACROSCOPE_CACHE=<cache> ACROSCOPE_URL= ACROSCOPE_TRICKS=/nonexistent` with the branch's
   checkout on `PYTHONPATH` (a script run by path imports the main checkout's package otherwise): `arms` decodes, then
@@ -103,7 +106,8 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - orangebox 0.5.0's wheel has a broken script entry point; pip exits 1 after installing. The Dockerfile tolerates it.
 - ffmpeg filter graphs: `:` in drawtext text must be escaped; concat of several inputs needs `trim=end_frame=1` per input.
 - Conventions the metrics ship (`metrics.CONVENTIONS`) are the single place for sign/scaling facts. Keep them true.
-- The player is tested in a headless Chromium (`tests/test_player.py`, Playwright): a server child on a scratch
+- The player and the configuration page are tested in a headless Chromium (`tests/test_player.py`,
+  `tests/test_config_page.py`, Playwright): a server child on a scratch
   data dir, the page driven at a desktop size and at Rudi's phone's (412 x 927 CSS px), the layout measured, the
   dialogs answered, touch gestures dispatched. One-time setup per machine, no root: `scripts/browser-setup.sh`
   (Playwright into `.venv` as the `e2e` extra, the browser into `~/.cache/ms-playwright`, the five libraries

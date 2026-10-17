@@ -351,6 +351,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not parts:
                 return self._file(STATIC / "index.html", "text/html; charset=utf-8")
+            if parts == ["config"]:                                 # the configuration page (#45)
+                return self._file(STATIC / "config.html", "text/html; charset=utf-8")
             if parts[0] == "static" and 2 <= len(parts) <= 3:          # static/<file> or static/brand/<file>
                 return self._file(_under(STATIC, *parts[1:]), cache="max-age=3600")
             if parts[0] == "video" and len(parts) == 3:

@@ -276,6 +276,8 @@ and trick overrides. `[craft.default]` is what any quad is unless its section sa
 exist is refused when the file loads; `acroscope tricks` shows what is in force (`--craft OttoJr` for one quad), and
 the server reads an edited file on the next look, no restart.
 
+The player's `/config` page (see *Configuration page*) is the same library with knobs.
+
 `acroscope tricks` lists the tricks in force, `tricks show <id>` one in full, `tricks features [kind]` the names a
 condition may use, `tricks explain <bbl>:<arm> [from] [to]` every window with each trick's verdict (fired, the
 condition it failed, lost to a higher priority, suppressed by whom), `tricks check` runs every trick's `examples` (a
@@ -288,6 +290,18 @@ split-S, powerloop, orbit (named by the side the quad slides to, with laps, bank
 hover throttle), figure 8, dive (the quad flying before the cut, pointing down, not tumbling), impact and hard
 landing, gyro yaw kick, motor loss. Each event says which `trick` fired; its `numbers` are the window's measurement, the same snapshot `metrics`
 gives for that window, so an accepted suggestion stores it.
+
+## Configuration page
+
+`/config` (the ⚙ in the player's header) is where the pilot sets what the log cannot say, over the shipped tricks,
+in five tabs: **profile** (the skill preset, every number with the shipped default and where the value in force came
+from, filtered by number or trick), **drones** (the crafts seen in the logs by their header name: properties, a preset
+and numbers for that quad, its tricks on and off), **tricks** (the list in force with switches, each one's definition
+and examples, "check the examples" against the server's logs, and the tricks scored against a session's tagged
+moments: found, missed with arm and time, detections on no moment), **settings** (what this browser remembers, and the
+raw layer as the server keeps it) and **tags** (the tag manager, moved here from the player). Every change goes to
+the server as the whole layer, checked as a tricks file is; a refused one shows its message and changes nothing. The
+player's suggestions follow on the next look.
 
 ## Player
 
