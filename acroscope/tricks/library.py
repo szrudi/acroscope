@@ -23,7 +23,27 @@
 
 Every name a condition or template uses must be a feature of the trick's segment kind (features.vocabulary) or a
 param; every segment option must exist for its kind; an unknown key is an error. So a typo fails at load, with
-the file and the entry named, never silently as a trick that cannot fire."""
+the file and the entry named, never silently as a trick that cannot fire.
+
+Profiles, the layers over the shipped file (a pilot's file: ACROSCOPE_TRICKS, else ~/.config/acroscope/tricks.toml):
+
+    skill = "beginner"            # a preset of params the shipped file defines in [skill.beginner]; your own
+                                  # [params] win over it
+    [craft.default]               # what any quad is unless its own section says otherwise; the names here are
+    size_mm = 65                  # features too (craft.size_mm, craft.name) for conditions that scale with the quad
+    [craft."OttoJr"]              # by the log header's Craft name: these arms only
+    size_mm = 75
+    skill = "advanced"
+    [craft."OttoJr".params]       # over everything above, for this quad
+    loop_min_dur = 1.2
+    [craft."OttoJr".segment.impact]
+    g = 5
+    [[craft."OttoJr".trick]]
+    id = "gyro-kick"
+    enabled = false
+
+The effective library for an arm is `for_craft(name)`: the files in order, the chosen preset under the files after
+the one that defines it, then the craft's own layer."""
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +53,9 @@ from . import expr, features, segments
 SHIPPED = Path(__file__).with_name("tricks.toml")
 VERSION = 1
 TRICK_KEYS = {"id", "tag", "segment", "when", "title", "why", "priority", "suppress", "requires", "enabled", "examples", "note"}
+TOP_KEYS = {"version", "params", "segment", "trick", "skill", "craft"}
+CRAFT_KEYS = {"params", "segment", "trick", "skill"}         # the rest of a craft section are its properties
+DEFAULT_CRAFT = "default"
 EXAMPLE_KEYS = {"log", "arm", "at", "from", "to", "absent", "note"}
 
 
@@ -96,7 +119,12 @@ class Library:
         self.segments: dict[str, Segment] = {}
         self.tricks: dict[str, Trick] = {}
         self.sources: list[str] = []
+        self.skills: dict[str, dict] = {}                 # preset name -> params
+        self.skill: str | None = None                     # the preset in force, and the source that chose it
+        self.crafts: dict[str, dict] = {}                 # craft name -> {props, params, segments, tricks, skill}
+        self.layers: list = []                            # [(source, params, skill chosen there)] in file order
         self._order = 0
+        self._effective: dict = {}
 
     @classmethod
     def load(cls, paths=(SHIPPED,)) -> "Library":
@@ -132,13 +160,31 @@ class Library:
         if version != VERSION:
             raise LibraryError(_where(source, f"version {version!r}: this acroscope reads version {VERSION}"))
         for key in table:
-            if key not in ("version", "params", "segment", "trick"):
-                raise LibraryError(_where(source, f"unknown top-level key {key!r} (have version, params, segment, trick)"))
+            if key not in TOP_KEYS:
+                raise LibraryError(_where(source, f"unknown top-level key {key!r} (have {', '.join(sorted(TOP_KEYS))})"))
         params = table.get("params", {})
         if not isinstance(params, dict):
             raise LibraryError(_where(source, "params must be a table"))
         for k, v in params.items():
             self.params[k] = v
+        skill = table.get("skill")
+        chosen = None
+        if isinstance(skill, str):                         # a choice: skill = "beginner"
+            chosen = skill
+            self.skill = skill
+        elif isinstance(skill, dict):                      # presets: [skill.beginner] flip_min_deg = 240
+            for name, p in skill.items():
+                if not isinstance(p, dict):
+                    raise LibraryError(_where(source, f"skill.{name} must be a table of params"))
+                self.skills.setdefault(name, {}).update(p)
+        elif skill is not None:
+            raise LibraryError(_where(source, "skill is the name of a preset (skill = \"beginner\") or presets ([skill.beginner])"))
+        self.layers.append((source, dict(params), chosen))
+        crafts = table.get("craft", {})
+        if not isinstance(crafts, dict):
+            raise LibraryError(_where(source, "craft must be a table of craft sections"))
+        for name, spec in crafts.items():
+            self._merge_craft(name, spec, source)
         segs = table.get("segment", {})
         if not isinstance(segs, dict):
             raise LibraryError(_where(source, "segment must be a table of named segments"))
@@ -236,6 +282,38 @@ class Library:
                     raise LibraryError(_where(source, f"trick {tid}: examples must be a list of tables"))
                 t.examples = [self._example(e, tid, source) for e in v]
 
+    def _merge_craft(self, name: str, spec, source: str):
+        if not isinstance(spec, dict):
+            raise LibraryError(_where(source, f"craft.{name} must be a table"))
+        c = self.crafts.setdefault(name, {"props": {}, "params": {}, "segments": {}, "tricks": [], "skill": None, "source": source})
+        c["source"] = source
+        for k, v in spec.items():
+            if k == "params":
+                if not isinstance(v, dict):
+                    raise LibraryError(_where(source, f"craft.{name}.params must be a table"))
+                c["params"].update(v)
+            elif k == "segment":
+                if not isinstance(v, dict) or not all(isinstance(o, dict) for o in v.values()):
+                    raise LibraryError(_where(source, f"craft.{name}.segment must be a table of segment tables"))
+                for sname, opts in v.items():
+                    c["segments"].setdefault(sname, {}).update(opts)
+            elif k == "trick":
+                if not isinstance(v, list) or not all(isinstance(t, dict) for t in v):
+                    raise LibraryError(_where(source, f"craft.{name}.trick must be an array of tables ([[craft.\"{name}\".trick]])"))
+                c["tricks"].extend(v)
+            elif k == "skill":
+                if not isinstance(v, str):
+                    raise LibraryError(_where(source, f"craft.{name}.skill must be the name of a preset"))
+                c["skill"] = v
+            else:
+                if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+                    raise LibraryError(_where(source, f"craft.{name}.{k}: a craft property is a number or a string, not {v!r}"))
+                c["props"][k] = v
+
+    def craft_properties(self) -> set[str]:
+        """Every property name any craft section declares (plus `name`): the craft.* features a condition may use."""
+        return {"name"} | {k for c in self.crafts.values() for k in c["props"]}
+
     def _rule(self, r, tid: str, source: str) -> Rule:
         if not isinstance(r, dict) or not isinstance(r.get("tags"), list) or not r["tags"] or set(r) - {"tags", "margin", "within"}:
             raise LibraryError(_where(source, f"trick {tid}: a suppress rule is {{ tags = [...], margin = s }} or {{ tags = [...], within = s }}, not {r!r}"))
@@ -258,20 +336,31 @@ class Library:
     # ---- checking -------------------------------------------------------------------------------------------------
 
     def validate(self):
-        for k, v in self.params.items():
-            if not isinstance(k, str) or "." in k or k in features.WINDOW or k in features.ARM:
-                raise LibraryError(f"param {k!r}: a param is a plain name that is not a feature")
-            if isinstance(v, bool) or not isinstance(v, (int, float, str)):
-                raise LibraryError(f"param {k!r}: must be a number or a string, not {v!r}")
-        for t in self.tricks.values():
+        self._effective = {}
+        for group in [self.params, *self.skills.values(), *(c["params"] for c in self.crafts.values())]:
+            for k, v in group.items():
+                if not isinstance(k, str) or "." in k or k in features.WINDOW or k in features.ARM:
+                    raise LibraryError(f"param {k!r}: a param is a plain name that is not a feature")
+                if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+                    raise LibraryError(f"param {k!r}: must be a number or a string, not {v!r}")
+        for chosen, where in [(self.skill, "skill"), *((c["skill"], f"craft.{n}.skill") for n, c in self.crafts.items())]:
+            if chosen is not None and chosen not in self.skills:
+                raise LibraryError(f"{where} = {chosen!r}: no such preset (have {', '.join(self.skills) or 'none'})")
+        self._check_tricks(self)
+        for name in self.crafts:
+            self._check_tricks(self._derive(name))
+
+    def _check_tricks(self, lib: "Library"):
+        crafts = {f"craft.{p}" for p in self.craft_properties()}
+        for t in lib.tricks.values():
             w = f"trick {t.id}"
             if not t.tag:
                 raise LibraryError(_where(t.source, f"{w}: needs a tag"))
-            if t.segment not in self.segments:
-                raise LibraryError(_where(t.source, f"{w}: unknown segment {t.segment!r} (have {', '.join(self.segments) or 'none'})"))
+            if t.segment not in lib.segments:
+                raise LibraryError(_where(t.source, f"{w}: unknown segment {t.segment!r} (have {', '.join(lib.segments) or 'none'})"))
             if not t.title:
                 raise LibraryError(_where(t.source, f"{w}: needs a title"))
-            known = set(features.vocabulary(self.segments[t.segment].kind)) | set(self.params)
+            known = set(features.vocabulary(lib.segments[t.segment].kind)) | set(lib.params) | crafts
             for text, e in t.when:
                 self._check_names(e, known, f"{w}: condition {text!r}", t.source)
             for tpl, what in ((t.title, "title"), (t.why, "why")):
@@ -287,6 +376,62 @@ class Library:
         unknown = sorted(e.names - known)
         if unknown:
             raise LibraryError(_where(source, f"{what}: unknown name {unknown[0]!r} (not a feature of this segment kind, not a param)"))
+
+    # ---- the effective library for an arm ---------------------------------------------------------------------------
+
+    def effective_params(self, craft: str | None = None) -> dict:
+        """The params in force for a craft: the files in order with the chosen preset over the first (the shipped
+        defaults) and under every later one, then the default craft's params, then the craft's own."""
+        default, own = self.crafts.get(DEFAULT_CRAFT, {}), self.crafts.get(craft, {}) if craft is not None else {}
+        chosen = own.get("skill") or default.get("skill") or self.skill
+        out = {}
+        for i, (source, params, _) in enumerate(self.layers):
+            out.update(params)
+            if i == 0 and chosen:
+                out.update(self.skills.get(chosen, {}))
+        out.update(default.get("params", {}))
+        out.update(own.get("params", {}))
+        return out
+
+    def _derive(self, craft: str | None) -> "Library":
+        """A copy of this library with the default craft's layer and then the craft's own applied (params,
+        segment options, trick overrides)."""
+        import copy
+        lib = Library()
+        lib.sources, lib.skills, lib.skill, lib.layers, lib.crafts = self.sources, self.skills, self.skill, self.layers, self.crafts
+        lib.segments = {n: Segment(s.name, s.kind, dict(s.opts), s.source) for n, s in self.segments.items()}
+        lib.tricks = {tid: copy.copy(t) for tid, t in self.tricks.items()}
+        for t in lib.tricks.values():
+            t.when, t.suppress, t.requires, t.examples = list(t.when), list(t.suppress), list(t.requires), list(t.examples)
+        lib._order = self._order
+        lib.params = self.effective_params(craft)
+        for name in (DEFAULT_CRAFT, craft):
+            c = self.crafts.get(name) if name is not None else None
+            if not c:
+                continue
+            where = f"{c['source']} craft.{name}"
+            for sname, opts in c["segments"].items():
+                lib._merge_segment(sname, opts, where)
+            for spec in c["tricks"]:
+                lib._merge_trick(spec, where)
+        return lib
+
+    def craft_context(self, craft: str | None) -> dict:
+        """The craft.* features for an arm: the default section's properties under its own section's."""
+        props = dict(self.crafts.get(DEFAULT_CRAFT, {}).get("props", {}))
+        if craft in self.crafts:
+            props.update(self.crafts[craft]["props"])
+        out = {f"craft.{p}": None for p in self.craft_properties()}
+        out.update({f"craft.{k}": v for k, v in props.items()})
+        out["craft.name"] = craft
+        return out
+
+    def for_craft(self, craft: str | None) -> "Library":
+        """The library in force for an arm of this craft (by the log header's Craft name), derived once per craft."""
+        key = craft if craft in self.crafts else None
+        if key not in self._effective:
+            self._effective[key] = self._derive(key)
+        return self._effective[key]
 
     # ---- views --------------------------------------------------------------------------------------------------
 

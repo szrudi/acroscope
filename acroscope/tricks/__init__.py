@@ -9,6 +9,7 @@ trick made of it, for tuning.
 Precedence is in the file, not in code: on one window the trick with the highest `priority` wins; a detection
 `suppress`es others by tag (overlapping windows, or point events within so many seconds), judged in priority order.
 """
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,13 +17,62 @@ from ..blackbox import Arm
 from . import expr, features, segments
 from .library import SHIPPED, Library, LibraryError, Trick
 
-__all__ = ["check", "detect", "explain", "library", "Library", "LibraryError", "SHIPPED"]
+__all__ = ["check", "detect", "explain", "library", "user_path", "Library", "LibraryError", "SHIPPED", "TEMPLATE"]
+
+# what `acroscope tricks init` writes: a pilot's file with the knobs shown and off
+TEMPLATE = """# Your tricks, over acroscope's shipped ones (acroscope/tricks/tricks.toml). `acroscope tricks` shows what is in
+# force, `acroscope tricks show <id>` one trick, `acroscope tricks explain <bbl>:<arm>` every window's verdict.
+# Uncomment what you need; a name that does not exist is refused when the file loads.
+version = 1
+
+# skill = "beginner"            # a preset over the defaults: "beginner" (tricks count when nearly there) or
+                                # "advanced" (only when clean); your own [params] below win over it
+
+[params]                        # any number from `acroscope tricks` (its params line)
+# split_s_throttle_max = 50     # my split-S keeps some throttle on
+# flip_min_deg = 250
+
+# [[trick]]                     # turn a trick off, or change one of its fields
+# id = "gyro-kick"
+# enabled = false
+
+# [[trick]]                     # or add one of your own (acroscope tricks features: the names a condition may use)
+# id = "hard-roll"
+# tag = "roll"
+# segment = "fast-rotation"
+# when = ["axis == 'roll'", "abs(rotation_deg.roll) >= 330", "peak_rate_dps.roll >= 0.8 * arm.rates_max_dps.roll"]
+# title = "{direction} roll at full rate"
+# why = "roll {rotation_deg.roll:+} deg at {peak_rate_dps.roll} dps"
+# priority = 15
+
+# [craft."OttoJr"]              # by the Craft name in the log header: these arms only
+# size_mm = 75                  # the craft.* features (craft.size_mm, …) for conditions that scale with the quad
+# weight_g = 40
+# skill = "advanced"            # a preset for this quad
+# [craft."OttoJr".params]
+# loop_min_dur = 1.2
+# [craft."OttoJr".segment.impact]
+# g = 5                         # a heavier quad hits harder before it is a crash
+# [[craft."OttoJr".trick]]
+# id = "motor-loss"
+# enabled = false
+"""
 
 _cache: tuple[tuple, Library] | None = None
 
 
+def user_path() -> Path:
+    """Where a pilot's own tricks file lives: ACROSCOPE_TRICKS (a file, or a directory of .toml files read in name
+    order), else ~/.config/acroscope/tricks.toml. The server reads its own (the container's /state/tricks.toml)."""
+    return Path(os.environ.get("ACROSCOPE_TRICKS") or "~/.config/acroscope/tricks.toml").expanduser()
+
+
 def library_paths() -> list[Path]:
-    return [SHIPPED]
+    """The shipped file, then the pilot's (a file, or every .toml of a directory, sorted)."""
+    p = user_path()
+    if p.is_dir():
+        return [SHIPPED, *sorted(p.glob("*.toml"))]
+    return [SHIPPED, p]
 
 
 def library() -> Library:
@@ -69,8 +119,10 @@ class Run:
     verdict on every window, and the hits after precedence."""
 
     def __init__(self, arm: Arm, lib: Library):
-        self.arm, self.lib = arm, lib
-        self.context = {**lib.params, **features.arm_context(arm)}
+        craft = (arm.meta.get("headers") or {}).get("Craft name")
+        self.base = lib
+        self.arm, self.lib = arm, lib.for_craft(craft)          # the library in force for this quad
+        self.context = {**self.lib.params, **lib.craft_context(craft), **features.arm_context(arm)}
         self.windows: dict[str, list] = {}           # segment name -> [(window, ns, numbers)]
         self.verdicts: dict[tuple, list] = {}        # (segment, index) -> [(trick, failed condition or None)]
         self.skipped: dict[str, list[str]] = {}      # trick id -> the fields it needs and the log lacks

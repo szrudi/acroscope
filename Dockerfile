@@ -9,7 +9,8 @@ COPY acroscope ./acroscope
 # AFTER installing the package. Install it on its own, tolerate that exit code, and prove the import instead.
 RUN pip install --no-cache-dir orangebox==0.5.0 || true; python -c "import orangebox" \
     && pip install --no-cache-dir --no-deps . && mkdir -p /data /cache /state && chmod 777 /cache /state
-ENV ACROSCOPE_DATA=/data ACROSCOPE_CACHE=/cache ACROSCOPE_DB=/state/acroscope.db
+# the pilot's tricks file (over the shipped acroscope/tricks/tricks.toml) lives beside the database
+ENV ACROSCOPE_DATA=/data ACROSCOPE_CACHE=/cache ACROSCOPE_DB=/state/acroscope.db ACROSCOPE_TRICKS=/state/tricks.toml
 EXPOSE 8070
 # runs as whatever `user:` compose sets (the bind mount's owner); root when unset
 CMD ["acroscope", "serve", "--host", "0.0.0.0", "--port", "8070"]

@@ -38,7 +38,11 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   server's logs). The pre-#22 detectors were ported window for window: on 234 real arms (eleven logs, 2026-10-07 to
   10-16) every event's tag, title, why, start and end were identical except the dives' tilt range (every frame now,
   not 40 samples) and the powerloops' inverted throttle (IMU tilt > 135, not integrated pitch, which for a loop
-  entered from a dive measured the climb). The server's `_events` cache is keyed by the tricks files' mtimes.
+  entered from a dive measured the climb). The server's `_events` cache is keyed by the tricks files' mtimes. A pilot's file sits over the shipped one
+  (`ACROSCOPE_TRICKS`, in the container `/state/tricks.toml` beside the database; locally
+  `~/.config/acroscope/tricks.toml`, `tricks init` writes a starter): skill presets, own params, per-craft
+  sections by the header's `Craft name` (`Library.for_craft`). Rudi edits the server's copy on the LXC for now;
+  an editor in the player is an open idea.
 - The flight-analysis session's brief in the Drive folder (`~/gdrive/fpv/CLAUDE.md`) carries the acroscope workflow
   that session follows: keep its acroscope bullet in step with CLI changes.
 - Cache: `~/.cache/acroscope` on joan (frames and sheets fetched from the server, the real-data test leftovers);

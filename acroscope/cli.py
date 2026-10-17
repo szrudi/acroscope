@@ -380,22 +380,38 @@ def cmd_events(a):
 def cmd_tricks(a):
     """The tricks file(s) in force (#22): list them, show one, the feature names, run the examples, or explain an
     arm window by window. Proxied like `events`: the server's library is the one that detects."""
-    lib = tricks.library()
     what, args = a.what, a.args
+    if what == "init":
+        p = tricks.user_path()
+        if p.exists():
+            raise SystemExit(f"{p} exists; edit it (acroscope tricks shows what is in force)")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(tricks.TEMPLATE)
+        return print(p)
+    base = tricks.library()
+    lib = base.for_craft(a.craft)                      # the library in force: the default layer, or a craft's
     if what == "list":
         if a.json:
-            return out({"sources": lib.sources, "params": lib.params,
+            return out({"sources": base.sources, "user_file": str(tricks.user_path()), "skill": base.skill, "skills": base.skills,
+                        "crafts": {n: {**c["props"], "skill": c["skill"], "params": c["params"], "segment": c["segments"],
+                                       "trick": c["tricks"]} for n, c in base.crafts.items()},
+                        "craft": a.craft, "params": lib.params,
                         "segments": {n: {"kind": s.kind, **s.opts} for n, s in lib.segments.items()},
                         "tricks": [{"id": t.id, "tag": t.tag, "segment": t.segment, "priority": t.priority, "enabled": t.enabled,
                                     "when": t.conditions, "title": t.title, "why": t.why, "requires": lib.requires(t),
                                     "suppress": [{"tags": list(r.tags), "margin": r.margin, "within": r.within} for r in t.suppress],
                                     "examples": t.examples, "source": t.source} for t in lib.ordered()]})
-        print(f"# {', '.join(lib.sources)}")
+        print(f"# {', '.join(base.sources)}" + ("" if tricks.user_path().is_file() else f"  (no {tricks.user_path()}: acroscope tricks init)"))
+        crafts = [n for n in base.crafts if n != "default"]
+        print(f"# skill: {base.skill or 'none (the defaults)'}; presets: {', '.join(base.skills) or 'none'}; crafts: {', '.join(crafts) or 'none'}"
+              + (f"; showing {a.craft}" if a.craft else ""))
         print(f"{'id':16} {'tag':11} {'segment':16} {'kind':13} prio  on   ex  conditions")
         for t in lib.ordered():
             seg = lib.segments[t.segment]
             print(f"{t.id:16} {t.tag:11} {t.segment[:16]:16} {seg.kind:13} {t.priority:4}  {'yes' if t.enabled else 'no ':3} {len(t.examples):3}  {len(t.when)}")
         print(f"params: {', '.join(f'{k}={v}' for k, v in lib.params.items())}")
+        if base.crafts.get("default"):
+            print(f"craft: {', '.join(f'{k}={v}' for k, v in sorted(base.craft_context(a.craft).items()) if v is not None)}")
         return
     if what == "show":
         for tid in args or [None]:
@@ -469,7 +485,7 @@ def cmd_tricks(a):
                     fate = f"suppressed by {t['suppressed_by']}"
                 print(f"    {t['id']:16} {fate}")
         return
-    raise SystemExit(f"tricks: {what}: not a subcommand (list, show, features, check, explain)")
+    raise SystemExit(f"tricks: {what}: not a subcommand (list, show, features, check, explain, init)")
 
 
 def cmd_frame(a):
@@ -739,8 +755,9 @@ def parser() -> argparse.ArgumentParser:
     p = sp.add_parser("events", help="suggested moments from the tricks file (flips, loops, split-S, dives, crashes, kicks, motor loss)")
     p.add_argument("session", nargs="?"); p.add_argument("video", nargs="?"); p.add_argument("--arm", help="bbl:N")
     p.add_argument("--matched-only", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_events)
-    p = sp.add_parser("tricks", help="the tricks file in force: list | show <id> | features [kind] | check [id...] | explain <bbl>:<arm> [from] [to]")
-    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "features", "check", "explain"]); p.add_argument("args", nargs="*")
+    p = sp.add_parser("tricks", help="the tricks in force: list | show <id> | features [kind] | check [id...] | explain <bbl>:<arm> [from] [to] | init")
+    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "features", "check", "explain", "init"]); p.add_argument("args", nargs="*")
+    p.add_argument("--craft", help="list/show the library in force for this craft (by the log header's Craft name)")
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_tricks)
     p = sp.add_parser("frame", help="extract frames as JPEG (prints the paths); --osd crops and enlarges the OSD strip")
     p.add_argument("session"); p.add_argument("video"); p.add_argument("times", nargs="+"); p.add_argument("--osd", action="store_true")

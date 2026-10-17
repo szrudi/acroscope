@@ -17,6 +17,32 @@ loop_min_dur = 1.5           # ...over at least this long, s (faster is a back f
 dive_min_tilt = 40           # a dive points down at least this much on average, deg from level
 landing_window_s = 2.5       # an impact this close to the arm's end is how most arms end: a landing, not a crash
 
+# Presets: `skill = "beginner"` in your own file (acroscope tricks init) puts one over these defaults, under your
+# own [params]. A beginner's trick counts when it is nearly there; an advanced pilot's only when it is clean.
+[skill.beginner]
+flip_min_deg = 240           # a 250 deg roll was meant as a roll
+yaw_share = 0.7              # some yaw creeping in is still a plain roll
+split_s_roll_min = 120       # a sloppy half roll...
+split_s_throttle_max = 70    # ...with the throttle kept on (the usual beginner's split-S, 2026-10-14)
+dive_min_tilt = 30
+loop_min_deg = 270
+
+[skill.advanced]
+flip_min_deg = 300
+yaw_share = 0.4
+split_s_roll_min = 160
+split_s_roll_max = 220
+split_s_throttle_max = 25
+dive_min_tilt = 50
+loop_min_deg = 330
+
+# What a quad is unless its own section says otherwise (`[craft."OttoJr"]` in your file, by the log header's
+# Craft name). The names are features too: a condition may read craft.size_mm, craft.weight_g, craft.hover_pct.
+[craft.default]
+size_mm = 65                 # prop-to-prop, mm: a 65 mm whoop loops faster and lower than a 5" (220)
+weight_g = 25                # all-up with the battery, g
+hover_pct = 35               # the throttle that holds height, %
+
 [segment.fast-rotation]      # stretches where roll or pitch runs over 100 deg/s, gaps under 0.3 s bridged
 kind = "rotation"
 threshold = 100

@@ -133,9 +133,10 @@ acroscope match <session> <video> <bbl> <arm> <offset>   record a video <-> arm 
 acroscope metrics <session> <video> <from> <to> [--profile [STEP]] [--loop] [--orbit]
 acroscope metrics --arm <bbl>:<n> <from> <to>    same, in arm seconds without a session
 acroscope events <session> [video]               the tricks file's suggestions (flip, roll, powerloop, split-s, dive, crash, gyro-kick, motor-loss)
-acroscope tricks [list|show <id>|features [kind]|check [id...]|explain <bbl>:<arm> [from] [to]]
+acroscope tricks [list|show <id>|features [kind]|check [id...]|explain <bbl>:<arm> [from] [to]|init] [--craft X]
                                                  the tricks in force, one in full, the names a condition may use, the
-                                                 examples run against the logs, every window of an arm with each trick's verdict
+                                                 examples run against the logs, every window of an arm with each trick's
+                                                 verdict, a starter file for your own tricks
 acroscope frame <session> <video> <t>... [--osd] JPEGs of frames; --osd enlarges the OSD strip (arm timer, total, vbat)
 acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling several timestamped frames (one look for the agent)
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
@@ -245,6 +246,18 @@ Precedence is in the file too: `priority` on one window, `suppress` across trick
 around it and a motor "dropping" at the impact; a powerloop is not also a back flip). A trick `requires` log
 fields (motor loss needs eRPM) and is skipped on a log without them. A feature the log cannot give is `none`, and a
 condition on it is simply false.
+
+**Your own tricks** go in a file over the shipped one: `acroscope tricks init` writes a starter at
+`~/.config/acroscope/tricks.toml` (or where `ACROSCOPE_TRICKS` points: a file, or a directory of `.toml` files; the
+container reads `/state/tricks.toml`, beside the database). In it: `skill = "beginner"` or `"advanced"`, a preset
+of the numbers (a beginner's trick counts when it is nearly there; an advanced pilot's only when it is clean), your
+own `[params]` over the preset, a `[[trick]]` with an existing `id` to turn one off (`enabled = false`) or change a
+field, a new `[[trick]]` of your own, and `[craft."OttoJr"]` sections keyed by the log header's craft name:
+properties (`size_mm`, `weight_g`, `hover_pct`: features too, as `craft.size_mm`, for conditions that scale with the
+quad), a `skill` for that quad, `[craft."OttoJr".params]`, segment options (`[craft."OttoJr".segment.impact] g = 5`)
+and trick overrides. `[craft.default]` is what any quad is unless its section says otherwise. A name that does not
+exist is refused when the file loads; `acroscope tricks` shows what is in force (`--craft OttoJr` for one quad), and
+the server reads an edited file on the next look, no restart.
 
 `acroscope tricks` lists the tricks in force, `tricks show <id>` one in full, `tricks features [kind]` the names a
 condition may use, `tricks explain <bbl>:<arm> [from] [to]` every window with each trick's verdict (fired, the
