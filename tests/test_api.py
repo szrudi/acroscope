@@ -529,7 +529,8 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(d["database"])
         self.assertIn("roll", [t["id"] for t in d["tricks"]])
         self.assertIsNone(r.setting("tricks"))
-        self.assertEqual(json.loads(urllib.request.urlopen(self.url + "/api/tricks/layer").read()), {"layer": {}, "updated_at": None})
+        empty = json.loads(urllib.request.urlopen(self.url + "/api/tricks/layer").read())
+        self.assertEqual((empty["layer"], empty["updated_at"], len(empty["etag"])), ({}, None, 12))
         # a bad layer is refused with the place named, and nothing changes
         with self.assertRaises(RemoteError) as cm:
             r.set_setting("tricks", {"version": 1, "params": {"flip_min_dg": 240}})
@@ -571,6 +572,33 @@ class ApiTest(unittest.TestCase):
             self.assertEqual(cm.exception.code, 400)
         self.assertEqual(r.setting("tricks")["value"], {"version": 1, "skill": "advanced"})
         r.delete_setting("tricks")
+        # the review of #49: no files through the proxy; a write says what it started from; a layer a later release
+        # broke leaves the shipped tricks in force and the suggestions answering
+        for args in (["tricks", "export", "pyproject.toml"], ["tricks", "import", "compose.yaml"]):
+            with self.assertRaises(RemoteError, msg=args):
+                r.cli(args)
+        layer = lambda: json.loads(urllib.request.urlopen(self.url + "/api/tricks/layer").read())
+        etag0 = layer()["etag"]
+        put = lambda body, etag=None: urllib.request.urlopen(urllib.request.Request(self.url + "/api/tricks/layer" + (f"?etag={etag}" if etag else ""),
+                                                                                    data=json.dumps(body).encode(), method="POST", headers={"Content-Type": "application/json"}))
+        first = json.loads(put({"version": 1, "skill": "beginner"}, etag0).read())
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            put({"version": 1, "params": {"flip_min_deg": 250}}, etag0)                      # from the layer before the first write
+        self.assertEqual(cm.exception.code, 409)
+        self.assertEqual(layer()["layer"], {"version": 1, "skill": "beginner"})                # the first write stands
+        put({"version": 1, "params": {"flip_min_deg": 250}}, first["etag"])
+        self.assertEqual(layer()["layer"], {"version": 1, "params": {"flip_min_deg": 250}})
+        import sqlite3
+        db = sqlite3.connect(root / "t.db")
+        db.execute("UPDATE settings SET value = ? WHERE key = 'tricks'", (json.dumps({"version": 1, "params": {"roll_hold_share": 0.85}}),))
+        db.commit(); db.close()
+        d = r.tricks()
+        self.assertIn("roll_hold_share", d["layer_error"])
+        self.assertFalse(d["database"])
+        self.assertEqual(events(), ["right roll attempt, 249 deg"])                             # the shipped tricks, no 500
+        self.assertEqual(layer()["layer"], {"version": 1, "params": {"roll_hold_share": 0.85}})   # still there to repair
+        r.delete_setting("tricks")
+        self.assertIsNone(r.tricks()["layer_error"])
 
 
 if __name__ == "__main__":

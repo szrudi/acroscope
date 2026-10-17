@@ -38,7 +38,7 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   server's logs). The pre-#22 detectors were ported window for window: on 234 real arms (eleven logs, 2026-10-07 to
   10-16) every event's tag, title, why, start and end were identical except the dives' tilt range (every frame now,
   not 40 samples) and the powerloops' inverted throttle (IMU tilt > 135, not integrated pitch, which for a loop
-  entered from a dive measured the climb). The server's `_events` cache is keyed by the tricks files' mtimes. The recall work (#31, #29, #20): `acroscope
+  entered from a dive measured the climb). The server's `_events` cache is keyed by the shipped file's mtime and the pilot's layer. The recall work (#31, #29, #20): `acroscope
   tricks eval <session>` scores the tricks against Rudi's tagged moments; on the eight tagged sessions of October
   2026 it went from 3 of 28 (10-14 alone) to orbits 24/25, split-S 6/6, rolls 11/13 (the two left are crashes),
   loops 3/3, barrel roll 1/1, dives 4/7; the 51 "dives" at an arm's first frame (the quad armed on the ground) and

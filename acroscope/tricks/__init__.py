@@ -13,6 +13,7 @@ A sequence trick (`phases`) chains windows of several segments: each phase's con
 phase starting after the one before and within so many seconds of its end; the detection spans them all and its
 texts see every phase's features as p1.*, p2.*.
 """
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ __all__ = ["check", "describe", "detect", "evaluate", "explain", "export_toml", 
 # local CLI set it from their store at start; nothing in this package reaches for a database on its own.
 LAYER_SOURCE = None
 LAYER_KEY = "tricks"
+LAYER_ERROR = None          # why the database layer is not in force, when a later release made a stored one invalid
 
 
 _cache: tuple[tuple, Library] | None = None
@@ -48,12 +50,25 @@ def library() -> Library:
     either changed (the server keeps running; a pilot edits and refreshes)."""
     global _cache
     paths = [p for p in library_paths() if p.is_file()]
+    global LAYER_ERROR
     table, db_stamp = database_layer()
     # the layer's content is in the stamp too: two writes within one second share a time
     stamp = tuple((str(p), p.stat().st_mtime_ns) for p in paths) + (("database", db_stamp, json.dumps(table, sort_keys=True)),)
     if _cache is None or _cache[0] != stamp:
-        _cache = (stamp, Library.load(paths, [(table, "database")] if table else []))
+        try:
+            lib, LAYER_ERROR = Library.load(paths, [(table, "database")] if table else []), None
+        except LibraryError as e:
+            # a stored layer a later release made invalid (a param renamed): the shipped tricks stay in force, the
+            # page shows the reason and the raw layer to repair or clear
+            lib, LAYER_ERROR = Library.load(paths), str(e)
+        _cache = (stamp, lib)
     return _cache[1]
+
+
+def layer_etag(table) -> str:
+    """A short hash of a layer document: what a writer says it started from, so two writers do not lose each
+    other's changes (`updated_at` is whole seconds)."""
+    return hashlib.sha1(json.dumps(table or {}, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def check_layer(table: dict) -> Library:
@@ -78,7 +93,7 @@ def describe(lib: Library, craft: str | None = None) -> dict:
             if name:
                 seen.setdefault(name.casefold(), lib.craft_name(name))
     return {
-        "sources": lib.sources, "database": "database" in lib.sources,
+        "sources": lib.sources, "database": "database" in lib.sources, "layer_error": LAYER_ERROR,
         "skill": lib.skill, "skills": lib.skills, "craft": craft,
         "params": {k: {"value": v, "default": shipped.get(k), "source": sources.get(k, "shipped")} for k, v in eff.params.items()},
         "crafts": {n: {**c["props"], "skill": c["skill"], "params": c["params"], "segment": c["segments"], "trick": c["tricks"], "source": c["source"]}
@@ -162,9 +177,22 @@ def import_table(text: str, current: dict | None, mode: str = "replace") -> dict
         raise LibraryError(f"not a tricks file: {e}") from None
     if mode not in ("replace", "merge"):
         raise ValueError(f"import: mode is replace or merge, not {mode!r}")
-    table = merge_tables(current, table) if mode == "merge" else table
+    _json_only(table)
+    table = merge_tables(current, table) if mode == "merge" else merge_tables(None, table)    # one spelling per craft either way
     check_layer(table)
     return table
+
+
+def _json_only(v, where="the file"):
+    """TOML has dates and times; a layer is stored as JSON and the tricks need neither."""
+    if isinstance(v, dict):
+        for k, x in v.items():
+            _json_only(x, f"{where}.{k}")
+    elif isinstance(v, list):
+        for x in v:
+            _json_only(x, where)
+    elif v is not None and not isinstance(v, (str, int, float, bool)):
+        raise LibraryError(f"{where}: a {type(v).__name__} is not a value a tricks file uses here")
 
 
 def edit_layer(table: dict | None, what: str, *args, craft: str | None = None) -> dict:
@@ -181,18 +209,19 @@ def edit_layer(table: dict | None, what: str, *args, craft: str | None = None) -
         where.setdefault("params", {})[name] = value
     elif what == "unset":
         (name,) = args
-        where.get("params", {}).pop(name, None)
-        if "params" in where and not where["params"]:
+        if name not in where.get("params", {}):
+            raise ValueError(f"{name}: not set in the layer" + (f" for {craft}" if craft else "") + " (acroscope tricks layer shows what is)")
+        del where["params"][name]
+        if not where["params"]:
             del where["params"]
     elif what in ("on", "off"):
         (tid,) = args
-        tricks = [x for x in where.get("trick", []) if x.get("id") != tid]
-        if what == "off":
-            tricks.append({"id": tid, "enabled": False})
-        if tricks:
-            where["trick"] = tricks
-        else:
-            where.pop("trick", None)
+        entries = where.setdefault("trick", [])
+        entry = next((x for x in entries if isinstance(x, dict) and x.get("id") == tid), None)
+        if entry is None:
+            entry = {"id": tid}
+            entries.append(entry)
+        entry["enabled"] = what == "on"                        # explicit either way: on for one quad while off below works too
     elif what == "skill":
         (name,) = args
         if name in (None, "none", ""):
@@ -245,9 +274,12 @@ class Hit:
     def anchor(self) -> float:
         return self.window.extras["arm_t"] if self.window.point is not None else self.window.arm_from
 
+    title: str = ""
+    why: str = ""
+
     def event(self) -> dict:
         return {"trick": self.trick.id, "tag": self.trick.tag, "arm_from": self.window.arm_from, "arm_to": self.window.arm_to,
-                "title": expr.render(self.trick.title, self.ns), "why": expr.render(self.trick.why, self.ns), "numbers": self.numbers}
+                "title": self.title, "why": self.why, "numbers": self.numbers}
 
 
 class Run:
@@ -262,6 +294,7 @@ class Run:
         self.windows: dict[str, list] = {}           # segment name -> [(window, ns, numbers)]
         self.verdicts: dict[tuple, list] = {}        # (segment, index) -> [(trick, failed condition or None)]
         self.skipped: dict[str, list[str]] = {}      # trick id -> the fields it needs and the log lacks
+        self.errors: dict[str, str] = {}             # trick id -> an expression that failed to evaluate (its verdict fails, nothing else)
         self.hits: list[Hit] = []
         self._judge()
         self._precedence()
@@ -288,43 +321,78 @@ class Run:
                 self._judge_sequence(t)
                 continue
             for i, (win, ns, numbers) in enumerate(self._cut(t.segment)):
-                failed = next((text for text, e in t.when if not e.eval(ns)), None)
+                failed, hit = self._verdict(t, t.when, ns)
                 self.verdicts.setdefault((t.segment, i), []).append((t, failed))
-                if failed is None:
-                    self.hits.append(Hit(t, t.segment, i, win, ns, numbers))
+                if hit:
+                    self.hits.append(Hit(t, t.segment, i, win, ns, numbers, title=hit[0], why=hit[1]))
+
+    def _verdict(self, t: Trick, when: list, ns: dict):
+        """(the first failing condition's text or None, (title, why) when every condition held). An expression that
+        cannot be evaluated on this window (a condition the loader could not foresee, a spec a value cannot take)
+        fails the trick with its message, and nothing else."""
+        try:
+            failed = next((text for text, e in when if not e.eval(ns)), None)
+            if failed is not None:
+                return failed, None
+            return None, (expr.render(t.title, ns), expr.render(t.why, ns))
+        except expr.ExprError as e:
+            self.errors[t.id] = str(e)
+            return f"error: {e}", None
 
     def _judge_sequence(self, t: Trick):
         """Every chain of windows, one per phase in order, each passing its phase's conditions (with the earlier
         phases' features as p1.* …), the next starting after the previous and within `within` s of its end."""
-        def chains(k: int, prev: segments.Window | None, earlier: dict):
+        def extend(k: int, prev, prev_i: int, earlier: dict):
+            """The first chain from phase k on, after window `prev` of phase k-1; None when none completes."""
             ph = t.phases[k]
+            kind = self.lib.segments[ph.segment].kind
             for i, (win, ns, numbers) in enumerate(self._cut(ph.segment)):
-                if prev is not None and not (prev.arm_from <= win.arm_from <= prev.arm_to + ph.within):
-                    continue
+                if prev is not None:
+                    # the next phase starts after the one before it (never the same window again) and within reach
+                    if win.i0 <= prev.i0 or win.arm_from > prev.arm_to + ph.within:
+                        continue
                 ns2 = {**ns, **earlier}
-                if any(not e.eval(ns2) for _, e in ph.when):
-                    continue
-                here = {**earlier, **{f"p{k + 1}.{n}": v for n, v in ns.items() if n in features.WINDOW or n in segments.EXTRAS[self.lib.segments[ph.segment].kind]}}
+                try:
+                    if any(not e.eval(ns2) for _, e in ph.when):
+                        continue
+                except expr.ExprError as e:
+                    self.errors[t.id] = str(e)
+                    return None
+                here = {**earlier, **{f"p{k + 1}.{n}": v for n, v in ns.items() if n in features.phase_names(kind)}}
                 if k + 1 == len(t.phases):
-                    yield [(i, win, numbers)], here
-                else:
-                    for rest, feats in chains(k + 1, win, here):
-                        yield [(i, win, numbers), *rest], feats
+                    return [(i, win, numbers)], here
+                rest = extend(k + 1, win, i, here)
+                if rest:
+                    return [(i, win, numbers), *rest[0]], rest[1]
+            return None
         ended = set()                                           # the last window of a chain that fired: not a new first
-        for chain, feats in chains(0, None, {}):
-            first, last = chain[0][1], chain[-1][1]
-            if (t.phases[0].segment, chain[0][0]) in ended:
+        for i0, (first, ns0, numbers0) in enumerate(self._cut(t.phases[0].segment)):
+            if (t.phases[0].segment, i0) in ended:
                 continue
+            # the first phase is window i0 itself: judge it, then chain on from it
+            ph = t.phases[0]
+            try:
+                if any(not e.eval(ns0) for _, e in ph.when):
+                    continue
+            except expr.ExprError as e:
+                self.errors[t.id] = str(e)
+                break
+            here = {f"p1.{n}": v for n, v in ns0.items() if n in features.phase_names(self.lib.segments[ph.segment].kind)}
+            rest = extend(1, first, i0, here) if len(t.phases) > 1 else ([], here)
+            if not rest:
+                continue
+            chain, feats = [(i0, first, numbers0), *rest[0]], rest[1]
+            last = chain[-1][1]
             span = segments.Window(first.i0, max(w.i1 for _, w, _ in chain), first.arm_from, max(w.arm_to for _, w, _ in chain))
             flat, numbers = features.measure(self.arm, span, "span", {})
             numbers["phases"] = [n for _, _, n in chain]
             ns = {**self.context, **flat, **feats}
             key = f"{t.id}:phases"
             index = tuple(i for i, _, _ in chain)
-            failed = next((text for text, e in t.when if not e.eval(ns)), None)
+            failed, hit = self._verdict(t, t.when, ns)
             self.verdicts.setdefault((key, index), []).append((t, failed))
-            if failed is None:
-                self.hits.append(Hit(t, key, index, span, ns, numbers))
+            if hit:
+                self.hits.append(Hit(t, key, index, span, ns, numbers, title=hit[0], why=hit[1]))
                 ended.add((t.phases[-1].segment, chain[-1][0]))
 
     def _precedence(self):
@@ -336,18 +404,30 @@ class Run:
         for h in self.hits:
             if best[(h.segment, h.index)] is not h:
                 h.lost_to = best[(h.segment, h.index)].trick.id
-        for h in sorted(self.hits, key=lambda h: (-h.trick.priority, h.trick.order, h.window.arm_from)):
-            if not h.alive:
-                continue
-            for rule in h.trick.suppress:
-                for o in self.hits:
-                    if o is h or not o.alive or o.trick.tag not in rule.tags:
-                        continue
-                    if rule.margin is not None:
-                        if o.window.arm_from <= h.window.arm_to + rule.margin and o.window.arm_to >= h.window.arm_from - rule.margin:
-                            o.suppressed_by = h.trick.id
-                    elif abs(o.anchor - h.anchor) < rule.within:
-                        o.suppressed_by = h.trick.id
+        order = sorted((h for h in self.hits if h.lost_to is None), key=lambda h: (-h.trick.priority, h.trick.order, h.window.arm_from))
+        # suppression to a fixed point, the higher priority judged first: a hit that is itself suppressed
+        # suppresses nothing (A over B over C leaves A and C, not A alone)
+        suppressed: dict[int, str] = {}
+        for _ in range(len(order) + 1):
+            new: dict[int, str] = {}
+            for h in order:
+                if id(h) in suppressed or id(h) in new:
+                    continue
+                for rule in h.trick.suppress:
+                    for o in order:
+                        if o is h or id(o) in new or o.trick.tag not in rule.tags:
+                            continue
+                        if rule.margin is not None:
+                            caught = o.window.arm_from <= h.window.arm_to + rule.margin and o.window.arm_to >= h.window.arm_from - rule.margin
+                        else:
+                            caught = abs(o.anchor - h.anchor) < rule.within
+                        if caught:
+                            new[id(o)] = h.trick.id
+            if new == suppressed:
+                break
+            suppressed = new
+        for h in order:
+            h.suppressed_by = suppressed.get(id(h))
 
     def events(self) -> list[dict]:
         return sorted((h.event() for h in self.hits if h.alive), key=lambda e: (e["arm_from"], e["arm_to"]))
@@ -384,6 +464,8 @@ def explain(arm: Arm, lib: Library | None = None, t0: float = 0.0, t1: float = 1
     return {"windows": out, "skipped": run.skipped}
 
 
+TOLERANCE = 0.5             # s: an automatch offset is good to about half a second
+
 # a moment's tag -> the event tags that count as finding it (a barrel roll finds a moment tagged roll)
 FOUND_BY = {"flip": {"flip"}, "backflip": {"flip"}, "frontflip": {"flip"}, "roll": {"roll", "barrel-roll"}, "barrel-roll": {"barrel-roll"},
             "barrel": {"barrel-roll"}, "powerloop": {"powerloop"}, "split-s": {"split-s"}, "dive": {"dive"}, "orbit": {"orbit"},
@@ -408,19 +490,22 @@ def evaluate(session: dict, load_arm, lib: Library | None = None) -> dict:
             events.setdefault(m["video"], []).append({"tag": e["tag"], "start": round(e["arm_from"] + m["offset"], 2), "end": round(e["arm_to"] + m["offset"], 2),
                                                       "title": e["title"], "arm": m["arm"], "arm_from": e["arm_from"], "why": e["why"]})
     found, missed, used = {}, [], set()
-    for mo in session.get("moments", []):
+    for mo in sorted(session.get("moments", []), key=lambda m: (m["video"], m["start"])):
         if mo["video"] not in events:
             continue
+        canon = {}                                                  # one count per moment per emitted tag (flip and backflip are one)
         for tag in mo.get("tags", []):
             by = FOUND_BY.get(tag, {tag}) & emits
-            if not by:
-                continue
-            hits = [e for e in events[mo["video"]] if e["tag"] in by and e["start"] <= mo["end"] and e["end"] >= mo["start"]]
-            row = {"id": mo["id"], "video": mo["video"], "start": mo["start"], "end": mo["end"], "title": mo["title"],
-                   "tag": tag if tag in emits else sorted(by)[0]}
-            if hits:
-                found.setdefault(tag, []).append({**row, "found": [h["title"] for h in hits]})
-                used.update(id(h) for h in hits)
+            if by:
+                canon.setdefault(tag if tag in emits else sorted(by)[0], by)
+        for tag, by in canon.items():
+            # one detection credits one moment (the first it overlaps, in time order), within the automatch tolerance
+            hit = next((e for e in events[mo["video"]] if id(e) not in used and e["tag"] in by
+                        and e["start"] <= mo["end"] + TOLERANCE and e["end"] >= mo["start"] - TOLERANCE), None)
+            row = {"id": mo["id"], "video": mo["video"], "start": mo["start"], "end": mo["end"], "title": mo["title"], "tag": tag}
+            if hit:
+                found.setdefault(tag, []).append({**row, "found": [hit["title"]]})
+                used.add(id(hit))
             else:
                 arms = {m["arm"]: round(mo["start"] - m["offset"], 1) for m in session["matches"] if m["video"] == mo["video"]}
                 missed.append({**row, "arms": arms})

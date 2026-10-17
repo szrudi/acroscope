@@ -125,7 +125,7 @@ class RotationRulesTest(unittest.TestCase):
         self.assertEqual(titles(make_arm(5, gyro=gyro)), [])
         ex = tricks.explain(make_arm(5, gyro=gyro), LIB)
         roll = next(t for w in ex["windows"] for t in w["tricks"] if t["id"] == "roll")
-        self.assertEqual(roll["failed"], "abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)")
+        self.assertEqual(roll["failed"], "rotation_deg.roll * rotation_peak_deg.roll > 0 and abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)")
 
     def test_a_barrel_roll(self):
         barrel = make_arm(5, gyro=combine(axis(0, pulse(2.0, 2.72, 500)), axis(2, pulse(2.0, 2.72, 200))))       # roll 360 with yaw 144
@@ -262,8 +262,8 @@ class EvalTest(unittest.TestCase):
                                {"id": "m05", "video": "a.mp4", "start": 105.0, "end": 106.0, "title": "a backflip, says the tag", "tags": ["backflip"]}]}
         res = tricks.evaluate(session, load, LIB)
         self.assertEqual(res["per_tag"], {"flip": {"found": 0, "missed": 1}, "roll": {"found": 1, "missed": 1}})
-        self.assertEqual([m["id"] for m in res["missed"]], [("m02"), ("m05")])
-        self.assertEqual(res["missed"][0]["arms"], {1: 10.0})
+        self.assertEqual([m["id"] for m in res["missed"]], ["m05", "m02"])                      # in time order
+        self.assertEqual(next(m for m in res["missed"] if m["id"] == "m02")["arms"], {1: 10.0})
         self.assertEqual(res["found"]["roll"][0]["found"], ["right roll"])
         self.assertEqual([(e["tag"], e["video"], round(e["start"]), e["moment"]) for e in res["untagged"]],
                          [("orbit", "b.mp4", 12, "far end ['poi']")])                                    # the orbit overlaps a poi moment

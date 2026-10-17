@@ -25,7 +25,7 @@ KINDS = {
     "impact": {"g": 4.0, "jolt_dps": 500.0, "jolt_window": 0.05, "cooldown": 2.0, "before": 0.5, "after": 1.0},
     "kick": {"rate": 400.0, "ratio": 2.0, "stick": 6.0, "cooldown": 0.5, "before": 0.3, "after": 0.7},
     "motor_drop": {"drop": 0.5, "window": 0.05, "hold": 0.4, "cooldown": 2.0, "rpm_min": 1500.0, "command_full": 1800.0,
-                   "command_hold": 1500.0, "hold_ratio": 0.6, "before": 0.5, "after": 1.5},
+                   "command_hold": 1500.0, "hold_ratio": 0.6, "before": 0.5, "after": 1.5, "skip_impact_g": 4.0, "skip_impact_s": 0.5},
 }
 # what a kind's scan measures on its own, beyond the window's common features: name -> description
 EXTRAS = {
@@ -224,9 +224,17 @@ def motor_drop(arm: Arm, o: dict) -> list[Window]:
     rpm = [arm.col(f"eRPM[{m}]") for m in range(4)]
     cmd = [arm.col(f"motor[{m}]") for m in range(4)]
     w, h = max(1, int(arm.rate * o["window"])), max(1, int(arm.rate * o["hold"]))
+    # frames within skip_impact_s of an impact (the accelerometer over skip_impact_g) are skipped outright, as the
+    # pre-#22 detector did: a drop there is the impact, and it must not use up the cooldown either
+    acc = [arm.col(f"accSmooth[{a}]") for a in range(3)]
+    impacts = [arm.t[i] for i in range(arm.n) if math.sqrt(sum((c[i] / 2048) ** 2 for c in acc)) > o["skip_impact_g"]]
+    from bisect import bisect_left
+    def near_impact(t):
+        k = bisect_left(impacts, t)
+        return (k < len(impacts) and impacts[k] - t < o["skip_impact_s"]) or (k > 0 and t - impacts[k - 1] < o["skip_impact_s"])
     out, last = [], -1e9
     for i in range(w, arm.n - h):
-        if arm.t[i] - last < o["cooldown"]:
+        if arm.t[i] - last < o["cooldown"] or near_impact(arm.t[i]):
             continue
         for m in range(4):
             before, now = rpm[m][i - w], rpm[m][i]

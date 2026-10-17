@@ -13,7 +13,7 @@ def _key(k: str) -> str:
 
 def _str(s: str) -> str:
     out = s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")
-    out = "".join(c if c >= " " or c in "\n\t\r" else f"\\u{ord(c):04X}" for c in out)
+    out = "".join(c if (c >= " " and c != "\x7f") or c in "\n\t\r" else f"\\u{ord(c):04X}" for c in out)
     return f'"{out}"'
 
 

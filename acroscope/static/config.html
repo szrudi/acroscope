@@ -81,7 +81,7 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const api = (p, o) => fetch(p, o).then(r => r.json());
 const SKILLS = ['none', 'beginner', 'advanced'];
-let D = null, DC = null, L = {version: 1}, TAGS = {categories: [], tags: []}, SESS = [], craft = null, tab = null, openTricks = new Set();
+let D = null, DC = null, L = {version: 1}, ETAG = null, TAGS = {categories: [], tags: []}, SESS = [], craft = null, tab = null, openTricks = new Set();
 // D: the library in force for any quad (profile, tricks); DC: for the craft chosen on the drones tab
 
 function err(msg) { const e = $('#err'); e.textContent = msg || ''; e.classList.toggle('on', !!msg); }
@@ -108,20 +108,24 @@ function tidy(t) {                                   // an emptied table goes, s
 }
 async function save(next) {
   err('');
-  const r = await api('/api/tricks/layer', {method: 'POST', body: JSON.stringify(tidy(next))});
-  if (r.error) { err(r.error); return false; }
-  L = r.layer; await load(); return true;
+  // the etag says which layer this page started from: a save from another tab or the CLI in between is a 409, and
+  // the page reloads instead of overwriting it
+  const r = await api('/api/tricks/layer?etag=' + encodeURIComponent(ETAG || ''), {method: 'POST', body: JSON.stringify(tidy(next))});
+  if (r.error) { err(r.error); if (/changed since/.test(r.error)) await load(); return false; }
+  L = r.layer; ETAG = r.etag; await load(); return true;
 }
 const edit = f => { const t = clone(L); t.version ??= 1; f(t); return save(t); };
 const setParam = (name, value, c) => edit(t => { if (value === null) { const p = section(t, c).params || {}; delete p[name]; } else (section(t, c).params ||= {})[name] = value; });
-const setTrick = (id, on, c) => edit(t => { const s = section(t, c); s.trick = (s.trick || []).filter(x => x.id !== id); if (!on) s.trick.push({id, enabled: false}); });
+const setTrick = (id, on, c) => edit(t => { const s = section(t, c); s.trick ||= []; let e = s.trick.find(x => x.id === id); if (!e) s.trick.push(e = {id}); e.enabled = on; });   // the entry's other fields stay
 const setSkill = (name, c) => edit(t => { const s = section(t, c); if (!name || name === 'none' || name === 'inherit') delete s.skill; else s.skill = name; });
 const setProp = (c, key, value) => edit(t => { const s = section(t, c); if (value === null || value === '') delete s[key]; else s[key] = value; });
 
 async function load() {
-  [D, DC, {layer: L}, TAGS] = await Promise.all([api('/api/tricks'), craft ? api('/api/tricks?craft=' + encodeURIComponent(craft)) : null, api('/api/tricks/layer'), api('/api/tags')]);
+  let layer;
+  [D, DC, layer, TAGS] = await Promise.all([api('/api/tricks'), craft ? api('/api/tricks?craft=' + encodeURIComponent(craft)) : null, api('/api/tricks/layer'), api('/api/tags')]);
   if (D.error) { err(D.error); return; }
-  L = L || {version: 1};
+  L = layer.layer || {version: 1}; ETAG = layer.etag;
+  if (D.layer_error) err('your layer is not in force: ' + D.layer_error + '\nThe shipped tricks apply meanwhile; repair or clear the layer on the settings tab.');
   render();
 }
 
@@ -279,7 +283,7 @@ function renderSettings() {
     err('');
     const r = await api('/api/tricks/import', {method: 'POST', body: JSON.stringify({text: await importText(), mode})});
     if (r.error) { err(r.error); return; }
-    L = r.layer; await load();
+    L = r.layer; ETAG = r.etag; await load();
   };
   $('#importReplace').onclick = () => doImport('replace');
   $('#importMerge').onclick = () => doImport('merge');
@@ -287,7 +291,7 @@ function renderSettings() {
   $('#stAll').onchange = e => { try { localStorage.setItem('acro.allClips', e.target.checked ? '1' : ''); } catch {} };
   $('#forget').onclick = () => { try { ['acro.session', 'acro.clip', 'acro.tab', 'acro.mtab'].forEach(k => localStorage.removeItem(k)); } catch {} renderSettings(); };
   $('#layerSave').onclick = async () => { let t; try { t = JSON.parse($('#layerText').value); } catch (e) { err('not JSON: ' + e.message); return; } await save(t); };
-  $('#layerClear').onclick = async () => { if (!confirm('Clear everything set on this page? The shipped tricks and the file stay.')) return; err(''); await api('/api/tricks/layer', {method: 'DELETE'}); await load(); };
+  $('#layerClear').onclick = async () => { if (!confirm('Clear everything set on this page? The shipped tricks stay.')) return; err(''); await api('/api/tricks/layer', {method: 'DELETE'}); await load(); };
 }
 
 // ---- tags: categories and tags with their colours (moved here from the player)

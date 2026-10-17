@@ -525,10 +525,18 @@ class Db:
         r = self.c.execute("SELECT value, updated_at FROM settings WHERE key = ?", (key,)).fetchone()
         return {"value": json.loads(r["value"]), "updated_at": r["updated_at"]} if r else None
 
-    def set_setting(self, key: str, value) -> dict:
+    def set_setting(self, key: str, value, etag: str | None = None) -> dict:
+        """Store a setting. With `etag` (a hash of the document the writer started from, tricks.layer_etag), the
+        write is refused when the stored document is not that one any more: two writers never lose each other's
+        changes silently."""
+        if etag is not None:
+            from .tricks import layer_etag
+            row = self.setting(key)
+            if layer_etag(row["value"] if row else None) != etag:
+                raise ValueError(f"{key}: changed since you loaded it; load it again and redo the change")
         stamp = now()
         self.c.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                       (key, json.dumps(value), stamp))
+                       (key, json.dumps(value, allow_nan=False), stamp))
         self.c.commit()
         return {"value": value, "updated_at": stamp}
 

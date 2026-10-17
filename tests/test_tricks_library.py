@@ -151,7 +151,10 @@ class RefusalTest(unittest.TestCase):
     def test_bad_params_and_file(self):
         self.refuse(BASE.replace("flip_min_deg = 270", "duration = 3"), "param 'duration'", "not a feature")
         self.refuse(BASE.replace("flip_min_deg = 270", "\"a.b\" = 3"), "param 'a.b'")
-        self.refuse(BASE.replace("flip_min_deg = 270", "flip_min_deg = [1, 2]"), "must be a number or a string")
+        self.refuse(BASE.replace("flip_min_deg = 270", "flip_min_deg = [1, 2]"), "must be a number")
+        self.refuse(BASE.replace("flip_min_deg = 270", 'flip_min_deg = "240"'), "must be a number")      # '240' would crash every comparison
+        self.refuse(BASE.replace("flip_min_deg = 270", "flip_min_deg = nan"), "must be a number")
+        self.refuse(BASE.replace("flip_min_deg = 270", "flip_min_deg = inf"), "must be a number")
         self.refuse(BASE.replace("version = 1", "version = 2"), "version 2")
         self.refuse("param = 3\n" + BASE, "unknown top-level key 'param'")
         self.refuse(BASE + "\n[[trick]\n", "test.toml")

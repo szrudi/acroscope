@@ -5,7 +5,7 @@
 version = 1
 
 [params]
-tumble_dps = 1500            # a roll or pitch rate over this with no stick behind it is a tumble, not a trick
+tumble_dps = 1500            # a roll or pitch rate over this is a tumble, not a trick, unless something was hit (the jolt)
 stick_min = 40               # a flip or roll is asked for: the stick on its axis reaches this much, %
 flip_min_deg = 270           # a flip or a roll turns at least this much on its axis (the furthest it gets)...
 held_share = 0.8             # ...and keeps at least this share of it (a tumble rolls back and forth; 10-14 m22 held 82 %)
@@ -30,8 +30,9 @@ figure8_min_deg = 150        # a figure 8: a turn between this much...
 figure8_max_deg = 450        # ...and this much one way, then the other way
 landing_window_s = 2.5       # an impact this close to the arm's end is how most arms end: a landing, not a crash
 
-# Presets: `skill = "beginner"` in your own file (acroscope tricks init) puts one over these defaults, under your
-# own [params]. A beginner's trick counts when it is nearly there; an advanced pilot's only when it is clean.
+# Presets: `skill = "beginner"` in your layer (the configuration page, or `acroscope tricks skill beginner`) puts one
+# over these defaults, under your own numbers; a quad's own preset goes over your numbers too. A beginner's trick
+# counts when it is nearly there; an advanced pilot's only when it is clean.
 [skill.beginner]
 flip_min_deg = 240           # a 250 deg roll was meant as a roll
 attempt_min_deg = 120        # and a 130 deg one was an attempt
@@ -56,8 +57,8 @@ dive_min_tilt = 50
 loop_min_deg = 330
 orbit_min_deg = 360
 
-# What a quad is unless its own section says otherwise (`[craft."OttoJr"]` in your file, by the log header's
-# Craft name). The names are features too: a condition may read craft.size_mm, craft.weight_g, craft.hover_pct.
+# What a quad is unless its own section says otherwise (`[craft."OttoJr"]` in your layer, by the log header's
+# Craft name, any case). The names are features too: a condition may read craft.size_mm, craft.weight_g, craft.hover_pct.
 [craft.default]
 size_mm = 65                 # prop-to-prop, mm: a 65 mm whoop loops faster and lower than a 5" (220)
 weight_g = 25                # all-up with the battery, g
@@ -170,11 +171,13 @@ examples = [
 id = "flip"
 tag = "flip"
 segment = "fast-rotation"
+# roll in a flip does not unmake it (a forward flip that drifted stays a forward flip, as before #22); yaw past
+# yaw_share makes it the "with yaw" entry
 when = [
   "stick_pct_max.pitch >= stick_min",
-  "abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
+  "rotation_deg.pitch * rotation_peak_deg.pitch > 0 and abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
   "not (motor_min == 0)",
-  "abs(rotation_peak_deg.roll) < barrel_off_axis_deg",
   "axis == 'pitch'",
   "abs(rotation_peak_deg.pitch) >= flip_min_deg",
   "abs(rotation_peak_deg.yaw) <= yaw_share * abs(rotation_peak_deg.pitch)",
@@ -190,9 +193,9 @@ tag = "flip"
 segment = "fast-rotation"
 when = [
   "stick_pct_max.pitch >= stick_min",
-  "abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
+  "rotation_deg.pitch * rotation_peak_deg.pitch > 0 and abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
   "not (motor_min == 0)",
-  "abs(rotation_peak_deg.roll) < barrel_off_axis_deg",
   "axis == 'pitch'",
   "abs(rotation_peak_deg.pitch) >= flip_min_deg",
   "abs(rotation_peak_deg.yaw) > yaw_share * abs(rotation_peak_deg.pitch)",
@@ -207,9 +210,9 @@ tag = "flip"
 segment = "fast-rotation"
 when = [
   "stick_pct_max.pitch >= stick_min",
-  "abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
+  "rotation_deg.pitch * rotation_peak_deg.pitch > 0 and abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
   "not (motor_min == 0)",
-  "abs(rotation_peak_deg.roll) < barrel_off_axis_deg",
   "axis == 'pitch'",
   "attempt_min_deg <= abs(rotation_peak_deg.pitch) < flip_min_deg",
   "peak_rate_dps.pitch >= attempt_min_dps",
@@ -225,7 +228,8 @@ tag = "roll"
 segment = "fast-rotation"
 when = [
   "stick_pct_max.roll >= stick_min",
-  "abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
+  "rotation_deg.roll * rotation_peak_deg.roll > 0 and abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
   "not (motor_min == 0)",
   "axis == 'roll'",
   "abs(rotation_peak_deg.roll) >= flip_min_deg",
@@ -250,7 +254,8 @@ segment = "fast-rotation"
 # Never with contact: a rotation on several axes with an impact in it is a tumble
 when = [
   "stick_pct_max.roll >= stick_min",
-  "abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
+  "rotation_deg.roll * rotation_peak_deg.roll > 0 and abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
+  "max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
   "not (motor_min == 0)",
   "acc_g.max < contact_g",
   "axis == 'roll'",
@@ -273,7 +278,8 @@ tag = "roll"
 segment = "fast-rotation"
 when = [
   "stick_pct_max.roll >= stick_min",
-  "abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
+  "rotation_deg.roll * rotation_peak_deg.roll > 0 and abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
   "not (motor_min == 0)",
   "axis == 'roll'",
   "attempt_min_deg <= abs(rotation_peak_deg.roll) < flip_min_deg",
@@ -311,6 +317,7 @@ phases = [
 title = "figure 8: {p1.side} then {p2.side}"
 why = "turned {p1.turn_deg:+} deg then {p2.turn_deg:+} in {duration} s, bank {tilt_deg.mean} deg, throttle {throttle_pct.mean} %"
 priority = 5
+suppress = [{ tags = ["orbit"], margin = 0 }]     # its two halves are not also two orbits
 
 # ---- throttle ---------------------------------------------------------------------------------------------------
 

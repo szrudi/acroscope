@@ -50,6 +50,11 @@ def flatten_numbers(numbers: dict) -> dict:
     return flatten({k: v for k, v in numbers.items() if k not in ("rates", "phases")})
 
 
+def phase_names(kind: str) -> set[str]:
+    """The features of a phase's window the next phases see as p<k>.<name>: the window's and the scan's own."""
+    return set(WINDOW) | set(segments.EXTRAS[kind])
+
+
 def flatten(d: dict, prefix: str = "") -> dict:
     out = {}
     for k, v in d.items():
@@ -74,7 +79,6 @@ def arm_context(arm: Arm) -> dict:
 def measure(arm: Arm, win: segments.Window, kind: str, opts: dict) -> tuple[dict, dict]:
     """(the flat namespace a condition sees, the nested `numbers` an event carries) for one window."""
     numbers = metrics.summary(arm, arm.t[win.i0], arm.t[win.i1 - 1] + 1e-6) if win.i1 > win.i0 else {}
-    numbers.pop("frames", None) if False else None
     numbers["arm_from"], numbers["arm_to"] = win.arm_from, win.arm_to
     numbers.update(win.extras)
     if kind == "rotation":

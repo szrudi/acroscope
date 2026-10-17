@@ -7,7 +7,7 @@
     kind = "rotation"
     threshold = 100
     [[trick]]                     # one entry per trick
-    id = "roll"                   # unique; a later file's entry with the same id changes this one (`enabled = false` turns it off)
+    id = "roll"                   # unique; a later layer's entry with the same id changes this one (`enabled = false` turns it off)
     tag = "roll"                  # the tag a suggestion carries (several tricks may share one)
     segment = "fast-rotation"     # or an inline table: { kind = "rotation", threshold = 100 }
     when = ["axis == 'roll'", "abs(rotation_deg.roll) >= flip_min_deg"]     # all must hold (expr.py's language)
@@ -136,8 +136,8 @@ def _number(v, what: str, source: str) -> float:
 
 
 class Library:
-    """The merged tricks: params, named segments and tricks in file order. `Library.load(paths)` reads several
-    files in turn, each on top of the one before (the shipped file first, then a pilot's)."""
+    """The merged tricks: params, named segments and tricks in file order. `Library.load(paths, extra)` reads the
+    shipped file and then any further layer on top of it (the pilot's, from the database)."""
 
     def __init__(self):
         self.params: dict = {}
@@ -151,6 +151,7 @@ class Library:
         self.layers: list = []                            # [(source, params, skill chosen there)] in file order
         self._order = 0
         self._effective: dict = {}
+        self._base: "Library | None" = None                # set on a derived library: for_craft answers from the base
 
     @classmethod
     def load(cls, paths=(SHIPPED,), extra=()) -> "Library":
@@ -181,7 +182,7 @@ class Library:
     # ---- merging ------------------------------------------------------------------------------------------------
 
     def add(self, table: dict, source: str):
-        """One file's tables on top of what is loaded: params update, segments merge by name, tricks merge by id."""
+        """One layer's tables on top of what is loaded: params update, segments merge by name, tricks merge by id."""
         self.sources.append(source)
         if not isinstance(table, dict):
             raise LibraryError(_where(source, "not a table"))
@@ -376,7 +377,8 @@ class Library:
         return Phase(seg, self._conditions(ph.get("when", []), tid, source), _number(within, f"trick {tid}: phase {k + 1} within", source))
 
     def _rule(self, r, tid: str, source: str) -> Rule:
-        if not isinstance(r, dict) or not isinstance(r.get("tags"), list) or not r["tags"] or set(r) - {"tags", "margin", "within"}:
+        if not isinstance(r, dict) or not isinstance(r.get("tags"), list) or not r["tags"] or set(r) - {"tags", "margin", "within"} \
+                or not all(isinstance(x, str) for x in r["tags"]):
             raise LibraryError(_where(source, f"trick {tid}: a suppress rule is {{ tags = [...], margin = s }} or {{ tags = [...], within = s }}, not {r!r}"))
         if ("margin" in r) == ("within" in r):
             raise LibraryError(_where(source, f"trick {tid}: a suppress rule has either margin or within"))
@@ -392,18 +394,26 @@ class Library:
         for k in ("at", "from", "to"):
             if k in e:
                 _number(e[k], f"trick {tid}: example {k}", source)
+        log = e["log"]
+        if not log.endswith(".bbl") or "/" in log or "\\" in log or log.startswith(".") or log == ".bbl":
+            raise LibraryError(_where(source, f"trick {tid}: an example's log is a .bbl file name, not {log!r}"))
+        if "note" in e and not isinstance(e["note"], str):
+            raise LibraryError(_where(source, f"trick {tid}: an example's note is text"))
+        if "absent" in e and not isinstance(e["absent"], bool):
+            raise LibraryError(_where(source, f"trick {tid}: absent is true or false"))
         return dict(e)
 
     # ---- checking -------------------------------------------------------------------------------------------------
 
     def validate(self):
         self._effective = {}
+        import math
         for group in [self.params, *self.skills.values(), *(c["params"] for c in self.crafts.values())]:
             for k, v in group.items():
                 if not isinstance(k, str) or "." in k or k in features.WINDOW or k in features.ARM:
                     raise LibraryError(f"param {k!r}: a param is a plain name that is not a feature")
-                if isinstance(v, bool) or not isinstance(v, (int, float, str)):
-                    raise LibraryError(f"param {k!r}: must be a number or a string, not {v!r}")
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                    raise LibraryError(f"param {k!r}: must be a number, not {v!r}")
         chose = next((source for source, _, chosen in reversed(self.layers) if chosen is not None), "")
         for chosen, where in [(self.skill, _where(chose, "skill")), *((c["skill"], _where(c["source"], f"craft.{n}.skill")) for n, c in self.crafts.items())]:
             if chosen is not None and chosen not in self.skills:
@@ -411,14 +421,16 @@ class Library:
         self._check_tricks(self)
         for name in self.crafts:
             self._check_tricks(self._derive(name))
-        # a param no trick reads is a typo (flip_min_dg = 240), in a file, a preset or a craft section alike
+        # a param no trick reads is a typo (flip_min_dg = 240), in a file, a preset or a craft section alike; a
+        # craft's own tricks count
         used = set()
-        for t in self.tricks.values():
-            for _, e in [*t.when, *(c for ph in t.phases for c in ph.when)]:
-                used |= e.names
-            for tpl in (t.title, t.why):
-                for e, _ in expr.template_exprs(tpl):
+        for lib in [self, *(self._derive(name) for name in self.crafts)]:
+            for t in lib.tricks.values():
+                for _, e in [*t.when, *(c for ph in t.phases for c in ph.when)]:
                     used |= e.names
+                for tpl in (t.title, t.why):
+                    for e, _ in expr.template_exprs(tpl):
+                        used |= e.names
         param_source = {k: source for source, params, _ in self.layers for k in params}
         for group, where in [(self.params, lambda k: _where(param_source.get(k, ""), "params")),
                              *((p, lambda k, n=n: _where(self._skill_sources.get(n, ""), f"skill.{n}")) for n, p in self.skills.items()),
@@ -444,10 +456,11 @@ class Library:
                 for k, ph in enumerate(t.phases):
                     if ph.segment not in lib.segments:
                         raise LibraryError(_where(t.source, f"{w}: phase {k + 1}: unknown segment {ph.segment!r} (have {', '.join(lib.segments) or 'none'})"))
-                    own = set(features.vocabulary(lib.segments[ph.segment].kind))
+                    kind = lib.segments[ph.segment].kind
+                    own = set(features.vocabulary(kind))
                     for text, e in ph.when:
                         self._check_names(e, own | earlier | base, f"{w}: phase {k + 1} condition {text!r}", t.source)
-                    earlier |= {f"p{k + 1}.{n}" for n in own}
+                    earlier |= {f"p{k + 1}.{n}" for n in features.phase_names(kind)}      # what the engine hands the next phase
                 known |= earlier
             else:
                 if t.segment not in lib.segments:
@@ -472,16 +485,19 @@ class Library:
     # ---- the effective library for an arm ---------------------------------------------------------------------------
 
     def effective_params(self, craft: str | None = None) -> dict:
-        """The params in force for a craft: the files in order with the chosen preset over the first (the shipped
-        defaults) and under every later one, then the default craft's params, then the craft's own."""
+        """The params in force for a craft: the layers in order with the file-level preset over the first (the
+        shipped defaults) and under every later one; then a craft section's preset over all of that (the quad's
+        own word beats the pilot's general numbers); then the default craft's params, then the craft's own."""
         craft = self.craft_name(craft)
         default, own = self.crafts.get(DEFAULT_CRAFT, {}), self.crafts.get(craft, {}) if craft is not None else {}
-        chosen = own.get("skill") or default.get("skill") or self.skill
         out = {}
         for i, (source, params, _) in enumerate(self.layers):
             out.update(params)
-            if i == 0 and chosen:
-                out.update(self.skills.get(chosen, {}))
+            if i == 0 and self.skill:
+                out.update(self.skills.get(self.skill, {}))
+        craft_skill = own.get("skill") or default.get("skill")
+        if craft_skill:
+            out.update(self.skills.get(craft_skill, {}))
         out.update(default.get("params", {}))
         out.update(own.get("params", {}))
         return out
@@ -490,14 +506,17 @@ class Library:
         """Where each effective param came from: the layer's source, 'preset <name>', or 'craft <name>'."""
         craft = self.craft_name(craft)
         default, own = self.crafts.get(DEFAULT_CRAFT, {}), self.crafts.get(craft, {}) if craft is not None else {}
-        chosen = own.get("skill") or default.get("skill") or self.skill
         out = {}
         for i, (source, params, _) in enumerate(self.layers):
             for k in params:
                 out[k] = source
-            if i == 0 and chosen:
-                for k in self.skills.get(chosen, {}):
-                    out[k] = f"preset {chosen}"
+            if i == 0 and self.skill:
+                for k in self.skills.get(self.skill, {}):
+                    out[k] = f"preset {self.skill}"
+        craft_skill = own.get("skill") or default.get("skill")
+        if craft_skill:
+            for k in self.skills.get(craft_skill, {}):
+                out[k] = f"preset {craft_skill}"
         for k in default.get("params", {}):
             out[k] = f"craft {DEFAULT_CRAFT}"
         for k in own.get("params", {}):
@@ -511,6 +530,7 @@ class Library:
         lib = Library()
         lib.sources, lib.skills, lib.skill, lib.layers, lib.crafts = self.sources, self.skills, self.skill, self.layers, self.crafts
         lib._skill_sources = self._skill_sources
+        lib._base = self._base or self
         lib.segments = {n: Segment(s.name, s.kind, dict(s.opts), s.source) for n, s in self.segments.items()}
         lib.tricks = {tid: copy.copy(t) for tid, t in self.tricks.items()}
         for t in lib.tricks.values():
@@ -542,7 +562,10 @@ class Library:
 
     def for_craft(self, craft: str | None) -> "Library":
         """The library in force for an arm of this craft (by the log header's Craft name, any case), derived once
-        per craft."""
+        per craft from the base library (a derived one answers from its base, so one quad's overrides never
+        leak into another's)."""
+        if self._base is not None:
+            return self._base.for_craft(craft)
         key = self.craft_name(craft)
         key = key if key in self.crafts else None
         if key not in self._effective:

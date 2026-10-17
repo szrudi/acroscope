@@ -381,8 +381,6 @@ def cmd_tricks(a):
     """The tricks file(s) in force (#22): list them, show one, the feature names, run the examples, or explain an
     arm window by window. Proxied like `events`: the server's library is the one that detects."""
     what, args = a.what, a.args
-    if not sessions.remote() and tricks.LAYER_SOURCE is None:          # the local database's layer, unless a source is set already
-        tricks.LAYER_SOURCE = _layer_from_store
     if what in ("set", "unset", "on", "off", "skill"):
         return _edit_tricks(a)
     if what == "layer":
@@ -518,7 +516,7 @@ def _share_tricks(a):
     store = sessions.store()
     row = store.setting(tricks.LAYER_KEY)
     if a.what == "export":
-        text = tricks.export_toml(row["value"] if row else None, f"from {store!r}")
+        text = tricks.export_toml(row["value"] if row else None)
         if a.args:
             Path(a.args[0]).write_text(text)
             return print(a.args[0])
@@ -550,14 +548,16 @@ def _edit_tricks(a):
     row = store.setting(tricks.LAYER_KEY)
     table = tricks.edit_layer(row["value"] if row else None, what, *args, craft=a.craft)
     tricks.check_layer(table)                          # a LibraryError names the place
-    store.set_setting(tricks.LAYER_KEY, table)
-    lib = tricks.library().for_craft(a.craft)
+    store.set_setting(tricks.LAYER_KEY, table, etag=tricks.layer_etag(row["value"] if row else None))
+    base = tricks.library()
+    lib = base.for_craft(a.craft)
+    craft = base.craft_name(a.craft) if a.craft else None
     if what in ("set", "unset"):
-        print(f"{args[0]} = {lib.params.get(args[0])}" + (f" for {a.craft}" if a.craft else ""))
+        print(f"{args[0]} = {lib.params.get(args[0])}" + (f" for {craft}" if craft else ""))
     elif what in ("on", "off"):
-        print(f"{args[0]}: {'on' if lib.tricks[args[0]].enabled else 'off'}" + (f" for {a.craft}" if a.craft else ""))
+        print(f"{args[0]}: {'on' if lib.tricks[args[0]].enabled else 'off'}" + (f" for {craft}" if craft else ""))
     else:
-        print(f"skill: {tricks.library().crafts.get(a.craft, {}).get('skill') if a.craft else tricks.library().skill}")
+        print(f"skill: {base.crafts.get(craft, {}).get('skill') if craft else base.skill}")
 
 
 def cmd_frame(a):
@@ -869,6 +869,8 @@ def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if a.cmd in PROXIED and sessions.remote() and not (a.cmd == "tricks" and a.what in ("export", "import")):
         return _proxy(args)
+    if not sessions.remote() and tricks.LAYER_SOURCE is None:          # the local database's layer for every command that detects
+        tricks.LAYER_SOURCE = _layer_from_store
     try:
         a.f(a)
     except (FileNotFoundError, ValueError, RemoteError) as e:   # a name that is not there, a refused edit: one line

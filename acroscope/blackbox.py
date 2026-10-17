@@ -23,7 +23,7 @@ from .config import BLACKBOX_DIR, NAMES_ONLY, cache
 logging.getLogger("orangebox").setLevel(logging.ERROR)
 
 HEADER_KEYS = ["Firmware revision", "Craft name", "looptime", "pid_process_denom", "P interval", "P ratio",
-               "rates_type", "rates", "rc_rates", "rc_expo", "rate_limits", "thr_mid", "thr_expo", "thr_hover", "rollPID", "pitchPID", "yawPID",
+               "rates_type", "rates", "rc_rates", "rc_expo", "rate_limits", "quick_rates_rc_expo", "thr_mid", "thr_expo", "thr_hover", "rollPID", "pitchPID", "yawPID",
                "gyro_notch1_hz", "motorOutput", "acc_1G", "vbat_scale", "gyro_scale"]
 MAGIC = b"ACRO1\n"
 INDEX_VERSION = 3        # 3: rates_type read and the rate profile (max and centre rate per axis) in every arm's meta (#22)
@@ -54,6 +54,8 @@ def rates(headers: dict) -> dict | None:
     full-stick rate. None when the header has no rates_type (a log decoded before it was kept: re-decode) or
     the values are not three per axis."""
     try:
+        if not 0 <= int(headers["rates_type"]) < len(RATES_TYPES):
+            return None
         kind = RATES_TYPES[int(headers["rates_type"])]
         rc, sup, expo = ([float(v) for v in headers[k]] for k in ("rc_rates", "rates", "rc_expo"))
         assert len(rc) == len(sup) == len(expo) == 3
@@ -79,10 +81,11 @@ def rates(headers: dict) -> dict | None:
         elif kind == "actual":
             mid = r * 10
             top = max(s * 10, mid)
-        else:                                       # quick
+        else:                                       # quick: expo shapes the centre only with quick_rates_rc_expo on
             mid = r * 2
             top = max(s * 10, mid)
-            mid *= 1 - e
+            if int(headers.get("quick_rates_rc_expo") or 0):
+                mid *= 1 - e
         mx.append(round(min(top, lim, SETPOINT_RATE_LIMIT), 1))
         ce.append(round(mid, 1))
     return {"type": kind, "max_dps": mx, "centre_dps": ce}
@@ -318,9 +321,11 @@ def boots(arms: list[dict]) -> list[dict]:
 
 
 def load_arm(name: str, index: int) -> Arm:
+    """One arm from the cache; a log whose index is missing or from an older version is decoded first, so the arm
+    carries what the current version writes into its meta (the rates since v3)."""
     path = resolve_bbl(name)
     bp = _bin_path(path.stem, index)
-    if not bp.exists():
+    if not bp.exists() or index_bbl(name, cached_only=True) is None:
         index_bbl(name)
     if not bp.exists():
         raise FileNotFoundError(f"{path.name} arm {index}: no frames decoded")

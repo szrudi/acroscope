@@ -80,16 +80,22 @@ class LayerTest(Layered):
         t = tricks.edit_layer(t, "off", "gyro-kick")
         t = tricks.edit_layer(t, "skill", "beginner")
         self.assertEqual(t, {"version": 1, "params": {"flip_min_deg": 240}, "trick": [{"id": "gyro-kick", "enabled": False}], "skill": "beginner"})
-        t = tricks.edit_layer(t, "on", "gyro-kick")
+        t = tricks.edit_layer(t, "on", "gyro-kick")                                 # on is said, not just off taken away
         t = tricks.edit_layer(t, "unset", "flip_min_deg")
         t = tricks.edit_layer(t, "skill", "none")
-        self.assertEqual(t, {"version": 1})
-        t = tricks.edit_layer(t, "set", "loop_min_dur", 1.2, craft="OttoJr")
+        self.assertEqual(t, {"version": 1, "trick": [{"id": "gyro-kick", "enabled": True}]})
+        t = tricks.edit_layer({"version": 1}, "set", "loop_min_dur", 1.2, craft="OttoJr")
         t = tricks.edit_layer(t, "off", "motor-loss", craft="OttoJr")
         self.assertEqual(t, {"version": 1, "craft": {"OttoJr": {"params": {"loop_min_dur": 1.2}, "trick": [{"id": "motor-loss", "enabled": False}]}}})
-        t = tricks.edit_layer(t, "on", "motor-loss", craft="OttoJr")
         t = tricks.edit_layer(t, "unset", "loop_min_dur", craft="OttoJr")
-        self.assertEqual(t, {"version": 1})                                      # an emptied craft section goes
+        self.assertEqual(t, {"version": 1, "craft": {"OttoJr": {"trick": [{"id": "motor-loss", "enabled": False}]}}})
+        # the entry's other fields stay; a name not set is refused
+        t = tricks.edit_layer({"version": 1, "trick": [{"id": "roll", "priority": 42}, {"id": "my-roll", "tag": "roll", "segment": "fast-rotation", "title": "m"}]}, "off", "roll")
+        self.assertEqual(t["trick"][0], {"id": "roll", "priority": 42, "enabled": False})
+        t = tricks.edit_layer(t, "off", "my-roll")
+        self.assertEqual(t["trick"][1], {"id": "my-roll", "tag": "roll", "segment": "fast-rotation", "title": "m", "enabled": False})
+        with self.assertRaises(ValueError):
+            tricks.edit_layer({"version": 1}, "unset", "flip_min_dg")
         original = {"version": 1, "params": {"a": 1}}
         tricks.edit_layer(original, "set", "b", 2)
         self.assertEqual(original, {"version": 1, "params": {"a": 1}})           # never in place
@@ -121,7 +127,7 @@ class DescribeTest(Layered):
         self.assertEqual(d["crafts"]["OttoJr"]["source"], "database")
         self.assertEqual(d["crafts"]["default"]["hover_pct"], 35)
         roll = next(t for t in d["tricks"] if t["id"] == "roll")
-        self.assertEqual(roll["params"], ["barrel_off_axis_deg", "flip_min_deg", "held_share", "roll_max_dur", "stick_min"])
+        self.assertEqual(roll["params"], ["barrel_off_axis_deg", "contact_g", "flip_min_deg", "held_share", "roll_max_dur", "stick_min", "tumble_dps"])
         self.assertEqual(roll["source"], str(SHIPPED))
         self.assertTrue(roll["enabled"])
         split = next(t for t in d["tricks"] if t["id"] == "split-s")
@@ -247,7 +253,7 @@ class CliWriteTest(Layered):
         self.assertEqual(self.cli("tricks", "set", "flip_min_deg", "200", "--craft", "X").strip(), "flip_min_deg = 200 for X")
         self.assertIn("right roll", self.cli("events", "--arm", "x.bbl:2"))           # arm 2 is craft X
         self.assertIn("roll attempt", self.cli("events", "--arm", "x.bbl:1"))
-        self.assertEqual(self.db.setting("tricks")["value"], {"version": 1, "craft": {"X": {"params": {"loop_min_dur": 1.2, "flip_min_deg": 200}}}})
+        self.assertEqual(self.db.setting("tricks")["value"], {"version": 1, "trick": [{"id": "roll", "enabled": True}], "craft": {"X": {"params": {"loop_min_dur": 1.2, "flip_min_deg": 200}}}})
 
     def test_a_bad_write_changes_nothing(self):
         self.cli("tricks", "set", "flip_min_deg", "240")

@@ -78,6 +78,8 @@ def _check_proxied(args: list[str]) -> None:
         for x in v if isinstance(v, list) else [v]:
             if isinstance(x, str) and "/" in x:
                 raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
+    if args[0] == "tricks" and len(args) > 1 and args[1] in ("export", "import"):
+        raise ValueError("tricks export/import read and write a file on the client: not through the server")
 
 
 def run_cli(args: list[str], timeout: float = 1800) -> dict:
@@ -227,8 +229,8 @@ def _under(root: Path, *parts: str) -> Path:
 
 @lru_cache(maxsize=64)
 def _events(bbl: str, arm: int, stamp: tuple) -> list[dict]:
-    """The suggestions for an arm under the tricks file as it is (`stamp`: the library files' mtimes, so an edited
-    file shows on the next look without a restart)."""
+    """The suggestions for an arm under the tricks in force (`stamp`: tricks.fingerprint(), the shipped file's mtime
+    and the pilot's layer, so a change shows on the next look without a restart)."""
     return tricks.detect(blackbox.load_arm(bbl, arm))
 
 
@@ -398,7 +400,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(tricks.describe(tricks.library(), q.get("craft") or None))
             if parts == ["api", "tricks", "layer"]:
                 row = sessions.store().setting(tricks.LAYER_KEY)
-                return self._json({"layer": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None})
+                return self._json({"layer": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None,
+                                   "etag": tricks.layer_etag(row["value"] if row else None)})
             if parts == ["api", "tricks", "export"]:                   # the layer as a tricks file: what is shared
                 row = sessions.store().setting(tricks.LAYER_KEY)
                 return self._text(tricks.export_toml(row["value"] if row else None), "acroscope-tricks.toml")
@@ -473,7 +476,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def do_POST(self):
-        parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/") if p]
+        u = urlparse(self.path)
+        parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
             if parts == ["api", "scan"]:
                 return self._json(sessions.scan())
@@ -496,8 +501,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(b, dict):
                     return self._json({"error": "the layer is a table"}, 400)
                 tricks.check_layer(b)                             # a LibraryError is a ValueError: 400 with the place named
+                if q.get("etag"):                                 # what the writer started from: another writer's change in between is a 409
+                    cur = sessions.store().setting(tricks.LAYER_KEY)
+                    if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
+                        return self._json({"error": "the layer changed since you loaded it (someone else saved); it was loaded again, redo your change"}, 409)
                 row = sessions.store().set_setting(tricks.LAYER_KEY, b)
-                return self._json({"layer": row["value"], "updated_at": row["updated_at"]})
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
             if parts == ["api", "tricks", "import"]:                   # a tricks file's text as the layer, whole or merged over it
                 b = self._body()
                 if not isinstance(b, dict) or not isinstance(b.get("text"), str):
@@ -505,7 +514,7 @@ class Handler(BaseHTTPRequestHandler):
                 current = sessions.store().setting(tricks.LAYER_KEY)
                 table = tricks.import_table(b["text"], current["value"] if current else None, b.get("mode", "replace"))
                 row = sessions.store().set_setting(tricks.LAYER_KEY, table)
-                return self._json({"layer": row["value"], "updated_at": row["updated_at"]})
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
             if parts == ["api", "tag-categories"]:
                 b = self._body()
                 return self._json(sessions.store().set_category(b["name"], b.get("color")))

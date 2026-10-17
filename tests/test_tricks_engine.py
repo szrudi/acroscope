@@ -86,7 +86,7 @@ class RotationTest(unittest.TestCase):
         verdict = {t["id"]: t for w in ex["windows"] if w["kind"] == "rotation" for t in w["tricks"]}
         self.assertEqual(verdict["roll-attempt"]["failed"], "abs(rotation_peak_deg.pitch) < barrel_off_axis_deg")   # the pull is in its window
         self.assertEqual(verdict["roll"]["failed"], "abs(rotation_peak_deg.roll) >= flip_min_deg")
-        self.assertEqual(verdict["flip"]["failed"], "abs(rotation_peak_deg.roll) < barrel_off_axis_deg")   # the roll is in its window
+        self.assertEqual(verdict["flip"]["failed"], "axis == 'pitch'")
 
 
 class LoopTest(unittest.TestCase):

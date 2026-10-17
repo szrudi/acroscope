@@ -164,10 +164,10 @@ class Remote:
         r = self._call("GET", "/api/tricks/layer")
         return {"value": r["layer"], "updated_at": r["updated_at"]} if r.get("updated_at") else None
 
-    def set_setting(self, key: str, value) -> dict:
+    def set_setting(self, key: str, value, etag: str | None = None) -> dict:
         if key != "tricks":
             raise RemoteError(f"setting {key!r}: the server keeps only the tricks layer")
-        r = self._call("POST", "/api/tricks/layer", value)
+        r = self._call("POST", "/api/tricks/layer", value, etag=etag)
         return {"value": r["layer"], "updated_at": r["updated_at"]}
 
     def delete_setting(self, key: str) -> bool:

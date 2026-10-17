@@ -281,6 +281,35 @@ class ConfigPageTest(unittest.TestCase):
         page.check("#stAll")
         self.assertEqual(page.evaluate("() => localStorage.getItem('acro.allClips')"), "1")
 
+    def test_a_broken_layer_still_shows_the_page_and_its_clear_button(self):
+        """A stored layer a later release made invalid: the page says so, the tabs still draw, the settings tab clears it."""
+        import sqlite3
+        self.api.set_setting("tricks", {"version": 1, "skill": "beginner"})
+        db = sqlite3.connect(Path(self.tmp.name) / "t.db")
+        db.execute("UPDATE settings SET value = ? WHERE key = 'tricks'", (json.dumps({"version": 1, "params": {"roll_hold_share": 0.85}}),))
+        db.commit(); db.close()
+        page = self.open()
+        self.assertIn("roll_hold_share", page.text_content("#err"))
+        self.assertIn("15 of 15 tricks on", page.text_content("#status"))
+        page.click("#tabs [data-tab=settings]")
+        self.assertIn("roll_hold_share", page.input_value("#layerText"))
+        page.on("dialog", lambda d: d.accept())
+        self.act(page, lambda: page.click("#layerClear"), {})
+        self.assertFalse(page.evaluate("() => document.querySelector('#err').classList.contains('on')"))
+
+    def test_a_stale_tab_does_not_overwrite(self):
+        """Two tabs on the same layer: the second save is refused and that tab reloads."""
+        page = self.open()
+        other = self.open()
+        row = page.locator("#params .prm[data-p=flip_min_deg]")
+        self.act(page, lambda: (row.locator("[data-val]").fill("240"), row.locator("[data-val]").press("Tab")), {"version": 1, "params": {"flip_min_deg": 240}})
+        before = other.evaluate("() => renders")
+        other.check("input[name=skill][value=beginner]")
+        other.wait_for_function("(n) => renders > n", arg=before)
+        self.assertIn("changed since", other.text_content("#err"))
+        self.assertEqual(self.layer(), {"version": 1, "params": {"flip_min_deg": 240}})        # the first tab's write stands
+        self.assertEqual(other.input_value("#params .prm[data-p=flip_min_deg] [data-val]"), "240")   # and the second tab shows it
+
     # ---- tags ----------------------------------------------------------------------------------------------------
 
     def test_tags_moved_here(self):

@@ -23,8 +23,16 @@ _TOKEN = re.compile(r"""\s*(?:
 )""", re.VERBOSE)
 _KEYWORDS = {"and", "or", "not", "true", "false", "none"}
 _FUNCTIONS = {"abs": abs, "min": min, "max": max, "round": round, "sqrt": math.sqrt, "if": None}
+_ARITY = {"abs": (1, 1), "sqrt": (1, 1), "round": (1, 2), "min": (1, None), "max": (1, None), "if": (3, 3)}
 _CMP = {"<", "<=", ">", ">=", "==", "!="}
 _TEMPLATE = re.compile(r"\{([^{}]*)\}")
+# an imported file is a trust boundary: nothing in it may take long, recurse deep or print pages
+MAX_DEPTH = 32              # nested parentheses and calls
+MAX_LITERAL = 24            # characters in a number
+MAX_ROUND = 12              # |ndigits| for round()
+MAX_SPEC = 12               # characters in a {value:spec} format spec
+MAX_WIDTH = 60              # a width or precision in a format spec
+_WIDTHS = re.compile(r"\d+")
 
 
 class ExprError(ValueError):
@@ -51,6 +59,12 @@ class _Parser:
         self.text = text
         self.toks = _tokens(text)
         self.i = 0
+        self.depth = 0
+
+    def deeper(self):
+        self.depth += 1
+        if self.depth > MAX_DEPTH:
+            raise ExprError(f"nested deeper than {MAX_DEPTH} in {self.text!r}")
 
     def peek(self, kind=None, value=None):
         if self.i >= len(self.toks):
@@ -130,12 +144,16 @@ class _Parser:
     def atom(self):
         if self.peek("num") is not None:
             v = self.take()
+            if len(v) > MAX_LITERAL:
+                raise ExprError(f"a number longer than {MAX_LITERAL} characters in {self.text!r}")
             return ("const", float(v) if "." in v else int(v))
         if self.peek("str") is not None:
             return ("const", self.take()[1:-1])
         if self.peek("op", "("):
             self.take()
+            self.deeper()
             node = self.disjunction()
+            self.depth -= 1
             self.take("op", ")")
             return node
         name = self.take("name")
@@ -147,17 +165,19 @@ class _Parser:
             if name not in _FUNCTIONS:
                 raise ExprError(f"unknown function {name}() in {self.text!r} (have {', '.join(sorted(_FUNCTIONS))})")
             self.take()
+            self.deeper()
             args = []
             if not self.peek("op", ")"):
                 args.append(self.disjunction())
                 while self.peek("op", ","):
                     self.take()
                     args.append(self.disjunction())
+            self.depth -= 1
             self.take("op", ")")
-            if not args:
-                raise ExprError(f"{name}() needs an argument in {self.text!r}")
-            if name == "if" and len(args) != 3:
-                raise ExprError(f"if() takes a condition and two values in {self.text!r}")
+            lo, hi = _ARITY[name]
+            if len(args) < lo or (hi is not None and len(args) > hi):
+                want = f"{lo}" if hi == lo else f"{lo} or more" if hi is None else f"{lo} to {hi}"
+                raise ExprError(f"{name}() takes {want} argument{'s' if want != '1' else ''}, not {len(args)}, in {self.text!r}")
             return ("call", name, args)
         return ("name", name)
 
@@ -215,10 +235,15 @@ def _ev(node, ns: dict, text: str):
         for op, a, b in zip(node[2], vals, vals[1:]):
             if a is None or b is None:
                 return False
-            try:
-                ok = {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "==": a == b, "!=": a != b}[op]
-            except TypeError:
-                raise ExprError(f"cannot compare {a!r} {op} {b!r} in {text!r}") from None
+            if op == "==":                                      # equality is defined between any two values
+                ok = a == b
+            elif op == "!=":
+                ok = a != b
+            else:
+                try:
+                    ok = {"<": lambda: a < b, "<=": lambda: a <= b, ">": lambda: a > b, ">=": lambda: a >= b}[op]()
+                except TypeError:
+                    raise ExprError(f"cannot compare {a!r} {op} {b!r} in {text!r}") from None
             if not ok:
                 return False
         return True
@@ -247,7 +272,8 @@ def _ev(node, ns: dict, text: str):
                 return a / b
             if op == "%":
                 return a % b
-            return float(a) ** b
+            r = float(a) ** b
+            return None if isinstance(r, complex) else r          # a negative base to a fractional power
         except (ZeroDivisionError, OverflowError):
             return None
     if kind == "call":
@@ -257,12 +283,16 @@ def _ev(node, ns: dict, text: str):
         if any(a is None for a in args):
             return None
         try:
-            if node[1] in ("min", "max") and len(args) > 1:
-                return _FUNCTIONS[node[1]](args)
+            if node[1] in ("min", "max"):
+                return _FUNCTIONS[node[1]](args) if len(args) > 1 else args[0]
             if node[1] == "sqrt" and args[0] < 0:
                 return None
+            if node[1] == "round" and len(args) == 2:
+                if not isinstance(args[1], int) or isinstance(args[1], bool):
+                    raise ExprError(f"round() wants a whole number of digits in {text!r}")
+                return round(args[0], max(-MAX_ROUND, min(MAX_ROUND, args[1])))
             return _FUNCTIONS[node[1]](*args)
-        except TypeError:
+        except (TypeError, OverflowError):
             raise ExprError(f"{node[1]}({', '.join(map(repr, args))}) in {text!r}") from None
     raise ExprError(f"bad node {kind}")
 
@@ -274,11 +304,21 @@ class Expr:
         self.text = text.strip()
         if not self.text:
             raise ExprError("empty expression")
-        self.ast = _Parser(self.text).parse()
+        try:
+            self.ast = _Parser(self.text).parse()
+        except ExprError:
+            raise
+        except (RecursionError, ValueError, OverflowError) as e:
+            raise ExprError(f"cannot read {self.text!r}: {type(e).__name__}") from None
         self.names = frozenset(_names(self.ast, set()))
 
     def eval(self, ns: dict):
-        return _ev(self.ast, ns, self.text)
+        try:
+            return _ev(self.ast, ns, self.text)
+        except ExprError:
+            raise
+        except (RecursionError, ValueError, OverflowError) as e:
+            raise ExprError(f"{self.text!r}: {type(e).__name__}: {e}") from None
 
     def __repr__(self):
         return f"Expr({self.text!r})"
@@ -288,11 +328,28 @@ def compile(text: str) -> Expr:  # noqa: A001  (the module's verb, like re.compi
     return Expr(text)
 
 
+def check_spec(fmt: str, template: str):
+    """A format spec a title may use: short, no wide fields, and one Python's format() accepts for a number or a
+    string (so a spec a condition's value cannot take fails at load, not on every arm)."""
+    if len(fmt) > MAX_SPEC:
+        raise ExprError(f"format spec {fmt!r} longer than {MAX_SPEC} in {template!r}")
+    if any(int(w) > MAX_WIDTH for w in _WIDTHS.findall(fmt)):
+        raise ExprError(f"format spec {fmt!r} wider than {MAX_WIDTH} in {template!r}")
+    for sample in (1.0, 1, "x"):
+        try:
+            format(sample, fmt)
+            return
+        except (ValueError, TypeError):
+            continue
+    raise ExprError(f"format spec {fmt!r} fits no value in {template!r}")
+
+
 def template_exprs(template: str) -> list[tuple[Expr, str]]:
-    """The `{expr}` / `{expr:fmt}` holes of a title or why template, compiled: [(expr, fmt)]."""
+    """The `{expr}` / `{expr:fmt}` holes of a title or why template, compiled and their specs checked: [(expr, fmt)]."""
     out = []
     for hole in _TEMPLATE.findall(template):
         text, _, fmt = hole.partition(":")
+        check_spec(fmt, template)
         out.append((Expr(text), fmt))
     return out
 

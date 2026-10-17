@@ -39,7 +39,8 @@ class DumpsTest(unittest.TestCase):
         self.assertEqual(tomllib.loads(toml_out.dumps(table)), table)
 
     def test_edge_values(self):
-        for t in ({"version": 1}, {}, {"a": {"b": {"c": 1}}}, {"params": {}}, {"x": [1, 2.5, "s", True]}, {"q": 'he said "hi"\t\\ ok'}, {"k e y": 1, "dotted.key": 2}):
+        for t in ({"version": 1}, {}, {"a": {"b": {"c": 1}}}, {"params": {}}, {"x": [1, 2.5, "s", True]}, {"q": 'he said "hi"\t\\ ok'}, {"k e y": 1, "dotted.key": 2},
+                  {"n": "two\nlines\r\n"}, {"empty": []}, {"del": "a\x7fb"}, {"trick": [{"id": "x", "when": []}]}):
             self.assertEqual(tomllib.loads(toml_out.dumps(t)), t, t)
         with self.assertRaises(ValueError):
             toml_out.dumps({"x": float("nan")})

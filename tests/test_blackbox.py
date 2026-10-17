@@ -194,6 +194,32 @@ class SegmentListingTest(unittest.TestCase):
         self.assertNotIn("cut off", row)
 
 
+class LoadArmTest(unittest.TestCase):
+    """A cached arm from an index of an older version is decoded again first, so it carries what the current
+    version writes into its meta (the rates since v3)."""
+
+    def test_an_old_index_is_rebuilt_before_the_arm_loads(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "blackbox").mkdir()
+            (root / "blackbox" / "L.bbl").write_bytes(b"")
+            cache = root / "cache"
+            (cache / "arms" / "L").mkdir(parents=True)
+            import array
+            meta = {"bbl": "L", "file": "L.bbl", "index": 1, "frames": 2, "length": 0.0025, "rate": 400.0, "fields": ["time", "x"]}
+            blackbox._save(meta, array.array("d", [0.0, 0.0025]), {"x": array.array("f", [0.0, 0.0])}, cache / "arms" / "L" / "arm-01.bin")
+
+            def index_bbl(name, force=False, progress=None, cached_only=False):
+                calls.append(cached_only)
+                return None if cached_only else {"v": blackbox.INDEX_VERSION}
+            with mock.patch.object(blackbox, "BLACKBOX_DIR", root / "blackbox"), mock.patch.object(blackbox, "cache", lambda *parts: cache.joinpath(*parts)), \
+                    mock.patch.object(blackbox, "index_bbl", index_bbl):
+                arm = blackbox.load_arm("L.bbl", 1)
+        self.assertEqual(calls, [True, False])                   # looked for a current index, found none, decoded
+        self.assertEqual(arm.n, 2)
+
+
 class RatesTest(unittest.TestCase):
     """#22: the rate profile is in every arm's header; `rates_type` says how to read it. Anchors: the 10-09 OTTO
     log's Actual rates (centre 50, max 300 deg/s, the 'lazyfly' profile), the Air65's Actual 70/670, and
@@ -219,7 +245,9 @@ class RatesTest(unittest.TestCase):
         kiss = blackbox.rates({"rates_type": 2, "rc_rates": [100] * 3, "rates": [70] * 3, "rc_expo": [0] * 3})
         self.assertAlmostEqual(kiss["max_dps"][0], 666.7)
         quick = blackbox.rates({"rates_type": 4, "rc_rates": [100] * 3, "rates": [67] * 3, "rc_expo": [30] * 3})
-        self.assertEqual((quick["max_dps"][0], quick["centre_dps"][0]), (670.0, 140.0))
+        self.assertEqual((quick["max_dps"][0], quick["centre_dps"][0]), (670.0, 200.0))         # expo shapes the centre only with quick_rates_rc_expo on
+        quick = blackbox.rates({"rates_type": 4, "rc_rates": [100] * 3, "rates": [67] * 3, "rc_expo": [30] * 3, "quick_rates_rc_expo": 1})
+        self.assertEqual(quick["centre_dps"][0], 140.0)
         # the firmware clamps the setpoint at 1998 deg/s, or lower when the header's rate_limits say so
         self.assertEqual(blackbox.rates({"rates_type": 0, "rc_rates": [250] * 3, "rates": [99] * 3, "rc_expo": [0] * 3})["max_dps"][0], 1998.0)
         limited = blackbox.rates({"rates_type": 3, "rc_rates": [7] * 3, "rates": [67] * 3, "rc_expo": [0] * 3, "rate_limits": [500, 1998, 1998]})
@@ -228,6 +256,7 @@ class RatesTest(unittest.TestCase):
     def test_unknown_or_missing(self):
         self.assertIsNone(blackbox.rates({"rc_rates": [7, 7, 7], "rates": [67, 67, 67], "rc_expo": [0, 0, 0]}))   # decoded before #22
         self.assertIsNone(blackbox.rates({"rates_type": 9, "rc_rates": [7, 7, 7], "rates": [67, 67, 67], "rc_expo": [0, 0, 0]}))
+        self.assertIsNone(blackbox.rates({"rates_type": -1, "rc_rates": [7, 7, 7], "rates": [67, 67, 67], "rc_expo": [0, 0, 0]}))
         self.assertIsNone(blackbox.rates({"rates_type": 3, "rc_rates": 7, "rates": [67, 67, 67], "rc_expo": [0, 0, 0]}))
         self.assertIsNone(blackbox.rates({}))
 
