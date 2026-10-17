@@ -99,10 +99,10 @@ works through the server (`ACROSCOPE_URL`).
 ## Deployment
 
 The homelab runs it as the Komodo stack `acroscope` (one container from `Dockerfile` + `compose.yaml`: `acroscope
-serve` over CT 109's bind mount of the `Data/fpv` dataset, szrudi/homelab#102), reachable at
-`acroscope.hakhorst.eu`. The live database is on the host in
-`/opt/acroscope/state`; a nightly copy lands in the data dir's `state/`, so clips and index restore from one
-snapshot. Hosting notes live in the homelab repo, `services/acroscope.md`.
+serve` over the LXC's bind mount of the `Data/fpv` dataset, szrudi/homelab#102), behind the homelab's SSO. The
+live database is on the host in `/opt/acroscope/state`; a nightly copy lands in the data dir's `state/`, so clips
+and index restore from one snapshot. Hosting notes (addresses, redeploy, who can reach the port) live in the
+homelab repo, `services/acroscope/README.md`.
 
 ## CLI (the agent side)
 

@@ -7,10 +7,10 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - Code: this repo (`szrudi/acroscope`, main). Venv `.venv` (`.venv/bin/acroscope`), Python 3.13; the dependencies are
   the stdlib plus orangebox, nothing else (no numpy: the container is python:3.13-slim). ffmpeg/ffprobe on the PATH.
   `gh` on this machine is logged in as `joan-grazo`, so issues and PRs filed from here carry that account.
-- Data: the data dir (`ACROSCOPE_DATA`) is CT 109's `/data`, a bind mount of the homelab's `Data/fpv` dataset
+- Data: the data dir (`ACROSCOPE_DATA`) is the acroscope LXC's `/data`, a bind mount of the homelab's `Data/fpv` dataset
   (szrudi/homelab#102): `videos/`, `blackbox/`, `inbox/`, `originals/`, `state/`. Matches, moments, notes, tags and
   batches are in the server's SQLite database (`acroscope/db.py`), live at `/opt/acroscope/state/acroscope.db` on
-  LXC 109 with a nightly copy in `/data/state/`. **joan has no data**: `~/.config/acroscope/url` points the CLI at
+  the LXC with a nightly copy in `/data/state/`. **joan has no data**: `~/.config/acroscope/url` points the CLI at
   the server, the store calls go to the API, and the commands that need clips, logs or the cache (`cli.PROXIED`)
   run on the server through `POST /api/cli` (a child process, allow-listed in `server.PROXIED`); frames and sheets
   come back through `GET /api/file` into the local cache. The server is `ACROSCOPE_URL`, else the URL file, so
@@ -33,12 +33,10 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - The flight-analysis session's brief in the Drive folder (`~/gdrive/fpv/CLAUDE.md`) carries the acroscope workflow
   that session follows: keep its acroscope bullet in step with CLI changes.
 - Cache: `~/.cache/acroscope` on joan (frames and sheets fetched from the server, the real-data test leftovers);
-  `/opt/acroscope/cache` on CT 109 (decoded arms, frames, OSD readings, probes). Disposable.
-- Hosted player: Komodo stack `acroscope` on LXC 109 (10.10.10.17), `https://acroscope.hakhorst.eu`. The URL sits
-  behind Authelia (curl gets a 302); health is `curl -s http://10.10.10.17:8070/api/sessions`. Git-backed against
-  this repo but **not auto-deployed**: after `git push`, Rudi redeploys (or the Komodo API: `POST
-  http://10.10.10.55:9120/execute`, body `{"type":"DeployStack","params":{"stack":"acroscope"}}`, headers
-  `X-Api-Key`/`X-Api-Secret` = BWS `komodo_api_key`/`komodo_api_secret`). A redeploy rebuilds the image; the
+  `/opt/acroscope/cache` on the LXC (decoded arms, frames, OSD readings, probes). Disposable.
+- Hosted player: Komodo stack `acroscope` on the homelab's acroscope LXC, behind the homelab's SSO. Git-backed
+  against this repo but **not auto-deployed**: after `git push`, Rudi redeploys (or the Komodo API; the call, the
+  addresses and the health check are in the homelab repo, private, see below). A redeploy rebuilds the image; the
   proxied CLI commands run the deployed code, so a change there is only testable from joan after a redeploy (or
   against a local server with data pulled through `/video/...` and `/api/file`). Hosting docs: homelab repo
   `services/acroscope/README.md`; `~/repos/homelab` is a shared checkout usually on another branch, so read it with
@@ -50,6 +48,10 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - Backlog: GitHub issues on `szrudi/acroscope`. The flight-analysis session files them; this session implements.
 
 ## Conventions
+- **This repo is public.** No internal addresses, hostnames, network layout or security posture in the code, the docs,
+  commit messages, issues or PR text: that goes in the homelab repo (private), and this side links to it. Committed
+  examples, tests and issue text use neutral session and place names (the synthetic `2026-10-04-motor-jitter-testing`
+  kind), not the parks around Rudi's house; the real-data pins, which name their real session, are the one exception.
 - **Several sessions share this checkout** (on 2026-10-11 two dev sessions were editing it at once, one on #9 and
   one on #11). Never switch branches in `~/repos/acroscope` itself and never `git add -A`: do branch work in a
   worktree (`git worktree add <scratchpad>/wt-<name> <branch>`, remove it when pushed), stage explicit paths,
@@ -90,7 +92,7 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   boot offset across cut static exactly. Legacy `cuts.json` sidecars next to older clips are not read.
 - An MCP server over the same store and metrics, for agents other than Claude Code.
 - The container runs as root (the dataset is root-owned); a non-root user is a to-do with the homelab side.
-- No authentication on the server itself: Authelia guards only the public vhost; `10.10.10.17:8070` (the door the CLI
-  uses) answers every read and write to anyone who can route to CT 109, by design. Path checks are the only
-  authorisation. The plan for a token, a localhost default bind and an origin check on writes is in the 2026-10-17
-  comment on #10 (verified there, with what reaches the port).
+- No authentication on the server itself: the SSO guards only the player's URL; the container port (the door the
+  CLI uses) answers every read and write to anything on the home network, by design. Path checks are the only
+  authorisation. Who reaches it is in the homelab README; the plan for a token, a localhost default bind and an
+  origin check on writes is in the 2026-10-17 comment on #10.
