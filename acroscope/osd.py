@@ -655,22 +655,27 @@ def _plan_cost(runs: list[dict], arms: list[dict], forbid: tuple[int, int] | Non
 def plan_session_pairs(runs: list[dict], arms: list[dict], margin: float = PLAN_MARGIN) -> tuple[list[tuple[int, int]], set]:
     """The session's runs (each with its `clip`) against its arms in one go (#26): clip by clip, one locally best pick
     (2026-10-14 009 took arm 17, 0.7 s nearer than arm 7) bounded every later clip out of its arms. Returns (pairs,
-    ambiguous clips). A clip is ambiguous when a runner-up within `margin` hands one of the arms to another clip:
-    then where the clips' windows lie is a coin toss. A close runner-up inside one clip (a dozen short hops of near
-    equal length, 2026-10-16) changes no window; which run is which arm is the clip's own pass to settle."""
+    ambiguous clips), the ambiguous clips' pairs left out. A runner-up within `margin` makes clips ambiguous when it
+    gives another clip than the one whose pair it drops other arms (two clips moving together count, #41): then where
+    their windows lie is a coin toss. A close runner-up inside one clip (a dozen short hops of near equal length,
+    2026-10-16) changes no other clip; which run is which arm is the clip's own pass to settle."""
     cost, pairs = _plan_cost(runs, arms)
 
-    def owners(ps):
-        return {ai: runs[ri].get("clip") for ri, ai in ps}
-    best = owners(pairs)
+    def arms_of(ps):
+        out = {}
+        for ri, ai in ps:
+            out.setdefault(runs[ri].get("clip"), set()).add(ai)
+        return out
+    best = arms_of(pairs)
     ambiguous = set()
     for ri, ai in pairs:
         alt_cost, alt = _plan_cost(runs, arms, forbid=(ri, ai))
         if alt_cost - cost >= margin:
             continue
-        other = owners(alt)
-        moved = {a for a in set(best) | set(other) if best.get(a) and other.get(a) and best[a] != other[a]}
-        ambiguous |= {best[a] for a in moved} | {other[a] for a in moved}
+        other = arms_of(alt)
+        changed = {c for c in set(best) | set(other) if best.get(c, set()) != other.get(c, set())}
+        if changed - {runs[ri].get("clip")}:
+            ambiguous |= changed
     return [(ri, ai) for ri, ai in pairs if runs[ri].get("clip") not in ambiguous], ambiguous
 
 
@@ -680,78 +685,104 @@ def _log_order(bbl: str) -> str:
     return m.group(1) + m.group(2) if m else bbl
 
 
+def _craft(bbl: str) -> str:
+    """The quad a log is from: the craft name in BTFL_BLACKBOX_LOG_<craft>_<date>_<time>_..., else the file itself."""
+    m = re.match(r"BTFL_BLACKBOX_LOG_(.+?)_\d{8}_\d{6}_", bbl)
+    return m.group(1) if m else bbl
+
+
 def session_plan(session: str, fps: float = 2.0) -> dict:
-    """{clip file: {"windows": {bbl: (lo, hi)}, "planned": [(bbl, arm)], "ambiguous": bool}} for every named clip:
-    the arms each clip may hold, from one alignment of the whole session (clips in card order, the attached logs' arms
-    in log order) instead of from the picks of the clips before it. Matches already in the session are fixed points
-    (the clips between two of them align against the arms between); arms another session holds are left out."""
+    """{clip file: {"windows": {bbl: (lo, hi)}, "planned": [(bbl, arm)], "ambiguous": bool}} for every named,
+    probed, present clip: the arms each clip may hold, from one alignment of the whole session (clips in card order,
+    a quad's logs' arms in dump order) instead of from the picks of the clips before it. One alignment per quad (the
+    craft in the log's name): two quads flown in turn and dumped at the end interleave in the clips, not end to end
+    (#41). Matches already in the session are fixed points (the clips between two of them align against the arms
+    between); arms another session holds, or a clip of this one the plan leaves out (a missing one), are left out."""
     s = sessions.load(session)
-    clips = sorted((v for v in s["videos"] if clip_order(v.get("name")) and not v.get("missing_since")), key=lambda v: v["name"])
+    clips = sorted((v for v in s["videos"] if clip_order(v.get("name")) and v.get("duration") and not v.get("missing_since")),
+                   key=lambda v: v["name"])
+    if not clips:
+        return {}
+    files = {v["file"] for v in clips}
     mine = {v.get("name") for v in s["videos"]} | {v["file"] for v in s["videos"]}
     other = {b: [(k, a) for k, a in ms if k not in mine] for b, ms in _log_matches(s, None, []).items()}
     elsewhere = {(b, a) for b, ms in other.items() for _, a in ms}
+    elsewhere |= {(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] not in files}   # a missing clip keeps its arm
     # a day's clips are numbered across all its sessions, so another session's matches bound this one's arms too: an
     # arm held by an earlier-named clip comes before them, one held by a later-named clip after (2026-10-02: a log
     # holding the day's first session's arms too)
-    first, last = (clips[0]["name"], clips[-1]["name"]) if clips else (None, None)
+    first, last = clips[0]["name"], clips[-1]["name"]
     bound = {b: (max((a for k, a in ms if clip_order(k) and k < first), default=None),
                  min((a for k, a in ms if clip_order(k) and k > last), default=None)) for b, ms in other.items()}
-    arms = []
+    chains: dict[str, list[dict]] = {}
     for b in sorted(s["blackbox"], key=_log_order):
         try:
             idx = blackbox.index_bbl(b)
         except FileNotFoundError:
             continue
         boot_of = {i: k for k, bt in enumerate(idx.get("boots", [])) for i in bt["arms"]}
-        cum = {}
+        cum, chain = {}, chains.setdefault(_craft(idx["file"]), [])
+        lo_b, hi_b = bound.get(idx["file"], (None, None))
         for a in idx["arms"]:
             if not (a.get("frames") and a.get("motors_spun", True)):
                 continue
             k = boot_of.get(a["index"])
-            lo_b, hi_b = bound.get(idx["file"], (None, None))
             if (idx["file"], a["index"]) not in elsewhere and (lo_b is None or a["index"] > lo_b) and (hi_b is None or a["index"] < hi_b):
-                arms.append({"bbl": idx["file"], "index": a["index"], "length": a["length"],
-                             "cum_before": round(cum.get(k, 0.0), 1) if k is not None else None})
+                chain.append({"bbl": idx["file"], "index": a["index"], "length": a["length"],
+                              "cum_before": round(cum.get(k, 0.0), 1) if k is not None else None})
             if k is not None:
                 cum[k] = cum.get(k, 0.0) + a["length"]
-    pos = {(a["bbl"], a["index"]): k for k, a in enumerate(arms)}
-    held = {}                                                # clip -> positions of its matches already in the session
-    for m in s["matches"]:
-        if (m["bbl"], m["arm"]) in pos:
-            held.setdefault(m["video"], []).append(pos[(m["bbl"], m["arm"])])
-    assigned = {v["file"]: list(held.get(v["file"], [])) for v in clips}
-    ambiguous = set()
-    seg, lo = [], -1
-    for k, v in enumerate(clips + [None]):                   # segments of clips without matches, between fixed points
-        if v is not None and not held.get(v["file"]):
-            seg.append(v)
+    chains = {c: arms for c, arms in chains.items() if arms}
+    out = {v["file"]: {"windows": {}, "ambiguous": False, "planned": []} for v in clips}
+    if not chains:
+        return out
+    held_any = {m["video"] for m in s["matches"]}
+    runs_of = {}
+    for v in clips:                                          # a clip that cannot be read has no runs, the rest plan on
+        if v["file"] in held_any:
             continue
-        hi = min(held[v["file"]]) if v is not None else len(arms)
-        if seg:
-            runs = [dict(r, clip=c["file"]) for c in seg for r in video_arms(read_timers(sessions.clip_path(session, c["file"]), fps), fps)]
-            window = arms[lo + 1:hi] if hi > lo else []
-            pairs, amb = plan_session_pairs(runs, window)
-            for ri, ai in pairs:
-                assigned[runs[ri]["clip"]].append(lo + 1 + ai)
-            ambiguous |= amb
-        seg = []
-        if v is not None:
-            lo = max(lo, max(held[v["file"]]))
-    out = {}
-    for k, v in enumerate(clips):
-        before = [p for c in clips[:k] if c["file"] not in ambiguous for p in assigned[c["file"]]]
-        after = [p for c in clips[k + 1:] if c["file"] not in ambiguous for p in assigned[c["file"]]]
-        lo_p, hi_p = max(before, default=-1) - PLAN_SLACK, min(after, default=len(arms)) + PLAN_SLACK
-        windows = {}
-        for b in s["blackbox"]:
-            mine = [a["index"] for a in arms if a["bbl"] == b]
-            if not mine:
+        try:
+            runs_of[v["file"]] = [dict(r, clip=v["file"]) for r in video_arms(read_timers(sessions.clip_path(session, v["file"]), fps), fps)]
+        except Exception:  # noqa: BLE001  (gone but not marked missing yet, still syncing)
+            runs_of[v["file"]] = []
+    for arms in chains.values():
+        pos = {(a["bbl"], a["index"]): k for k, a in enumerate(arms)}
+        held = {}                                            # clip -> positions of its matches in this chain
+        for m in s["matches"]:
+            if m["video"] in files and (m["bbl"], m["arm"]) in pos:
+                held.setdefault(m["video"], []).append(pos[(m["bbl"], m["arm"])])
+        fixed = {m["video"] for m in s["matches"] if m["video"] in files}   # matched in any chain: not planned again
+        assigned = {v["file"]: list(held.get(v["file"], [])) for v in clips}
+        ambiguous = set()
+        seg, lo = [], -1
+        for v in clips + [None]:                             # segments of clips without matches, between fixed points
+            if v is not None and v["file"] not in held:
+                if v["file"] not in fixed:
+                    seg.append(v)
                 continue
-            below = [a["index"] for p, a in enumerate(arms) if a["bbl"] == b and p <= lo_p]
-            above = [a["index"] for p, a in enumerate(arms) if a["bbl"] == b and p >= hi_p]
-            windows[b] = (max(below) if below else None, min(above) if above else None)
-        out[v["file"]] = {"windows": windows, "ambiguous": v["file"] in ambiguous,
-                          "planned": [(arms[p]["bbl"], arms[p]["index"]) for p in sorted(assigned[v["file"]])]}
+            hi = min(held[v["file"]]) if v is not None else len(arms)
+            if seg:
+                runs = [r for c in seg for r in runs_of.get(c["file"], [])]
+                pairs, amb = plan_session_pairs(runs, arms[lo + 1:hi] if hi > lo else [])
+                for ri, ai in pairs:
+                    assigned[runs[ri]["clip"]].append(lo + 1 + ai)
+                ambiguous |= amb
+            seg = []
+            if v is not None:
+                lo = max(lo, max(held[v["file"]]))
+        for k, v in enumerate(clips):
+            before = [p for c in clips[:k] for p in assigned[c["file"]]]
+            after = [p for c in clips[k + 1:] for p in assigned[c["file"]]]
+            lo_p, hi_p = max(before, default=-1) - PLAN_SLACK, min(after, default=len(arms)) + PLAN_SLACK
+            for b in {a["bbl"] for a in arms}:
+                below = [a["index"] for p, a in enumerate(arms) if a["bbl"] == b and p <= lo_p]
+                above = [a["index"] for p, a in enumerate(arms) if a["bbl"] == b and p >= hi_p]
+                out[v["file"]]["windows"][b] = (max(below) if below else None, min(above) if above else None)
+            out[v["file"]]["planned"] += [(arms[p]["bbl"], arms[p]["index"]) for p in sorted(assigned[v["file"]]) if v["file"] not in held]
+            out[v["file"]]["ambiguous"] |= v["file"] in ambiguous
+    for v in clips:
+        if v["file"] in fixed:
+            out[v["file"]]["planned"] = sorted({(m["bbl"], m["arm"]) for m in s["matches"] if m["video"] == v["file"]})
     return out
 
 

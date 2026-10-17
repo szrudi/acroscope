@@ -428,8 +428,12 @@ async function automatchSession() {
     }
     const got = [...(r.stdout || '').matchAll(/(\d+) matched/g)].reduce((t, m) => t + +m[1], 0);
     const clips = (r.stdout || '').split('\n').filter(l => / matched/.test(l)).length;
+    // clips the session plan left ambiguous, with only lengths to go by, get nothing written: say how many (#41)
+    const amb = (r.stderr || '').split('\n').filter(l => /left for a hand match/.test(l)).length;
+    const ambText = amb ? `${amb} ambiguous, left for a hand match` : '';
     const msg = r.code ? `automatch failed: ${(r.stderr || '').trim().split('\n').pop()}`
-      : clips ? `automatch: ${got} matched over ${clips} clip${clips === 1 ? '' : 's'}` : `automatch: ${(r.stderr || 'nothing to do').trim().split('\n').pop()}`;
+      : clips ? `automatch: ${got} matched over ${clips} clip${clips === 1 ? '' : 's'}` + (amb ? ` · ${ambText}` : '')
+      : amb ? `automatch: ${ambText}` : `automatch: ${(r.stderr || 'nothing to do').trim().split('\n').pop()}`;
     if (S.session === name) await refreshSession();
     say(msg);
   } catch (e) {
