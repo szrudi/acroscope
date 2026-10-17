@@ -8,7 +8,7 @@ version = 1
 tumble_dps = 1500            # a roll or pitch rate over this with no stick behind it is a tumble, not a trick
 stick_min = 40               # a flip or roll is asked for: the stick on its axis reaches this much, %
 flip_min_deg = 270           # a flip or a roll turns at least this much on its axis (the furthest it gets)...
-held_share = 0.85            # ...and keeps at least this share of it (a tumble rolls back and forth)
+held_share = 0.8             # ...and keeps at least this share of it (a tumble rolls back and forth; 10-14 m22 held 82 %)
 attempt_min_deg = 150        # short of a flip but past this: reported as an attempt...
 attempt_min_dps = 250        # ...if it was rolled or flipped at this rate at least (slower is a steep bank, not an attempt)
 roll_max_dur = 3.0           # a roll takes less than this, s: longer is a spiral or an orbit, not a roll
@@ -264,6 +264,7 @@ priority = 10
 examples = [
   { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 29.5, note = "roll +304 with yaw +197 (was 'right roll with yaw')" },
   { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 14, at = 100.8, note = "roll +273 with yaw +175, the first one Rudi planned" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 7, at = 7.0, note = "roll to 282 deg (232 net) with yaw 309 at 683 dps; tagged a roll by Rudi (m22), the first deploy's eval missed it at 85 %" },
 ]
 
 [[trick]]
