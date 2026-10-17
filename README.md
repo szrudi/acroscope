@@ -23,8 +23,8 @@ log: ⤓ downloads the .bbl (for Blackbox Explorer), ⇄ moves it to another ses
 matches here are deleted, the file stays). A log taken out of a session stays out: the refresh attaches a session's
 same-date logs only when it has none, and never one taken out by hand.
 
-The blackbox is a supporting layer: it shows which flights the clips cover and feeds the metrics. Deep log reading
-stays in the Betaflight App's blackbox viewer.
+The blackbox is a supporting layer: it shows which flights the clips cover and feeds the metrics and the trick
+engine (see *Tricks*). Deep log reading stays in the Betaflight App's blackbox viewer.
 
 ## Data layout
 
@@ -132,7 +132,14 @@ acroscope decode <bbl> <arm> [--csv]             cache one arm; --csv dumps it l
 acroscope match <session> <video> <bbl> <arm> <offset>   record a video <-> arm match
 acroscope metrics <session> <video> <from> <to> [--profile [STEP]] [--loop] [--orbit]
 acroscope metrics --arm <bbl>:<n> <from> <to>    same, in arm seconds without a session
-acroscope events <session> [video]               detector suggestions (flip, roll, powerloop, split-s, dive, crash, gyro-kick, motor-loss)
+acroscope events <session> [video]               the tricks file's suggestions (flip, roll, powerloop, split-s, dive, crash, gyro-kick, motor-loss)
+acroscope tricks [list|show <id>|features [kind]|check [id...]|explain <bbl>:<arm> [from] [to]|eval <session>] [--craft X]
+                                                 the tricks in force, one in full, the names a condition may use, the
+                                                 examples run against the logs, every window of an arm with each trick's
+                                                 verdict, the tricks scored against a session's tagged moments
+acroscope tricks layer | set <param> <value> | unset <param> | on <id> | off <id> | skill <name|none> [--craft X]
+                                                 the pilot's layer in the database, and one change to it (checked first)
+acroscope tricks export [file] | import <file> [--merge]   the layer as a tricks file to share, and one brought in
 acroscope frame <session> <video> <t>... [--osd] JPEGs of frames; --osd enlarges the OSD strip (arm timer, total, vbat)
 acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling several timestamped frames (one look for the agent)
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
@@ -170,6 +177,11 @@ POST /api/session/<s>/rename            {name}        POST /api/session/<s>/date
 POST /api/session/<s>/move              {video, to}   POST /api/session/<s>/merge  {into}
 DELETE /api/session/<s>/clip?video=     the clip into trash/<date>/<s>/, its matches and moments gone
 GET  /api/inbox                         batches and their status    POST /api/inbox/<batch>/retry
+GET  /api/tricks[?craft=]               the tricks in force: params with default and source, presets, crafts (declared
+                                        and seen in the logs), segments, tricks, the feature names per segment kind
+GET  /api/tricks/layer                  the pilot's layer kept in the database      POST /api/tricks/layer   {the layer, whole}
+DELETE /api/tricks/layer                                                            (a bad layer: 400 with the place named)
+GET  /api/tricks/export                 the layer as a tricks file (TOML)           POST /api/tricks/import  {text, mode: replace|merge}
 POST /api/scan   POST /api/import       GET /api/store
 ```
 
@@ -211,6 +223,88 @@ record `acroscope match <session> <clip> <bbl> <arm> <offset> --boot`, and refin
 The digit templates live in `acroscope/static/osd-templates.json`; `acroscope osd-learn scripts/osd-labels.json`
 rebuilds them when the OSD font or layout changes (label a few frames by eye first, and label the exact frame the
 reader sees: `acroscope osd` and the ASCII dumps in the labels workflow, not a JPEG from another extraction).
+
+## Tricks
+
+`acroscope events` runs the **trick engine** (`acroscope/tricks/`) over an arm: a handful of **segmenters** cut it
+into candidate windows (`rotation`: roll or pitch over a rate; `turn`: the nose's heading in the world turning one way;
+`sustained`: one axis past a rate with gaps allowed; `throttle_cut`; `impact`: a g spike with a gyro jolt; `kick`;
+`motor_drop`), each window is **measured** in the same
+vocabulary `metrics` uses (`rotation_deg.roll`, `throttle_pct.min`, `tilt_deg.max`, … plus what the scan itself found,
+and the arm's rate profile from the log's header, `arm.rates_max_dps.roll`), and the **tricks file** judges the windows.
+One entry per trick, in `acroscope/tricks/tricks.toml`:
+
+```toml
+[[trick]]
+id       = "split-s"
+tag      = "split-s"
+segment  = "fast-rotation"                       # [segment.fast-rotation]: kind = "rotation", threshold = 100, …
+when     = ["split_s_roll_min <= abs(rotation_deg.roll) <= split_s_roll_max",
+            "rotation_deg.pitch <= split_s_pull_deg", "throttle_pct.min < split_s_throttle_max"]
+title    = "split-S"
+why      = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} deg in {duration} s, throttle {throttle_pct.min} %"
+priority = 20                                    # wins over a plain roll on the same window
+examples = [{ log = "…20261007_212530….bbl", arm = 13, at = 29.0 }]
+```
+
+A trick that is a series of movements names `phases` instead of a segment: the split-S is a half roll that puts the
+quad over (a `rotation` window) and then, starting within a second, a pull-through (a `sustained` pitch-back window);
+a figure 8 is a turn one way then the other. Each phase judges its own window, the detection spans them all, and its
+texts see every phase's numbers (`p1.rotation_peak_deg.roll`).
+
+The numbers live in `[params]` (`flip_min_deg = 270`, `tumble_dps = 1500`, …), so tuning is editing a number, not
+code. Conditions and the `{…}` holes in titles use a small language of their own (comparisons chained like Python's,
+`and`/`or`/`not`, `abs min max round sqrt`), never Python: a tricks file from the internet cannot run code, and a
+name it uses that is not a feature of its segment kind is refused when the file loads, with the entry named.
+Precedence is in the file too: `priority` on one window, `suppress` across tricks (a crash swallows the rotation
+around it and a motor "dropping" at the impact; a powerloop is not also a back flip). A trick `requires` log
+fields (motor loss needs eRPM) and is skipped on a log without them. A feature the log cannot give is `none`, and a
+condition on it is simply false.
+
+**Your own tricks** are the **pilot's layer** over the shipped file, kept in the server's database: what the
+configuration page and `acroscope tricks set | unset | on | off | skill` write (`tricks layer` shows it,
+`GET/POST /api/tricks/layer` read and replace it, a bad one is refused with the place named and nothing changes). It
+has the same shape as a tricks file: `skill = "beginner"` or `"advanced"`, a preset of the numbers (a beginner's
+trick counts when it is nearly there; an advanced pilot's only when it is clean), your own `[params]` over the
+preset (a quad's own preset goes over your numbers, its own numbers over that), a `[[trick]]` with an existing `id` to turn one off (`enabled = false`) or change a field, a new `[[trick]]`
+of your own, and `[craft."OttoJr"]` sections keyed by the log header's craft name (matched in any case: Betaflight's `OttO` and
+`Otto` are one quad): properties (`size_mm`,
+`weight_g`, `hover_pct`: features too, as `craft.size_mm`, for conditions that scale with the quad), a `skill` for
+that quad, `[craft."OttoJr".params]`, segment options (`[craft."OttoJr".segment.impact] g = 5`) and trick
+overrides. `[craft.default]` is what any quad is unless its section says otherwise. A name that does not exist is
+refused, and the server judges by the new layer on the next look, no restart.
+
+**Sharing** is what the file is for: `acroscope tricks export [file]` (or the page's export) writes your layer as a
+tricks file others can read, `acroscope tricks import <file> [--merge]` (or the page's import) brings one in, whole
+or over your own, checked like everything else. `acroscope tricks` shows what is in force (`--craft OttoJr` for one
+quad).
+
+The player's `/config` page (see *Configuration page*) is the same library with knobs.
+
+`acroscope tricks` lists the tricks in force, `tricks show <id>` one in full, `tricks features [kind]` the names a
+condition may use, `tricks explain <bbl>:<arm> [from] [to]` every window with each trick's verdict (fired, the
+condition it failed, lost to a higher priority, suppressed by whom), `tricks check` runs every trick's `examples` (a
+real log, an arm, a moment) against the logs on the machine (a shared trick without an example is a guess), and
+`tricks eval <session>` scores the tricks against the session's tagged moments: per tag the moments found and
+missed (with the arm and time of each miss, ready for `explain`), and every detection on no tagged moment. The
+shipped tricks: flips, rolls and barrel rolls (by the furthest the rotation got, with the stick behind it, holding its
+direction; a trick that touched something and flew on is titled "ended with contact"), attempts short of a flip,
+split-S, powerloop, orbit (named by the side the quad slides to, with laps, bank and throttle against the craft's
+hover throttle), figure 8, dive (the quad flying before the cut, pointing down, not tumbling), impact and hard
+landing, gyro yaw kick, motor loss. Each event says which `trick` fired; its `numbers` are the window's measurement, the same snapshot `metrics`
+gives for that window, so an accepted suggestion stores it.
+
+## Configuration page
+
+`/config` (the ⚙ in the player's header) is where the pilot sets what the log cannot say, over the shipped tricks,
+in five tabs: **profile** (the skill preset, every number with the shipped default and where the value in force came
+from, filtered by number or trick), **drones** (the crafts seen in the logs by their header name: properties, a preset
+and numbers for that quad, its tricks on and off), **tricks** (the list in force with switches, each one's definition
+and examples, "check the examples" against the server's logs, and the tricks scored against a session's tagged
+moments: found, missed with arm and time, detections on no moment), **settings** (what this browser remembers, your layer
+exported as a tricks file or one imported, and the raw layer as the server keeps it) and **tags** (the tag manager, moved here from the player). Every change goes to
+the server as the whole layer, checked as a tricks file is; a refused one shows its message and changes nothing. The
+player's suggestions follow on the next look.
 
 ## Player
 

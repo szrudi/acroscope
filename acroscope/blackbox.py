@@ -23,10 +23,15 @@ from .config import BLACKBOX_DIR, NAMES_ONLY, cache
 logging.getLogger("orangebox").setLevel(logging.ERROR)
 
 HEADER_KEYS = ["Firmware revision", "Craft name", "looptime", "pid_process_denom", "P interval", "P ratio",
-               "rates", "rc_rates", "rc_expo", "rollPID", "pitchPID", "yawPID", "gyro_notch1_hz", "motorOutput",
-               "acc_1G", "vbat_scale", "gyro_scale"]
+               "rates_type", "rates", "rc_rates", "rc_expo", "rate_limits", "quick_rates_rc_expo", "thr_mid", "thr_expo", "thr_hover", "rollPID", "pitchPID", "yawPID",
+               "gyro_notch1_hz", "motorOutput", "acc_1G", "vbat_scale", "gyro_scale"]
 MAGIC = b"ACRO1\n"
-INDEX_VERSION = 2
+INDEX_VERSION = 3        # 3: rates_type read and the rate profile (max and centre rate per axis) in every arm's meta (#22)
+
+# Betaflight's rate types (`rates_type`, since 4.2): what `rates`, `rc_rates` and `rc_expo` mean.
+RATES_TYPES = ["betaflight", "raceflight", "kiss", "actual", "quick"]
+SETPOINT_RATE_LIMIT = 1998.0
+RC_RATE_INCREMENTAL = 14.54
 
 
 def resolve_bbl(name: str) -> Path:
@@ -40,6 +45,50 @@ def resolve_bbl(name: str) -> Path:
     if len(hits) != 1:
         raise FileNotFoundError(f"{name}: {len(hits)} blackbox files match (need exactly 1)")
     return hits[0]
+
+
+def rates(headers: dict) -> dict | None:
+    """The rate profile the arm was flown on, from its header: {type, max_dps: [r, p, y], centre_dps: [r, p, y]}.
+    `max_dps` is the rate at full stick, `centre_dps` the slope at stick centre per full stick (what a small
+    correction does). Ported from Betaflight's rc.c (applyBetaflightRates and friends, 4.4); expo never moves the
+    full-stick rate. None when the header has no rates_type (a log decoded before it was kept: re-decode) or
+    the values are not three per axis."""
+    try:
+        if not 0 <= int(headers["rates_type"]) < len(RATES_TYPES):
+            return None
+        kind = RATES_TYPES[int(headers["rates_type"])]
+        rc, sup, expo = ([float(v) for v in headers[k]] for k in ("rc_rates", "rates", "rc_expo"))
+        assert len(rc) == len(sup) == len(expo) == 3
+        limits = [float(v) for v in headers.get("rate_limits") or [SETPOINT_RATE_LIMIT] * 3]
+        assert len(limits) == 3
+    except (KeyError, IndexError, TypeError, ValueError, AssertionError):
+        return None
+    mx, ce = [], []
+    for r, s, e, lim in zip(rc, sup, expo, limits):
+        e /= 100
+        if kind == "betaflight":
+            rr = r / 100
+            if rr > 2:
+                rr += RC_RATE_INCREMENTAL * (rr - 2)
+            top = 200 * rr / max(1 - s / 100, 0.01)
+            mid = 200 * rr * (1 - e)
+        elif kind == "raceflight":
+            top = 10 * r * (1 + s / 100)
+            mid = 10 * r * (1 - e)
+        elif kind == "kiss":
+            top = 2000 / max(1 - s / 100, 0.01) * r / 1000
+            mid = 2000 * (1 - e) * r / 1000
+        elif kind == "actual":
+            mid = r * 10
+            top = max(s * 10, mid)
+        else:                                       # quick: expo shapes the centre only with quick_rates_rc_expo on
+            mid = r * 2
+            top = max(s * 10, mid)
+            if int(headers.get("quick_rates_rc_expo") or 0):
+                mid *= 1 - e
+        mx.append(round(min(top, lim, SETPOINT_RATE_LIMIT), 1))
+        ce.append(round(mid, 1))
+    return {"type": kind, "max_dps": mx, "centre_dps": ce}
 
 
 def bbl_date(path: Path) -> str | None:
@@ -167,7 +216,7 @@ def _decode(path: Path, index: int):
         "vbat_start": round(cols["vbatLatest"][0] / 100, 2) if "vbatLatest" in cols else None,
         "vbat_end": round(cols["vbatLatest"][-1] / 100, 2) if "vbatLatest" in cols else None,
         "vbat_min": round(min(cols["vbatLatest"]) / 100, 2) if "vbatLatest" in cols else None,
-        "motors_spun": spun, "disarm_reason": disarm, "headers": headers, "events": events,
+        "motors_spun": spun, "disarm_reason": disarm, "headers": headers, "events": events, "rates": rates(headers),
     }
     if truncated:
         meta["error"] = trunc_err
@@ -236,7 +285,7 @@ def index_bbl(name: str, force: bool = False, progress=None, cached_only: bool =
         if meta["frames"]:
             _save(meta, t, cols, _bin_path(path.stem, i))
         arms.append({k: v for k, v in meta.items() if k not in ("fields", "events", "bbl", "file")}
-                    | {"headers": {k: meta["headers"].get(k) for k in ("pitchPID", "rollPID", "yawPID", "gyro_notch1_hz")}})
+                    | {"headers": {k: meta["headers"].get(k) for k in ("Craft name", "pitchPID", "rollPID", "yawPID", "gyro_notch1_hz")}})
     idx = {"v": INDEX_VERSION, "file": path.name, "stem": path.stem, "date": bbl_date(path), "arms": arms, "boots": boots(arms)}
     idx_path.write_text(json.dumps(idx, indent=1))
     return idx
@@ -272,9 +321,11 @@ def boots(arms: list[dict]) -> list[dict]:
 
 
 def load_arm(name: str, index: int) -> Arm:
+    """One arm from the cache; a log whose index is missing or from an older version is decoded first, so the arm
+    carries what the current version writes into its meta (the rates since v3)."""
     path = resolve_bbl(name)
     bp = _bin_path(path.stem, index)
-    if not bp.exists():
+    if not bp.exists() or index_bbl(name, cached_only=True) is None:
         index_bbl(name)
     if not bp.exists():
         raise FileNotFoundError(f"{path.name} arm {index}: no frames decoded")

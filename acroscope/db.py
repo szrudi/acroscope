@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS batch_clips (
 CREATE TABLE IF NOT EXISTS tag_categories (name TEXT PRIMARY KEY, color TEXT NOT NULL, pos INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS tags (
   name TEXT PRIMARY KEY, category TEXT NOT NULL REFERENCES tag_categories(name), color TEXT, pos INTEGER NOT NULL);
+-- what the pilot set in the player, as JSON documents: the tricks layer under 'tricks' (#45)
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
 """
 
 # The tag vocabulary a new database starts with: categories with a colour, tags with the colour the player used
@@ -515,6 +517,33 @@ class Db:
         if used:
             raise ValueError(f"category {name} still has tags: {', '.join(used)}")
         return self.c.execute("DELETE FROM tag_categories WHERE name = ?", (name,)).rowcount > 0
+
+    # ---- settings ------------------------------------------------------------------------------------------------
+
+    def setting(self, key: str) -> dict | None:
+        """{value, updated_at} of a setting, or None."""
+        r = self.c.execute("SELECT value, updated_at FROM settings WHERE key = ?", (key,)).fetchone()
+        return {"value": json.loads(r["value"]), "updated_at": r["updated_at"]} if r else None
+
+    def set_setting(self, key: str, value, etag: str | None = None) -> dict:
+        """Store a setting. With `etag` (a hash of the document the writer started from, tricks.layer_etag), the
+        write is refused when the stored document is not that one any more: two writers never lose each other's
+        changes silently."""
+        if etag is not None:
+            from .tricks import layer_etag
+            row = self.setting(key)
+            if layer_etag(row["value"] if row else None) != etag:
+                raise ValueError(f"{key}: changed since you loaded it; load it again and redo the change")
+        stamp = now()
+        self.c.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                       (key, json.dumps(value, allow_nan=False), stamp))
+        self.c.commit()
+        return {"value": value, "updated_at": stamp}
+
+    def delete_setting(self, key: str) -> bool:
+        n = self.c.execute("DELETE FROM settings WHERE key = ?", (key,)).rowcount
+        self.c.commit()
+        return n > 0
 
     def tag_usage(self, session: str | None = None) -> dict:
         """{tag: number of moments carrying it}, over one session or all."""

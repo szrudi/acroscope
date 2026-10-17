@@ -1,0 +1,358 @@
+# acroscope's tricks: what `acroscope events` looks for, one entry per trick (acroscope/tricks/library.py has the
+# format, `acroscope tricks features` the names a condition may use). These entries reproduce the detectors that
+# were code before #22, tuned on the Air65 logs of October 2026. Numbers to tune are in [params]; each entry's
+# `examples` are real moments `acroscope tricks check` verifies.
+version = 1
+
+[params]
+tumble_dps = 1500            # a roll or pitch rate over this is a tumble, not a trick, unless something was hit (the jolt)
+stick_min = 40               # a flip or roll is asked for: the stick on its axis reaches this much, %
+flip_min_deg = 270           # a flip or a roll turns at least this much on its axis (the furthest it gets)...
+held_share = 0.8             # ...and keeps at least this share of it (a tumble rolls back and forth; 10-14 m22 held 82 %)
+attempt_min_deg = 150        # short of a flip but past this: reported as an attempt...
+attempt_min_dps = 250        # ...if it was rolled or flipped at this rate at least (slower is a steep bank, not an attempt)
+roll_max_dur = 3.0           # a roll takes less than this, s: longer is a spiral or an orbit, not a roll
+yaw_share = 0.5              # yaw over this share of the main rotation makes it a flip "with yaw"
+barrel_off_axis_deg = 90     # a roll with this much yaw or pitch in it is a barrel roll
+contact_g = 4.0              # a trick with the accelerometer over this in it ended with contact
+split_s_roll_min = 120       # a split-S: a half roll in this band (the furthest it gets)...
+split_s_roll_max = 240
+split_s_over_deg = 90        # ...that puts the quad at least this far over (tilt, 90 = knife edge)...
+split_s_pull_deg = -50       # ...then a pull through, starting within a second, of at least this much pitch back...
+split_s_out_deg = 75         # ...coming out under this tilt
+loop_min_deg = 300           # a powerloop pitches back at least this much...
+loop_min_dur = 1.5           # ...over at least this long, s (faster is a back flip)
+dive_min_tilt = 40           # a dive points down at least this much on average, deg from level
+dive_flying_pct = 25         # the throttle in the 2 s before a dive: the quad was flying, not armed on the ground
+orbit_min_deg = 300          # an orbit turns the heading at least this much the same way (a three-quarter turn is a turn)...
+orbit_min_dur = 3.0          # ...over at least this long, s
+figure8_min_deg = 150        # a figure 8: a turn between this much...
+figure8_max_deg = 450        # ...and this much one way, then the other way
+landing_window_s = 2.5       # an impact this close to the arm's end is how most arms end: a landing, not a crash
+
+# Presets: `skill = "beginner"` in your layer (the configuration page, or `acroscope tricks skill beginner`) puts one
+# over these defaults, under your own numbers; a quad's own preset goes over your numbers too. A beginner's trick
+# counts when it is nearly there; an advanced pilot's only when it is clean.
+[skill.beginner]
+flip_min_deg = 240           # a 250 deg roll was meant as a roll
+attempt_min_deg = 120        # and a 130 deg one was an attempt
+yaw_share = 0.7              # some yaw creeping in is still a plain flip
+barrel_off_axis_deg = 120
+split_s_pull_deg = -40       # a sloppier pull through
+split_s_out_deg = 85
+dive_min_tilt = 30
+loop_min_deg = 270
+orbit_min_deg = 240          # two thirds of a lap was an orbit try
+
+[skill.advanced]
+flip_min_deg = 300
+attempt_min_deg = 200
+yaw_share = 0.4
+barrel_off_axis_deg = 70
+split_s_roll_min = 150
+split_s_roll_max = 210
+split_s_pull_deg = -80
+split_s_out_deg = 60
+dive_min_tilt = 50
+loop_min_deg = 330
+orbit_min_deg = 360
+
+# What a quad is unless its own section says otherwise (`[craft."OttoJr"]` in your layer, by the log header's
+# Craft name, any case). The names are features too: a condition may read craft.size_mm, craft.weight_g, craft.hover_pct.
+[craft.default]
+size_mm = 65                 # prop-to-prop, mm: a 65 mm whoop loops faster and lower than a 5" (220)
+weight_g = 25                # all-up with the battery, g
+hover_pct = 35               # the throttle that holds height, %
+
+[segment.fast-rotation]      # stretches where roll or pitch runs over 100 deg/s, gaps under 0.3 s bridged
+kind = "rotation"
+threshold = 100
+min_dur = 0.3
+gap = 0.3
+
+[segment.pitch-back]         # pitching back steadily (faster than 40 deg/s), gaps under 0.6 s bridged
+kind = "sustained"
+axis = "pitch"
+rate = -40
+gap = 0.6
+
+[segment.throttle-cut]       # throttle under 15 % for 1.2 s or more (a beginner dives with a little on); blips under 0.3 s do not end it
+kind = "throttle_cut"
+below = 15
+min_dur = 1.2
+blip = 0.3
+
+[segment.turn]               # the nose's heading in the world turning one way faster than 20 deg/s, pauses under 1.5 s bridged
+kind = "turn"
+rate = 20
+gap = 1.5
+min_dur = 2.0
+
+[segment.impact]             # over 4 g with the raw gyro jolting over 500 deg/s within 50 ms: contact
+kind = "impact"
+
+[segment.yaw-kick]           # the raw yaw over 400 deg/s, twice roll and pitch, with the yaw stick centred
+kind = "kick"
+
+[segment.motor-drop]         # one motor's eRPM halves within 50 ms at full command and stays down 0.4 s
+kind = "motor_drop"
+
+# ---- crashes ----------------------------------------------------------------------------------------------------
+
+[[trick]]
+id = "crash"
+tag = "crash"
+segment = "impact"
+when = ["to_arm_end_s >= landing_window_s"]
+title = "impact"
+why = "{impact_g:.1f} g with {jolt_dps:.0f} dps gyro jolt at arm {arm_t:.2f} s"
+priority = 30
+# a motor "dropping" at the impact is the impact. A flip or roll that touched something mid-flight and flew on is
+# still the trick (titled "ended with contact") next to this (#20)
+suppress = [{ tags = ["motor-loss"], within = 0.5 }]
+examples = [{ log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 18, at = 64.7, note = "4.4 g mid-flight, the arm goes on for 38 s" }]
+
+[[trick]]
+id = "hard-landing"
+tag = "crash"
+segment = "impact"
+when = ["to_arm_end_s < landing_window_s"]
+title = "hard landing (arm end)"
+why = "{impact_g:.1f} g with {jolt_dps:.0f} dps gyro jolt at arm {arm_t:.2f} s of {arm.length:.1f}"
+priority = 30
+# the tumble across the final impact is the landing, not a trick; a trick that ended before it stays
+suppress = [{ tags = ["flip", "roll", "barrel-roll", "split-s"], margin = 0 }, { tags = ["motor-loss"], within = 0.5 }]
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 71.4, note = "the ground 1 s after the motor loss, 0.6 s before the arm ends (the 10-07 pin)" },
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 11, at = 7.4, note = "the 10-07 011 smoke check: hard landing at 1:24.4 of the clip" },
+]
+
+# ---- rotations --------------------------------------------------------------------------------------------------
+
+[[trick]]
+id = "powerloop"
+tag = "powerloop"
+segment = "pitch-back"
+when = ["duration >= loop_min_dur", "rotation_deg.pitch <= -loop_min_deg", "peak_rate_dps.pitch <= tumble_dps", "not (motor_min == 0)"]
+title = "powerloop"
+why = "{rotation_deg.pitch} deg pitch in {duration} s, peak {peak_rate_dps.pitch} dps, throttle inverted {throttle_inverted_pct.mean} %"
+priority = 20
+suppress = [{ tags = ["flip", "roll", "barrel-roll", "split-s"], margin = 0 }]     # a slow loop is not also a back flip
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 13, at = 29.0, note = "27.0-31.7, -385 deg" },
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 13, at = 41.5, note = "39.8-43.9" },
+]
+
+[[trick]]
+id = "split-s"
+tag = "split-s"
+# a half roll that puts the quad over, then the nose pulled through and out (#31: a beginner's split-S is sloppy and
+# keeps the throttle on; the old rule wanted one window at low throttle)
+phases = [
+  { segment = "fast-rotation", when = [
+      "stick_pct_max.roll >= stick_min",
+      "axis == 'roll'",
+      "split_s_roll_min <= abs(rotation_peak_deg.roll) <= split_s_roll_max",
+      "tilt_deg.max >= split_s_over_deg",
+  ] },
+  { segment = "pitch-back", within = 1.0, when = ["rotation_deg.pitch <= split_s_pull_deg", "tilt_deg.end <= split_s_out_deg"] },
+]
+title = "split-S"
+why = "half roll {p1.rotation_peak_deg.roll:+} deg over to {p1.tilt_deg.max} deg, pulled through {p2.rotation_deg.pitch} deg of pitch out to {p2.tilt_deg.end} deg, in {duration} s; throttle {throttle_pct.min}-{throttle_pct.max} %"
+priority = 20                # its half roll is not also a roll attempt
+suppress = [{ tags = ["roll", "flip"], margin = 0 }]
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 8, at = 30.5, note = "a beginner's: half roll at 358 dps, pulled through 60 deg, throttle 61-88 %" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 8, at = 40.6 },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 11, at = 34.0 },
+]
+
+[[trick]]
+id = "flip"
+tag = "flip"
+segment = "fast-rotation"
+# roll in a flip does not unmake it (a forward flip that drifted stays a forward flip, as before #22); yaw past
+# yaw_share makes it the "with yaw" entry
+when = [
+  "stick_pct_max.pitch >= stick_min",
+  "rotation_deg.pitch * rotation_peak_deg.pitch > 0 and abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "not (motor_min == 0)",
+  "axis == 'pitch'",
+  "abs(rotation_peak_deg.pitch) >= flip_min_deg",
+  "abs(rotation_peak_deg.yaw) <= yaw_share * abs(rotation_peak_deg.pitch)",
+]
+title = "{direction} flip{if(acc_g.max >= contact_g, ', ended with contact', '')}"
+why = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} / yaw {rotation_deg.yaw:+} deg in {duration} s, peak {max(peak_rate_dps.roll, peak_rate_dps.pitch)} dps, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 10
+examples = [{ log = "BTFL_BLACKBOX_LOG_OTTO_20261011_184757_BETAFPVG473_V2.bbl", arm = 2, at = 64.2, note = "a forward flip that brushed furniture 0.2 s in and completed (#20)" }]
+
+[[trick]]
+id = "flip-with-yaw"
+tag = "flip"
+segment = "fast-rotation"
+when = [
+  "stick_pct_max.pitch >= stick_min",
+  "rotation_deg.pitch * rotation_peak_deg.pitch > 0 and abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "not (motor_min == 0)",
+  "axis == 'pitch'",
+  "abs(rotation_peak_deg.pitch) >= flip_min_deg",
+  "abs(rotation_peak_deg.yaw) > yaw_share * abs(rotation_peak_deg.pitch)",
+]
+title = "{direction} flip with yaw{if(acc_g.max >= contact_g, ', ended with contact', '')}"
+why = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} / yaw {rotation_deg.yaw:+} deg in {duration} s, peak {max(peak_rate_dps.roll, peak_rate_dps.pitch)} dps, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 10
+
+[[trick]]
+id = "flip-attempt"
+tag = "flip"
+segment = "fast-rotation"
+when = [
+  "stick_pct_max.pitch >= stick_min",
+  "rotation_deg.pitch * rotation_peak_deg.pitch > 0 and abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "not (motor_min == 0)",
+  "axis == 'pitch'",
+  "attempt_min_deg <= abs(rotation_peak_deg.pitch) < flip_min_deg",
+  "peak_rate_dps.pitch >= attempt_min_dps",
+  "duration <= roll_max_dur",
+]
+title = "{direction} flip attempt, {abs(rotation_peak_deg.pitch)} deg{if(acc_g.max >= contact_g, ', ended with contact', '')}"
+why = "pitch got to {rotation_peak_deg.pitch:+} deg (net {rotation_deg.pitch:+}) in {duration} s, peak {peak_rate_dps.pitch} dps, stick {stick_pct_max.pitch} %, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 5
+
+[[trick]]
+id = "roll"
+tag = "roll"
+segment = "fast-rotation"
+when = [
+  "stick_pct_max.roll >= stick_min",
+  "rotation_deg.roll * rotation_peak_deg.roll > 0 and abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "not (motor_min == 0)",
+  "axis == 'roll'",
+  "abs(rotation_peak_deg.roll) >= flip_min_deg",
+  "max(abs(rotation_peak_deg.yaw), abs(rotation_peak_deg.pitch)) < barrel_off_axis_deg",
+  "duration <= roll_max_dur",
+]
+title = "{direction} roll{if(acc_g.max >= contact_g, ', ended with contact', '')}"
+why = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} / yaw {rotation_deg.yaw:+} deg in {duration} s, peak {max(peak_rate_dps.roll, peak_rate_dps.pitch)} dps, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 10
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 1, at = 6.5, note = "right roll, clip 003 1:32.7 (offset 86.5)" },
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 1, at = 8.3, note = "left roll, 1:34.5" },
+  { log = "BTFL_BLACKBOX_LOG_OTTO_20261011_184757_BETAFPVG473_V2.bbl", arm = 2, at = 72.3, note = "a right roll ending on the floor, the flight goes on (#20)" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 15, from = 40.0, to = 46.0, absent = true, note = "a steep nose-down spiral: body roll 620 deg over 4.8 s, never inverted (#31)" },
+]
+
+[[trick]]
+id = "barrel-roll"
+tag = "barrel-roll"
+segment = "fast-rotation"
+# a roll with a lot of yaw or pitch in it: the nose draws a circle (#31: Rudi's first barrel roll, 10-14 016 2:00).
+# Never with contact: a rotation on several axes with an impact in it is a tumble
+when = [
+  "stick_pct_max.roll >= stick_min",
+  "rotation_deg.roll * rotation_peak_deg.roll > 0 and abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
+  "max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "not (motor_min == 0)",
+  "acc_g.max < contact_g",
+  "axis == 'roll'",
+  "abs(rotation_peak_deg.roll) >= flip_min_deg",
+  "max(abs(rotation_peak_deg.yaw), abs(rotation_peak_deg.pitch)) >= barrel_off_axis_deg",
+  "duration <= roll_max_dur",
+]
+title = "{direction} barrel roll"
+why = "roll {rotation_deg.roll:+} / pitch {rotation_deg.pitch:+} / yaw {rotation_deg.yaw:+} deg in {duration} s, peak {max(peak_rate_dps.roll, peak_rate_dps.pitch)} dps, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 10
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 29.5, note = "roll +304 with yaw +197 (was 'right roll with yaw')" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 14, at = 100.8, note = "roll +273 with yaw +175, the first one Rudi planned" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 7, at = 7.0, note = "roll to 282 deg (232 net) with yaw 309 at 683 dps; tagged a roll by Rudi (m22), the first deploy's eval missed it at 85 %" },
+]
+
+[[trick]]
+id = "roll-attempt"
+tag = "roll"
+segment = "fast-rotation"
+when = [
+  "stick_pct_max.roll >= stick_min",
+  "rotation_deg.roll * rotation_peak_deg.roll > 0 and abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
+  "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
+  "not (motor_min == 0)",
+  "axis == 'roll'",
+  "attempt_min_deg <= abs(rotation_peak_deg.roll) < flip_min_deg",
+  "abs(rotation_peak_deg.pitch) < barrel_off_axis_deg",
+  "peak_rate_dps.roll >= attempt_min_dps",
+  "duration <= roll_max_dur",
+]
+title = "{direction} roll attempt, {abs(rotation_peak_deg.roll)} deg{if(abs(rotation_peak_deg.yaw) >= barrel_off_axis_deg, ' with yaw', '')}{if(acc_g.max >= contact_g, ', ended with contact', '')}"
+why = "roll got to {rotation_peak_deg.roll:+} deg (net {rotation_deg.roll:+}) in {duration} s, peak {peak_rate_dps.roll} dps, stick {stick_pct_max.roll} %, throttle {throttle_pct.min}-{throttle_pct.mean} %"
+priority = 5
+examples = [{ log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 5, at = 100.4, note = "roll 164 with yaw 190, tagged a roll by Rudi (#31)" }]
+
+# ---- orbits -----------------------------------------------------------------------------------------------------
+
+[[trick]]
+id = "orbit"
+tag = "orbit"
+segment = "turn"
+when = ["abs(turn_deg) >= orbit_min_deg", "duration >= orbit_min_dur"]
+title = "orbit sliding {side}, {laps} laps"
+why = "heading {turn_deg:+} deg in {duration} s ({turn_rate_dps:+} dps, + = anticlockwise from above), bank {tilt_deg.mean} deg, throttle {throttle_pct.mean} % against about {craft.hover_pct} % level"
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 1, at = 120.0, note = "about 2 laps sliding right around the small tree (m06)" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 4, at = 14.0, note = "sliding left, 1.3 laps (m43)" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 15, at = 27.0, note = "a nose-forward orbit: body yaw 451 but the heading turned 901 (m32)" },
+]
+
+[[trick]]
+id = "figure-8"
+tag = "orbit"
+phases = [
+  { segment = "turn", when = ["figure8_min_deg <= abs(turn_deg) <= figure8_max_deg"] },
+  { segment = "turn", within = 2.0, when = ["figure8_min_deg <= abs(turn_deg) <= figure8_max_deg", "side != p1.side"] },
+]
+title = "figure 8: {p1.side} then {p2.side}"
+why = "turned {p1.turn_deg:+} deg then {p2.turn_deg:+} in {duration} s, bank {tilt_deg.mean} deg, throttle {throttle_pct.mean} %"
+priority = 5
+suppress = [{ tags = ["orbit"], margin = 0 }]     # its two halves are not also two orbits
+
+# ---- throttle ---------------------------------------------------------------------------------------------------
+
+[[trick]]
+id = "dive"
+tag = "dive"
+segment = "throttle-cut"
+# a cut with the quad flying before it, pointing down, and not tumbling: a cut from the arm's first frame is the quad
+# armed on the ground, one with the gyro at thousands of deg/s is a crash tumble (#31: 51 such "dives" on 8 sessions)
+when = ["throttle_before_pct >= dive_flying_pct", "tilt_deg.mean >= dive_min_tilt", "max(peak_rate_dps.roll, peak_rate_dps.pitch, peak_rate_dps.yaw) <= tumble_dps"]
+title = "dive"
+why = "throttle under {opt.below} % for {duration} s (from {throttle_before_pct} % before), tilt {tilt_deg.min}-{tilt_deg.max} deg"
+examples = [
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 14.0 },
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 47.0 },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 5, at = 67.0, note = "a dive with 11 % throttle kept on (m18)" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 6, from = 0, to = 12, absent = true, note = "upside down in the grass after a crash, throttle off (#31)" },
+  { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 17, from = 0, to = 26, absent = true, note = "armed on the ground, throttle off for 25 s" },
+]
+
+# ---- technical --------------------------------------------------------------------------------------------------
+
+[[trick]]
+id = "gyro-kick"
+tag = "gyro-kick"
+segment = "yaw-kick"
+when = []
+title = "gyro yaw kick"
+why = "raw yaw {raw_yaw_dps} dps with the yaw stick centred"
+
+[[trick]]
+id = "motor-loss"
+tag = "motor-loss"
+segment = "motor-drop"
+when = []
+title = "motor {motor} power loss"
+why = "motor {motor} eRPM {erpm_before:.0f} -> {erpm_after:.0f} in {opt.window * 1000:.0f} ms at full command, held {opt.hold} s, no impact"
+examples = [{ log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 70.4, note = "motor 1, the repaired one; the 10-07 pin" }]

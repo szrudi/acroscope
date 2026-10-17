@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import blackbox, events as ev, ingest, metrics, sessions, video
+from . import blackbox, ingest, metrics, sessions, tricks, video
 from .config import BLACKBOX_DIR, CACHE_DIR, VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
@@ -29,7 +29,7 @@ _busy_lock = threading.Lock()
 SCAN_EVERY = 300                 # seconds between background walks of the data dir
 # CLI commands a client may run here (they need the clips, the logs or the cache, which only the server has);
 # each runs in a child process, so the reader's pure-Python work never holds this process's GIL
-PROXIED = {"arms", "decode", "metrics", "events", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach", "tag", "recut"}
+PROXIED = {"arms", "decode", "metrics", "events", "tricks", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach", "tag", "recut"}
 INBOX_EVERY = 20                 # seconds between looks at inbox/ for a complete batch
 
 
@@ -78,6 +78,8 @@ def _check_proxied(args: list[str]) -> None:
         for x in v if isinstance(v, list) else [v]:
             if isinstance(x, str) and "/" in x:
                 raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
+    if args[0] == "tricks" and len(args) > 1 and args[1] in ("export", "import"):
+        raise ValueError("tricks export/import read and write a file on the client: not through the server")
 
 
 def run_cli(args: list[str], timeout: float = 1800) -> dict:
@@ -226,8 +228,10 @@ def _under(root: Path, *parts: str) -> Path:
 
 
 @lru_cache(maxsize=64)
-def _events(bbl: str, arm: int) -> list[dict]:
-    return ev.detect(blackbox.load_arm(bbl, arm))
+def _events(bbl: str, arm: int, stamp: tuple) -> list[dict]:
+    """The suggestions for an arm under the tricks in force (`stamp`: tricks.fingerprint(), the shipped file's mtime
+    and the pilot's layer, so a change shows on the next look without a restart)."""
+    return tricks.detect(blackbox.load_arm(bbl, arm))
 
 
 @lru_cache(maxsize=16)
@@ -284,6 +288,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         if self.command != "HEAD":           # a HEAD with a body corrupts the next request on a keep-alive connection
+            self.wfile.write(body)
+
+    def _text(self, text: str, filename: str | None = None, code=200):
+        """A text body made here (a tricks file exported), as a download when `filename` is given."""
+        body = text.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        if self.command != "HEAD":
             self.wfile.write(body)
 
     def _file(self, path: Path, ctype=None, cache="no-store", download=False):
@@ -349,6 +366,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not parts:
                 return self._file(STATIC / "index.html", "text/html; charset=utf-8")
+            if parts == ["config"]:                                 # the configuration page (#45)
+                return self._file(STATIC / "config.html", "text/html; charset=utf-8")
             if parts[0] == "static" and 2 <= len(parts) <= 3:          # static/<file> or static/brand/<file>
                 return self._file(_under(STATIC, *parts[1:]), cache="max-age=3600")
             if parts[0] == "video" and len(parts) == 3:
@@ -377,6 +396,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"store": repr(sessions.store()), "data": str(VIDEOS_DIR.parent)})
             if parts == ["api", "tags"]:
                 return self._json(sessions.store().tags())
+            if parts == ["api", "tricks"]:
+                return self._json(tricks.describe(tricks.library(), q.get("craft") or None))
+            if parts == ["api", "tricks", "layer"]:
+                row = sessions.store().setting(tricks.LAYER_KEY)
+                return self._json({"layer": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None,
+                                   "etag": tricks.layer_etag(row["value"] if row else None)})
+            if parts == ["api", "tricks", "export"]:                   # the layer as a tricks file: what is shared
+                row = sessions.store().setting(tricks.LAYER_KEY)
+                return self._text(tricks.export_toml(row["value"] if row else None), "acroscope-tricks.toml")
             if parts == ["api", "tag-usage"]:
                 return self._json(sessions.store().tag_usage(q.get("session")))
             if parts[:2] == ["api", "session"] and len(parts) >= 3:
@@ -414,7 +442,7 @@ class Handler(BaseHTTPRequestHandler):
                     for m in s["matches"]:
                         if (q.get("video") and m["video"] != q["video"]) or not _indexed(m["bbl"]):
                             continue
-                        for e in _events(m["bbl"], m["arm"]):
+                        for e in _events(m["bbl"], m["arm"], tricks.fingerprint()):
                             rows.append({**e, "video": m["video"], "start": round(e["arm_from"] + m["offset"], 2), "end": round(e["arm_to"] + m["offset"], 2)})
                     return self._json(rows)
                 if parts[3] == "series":
@@ -448,7 +476,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def do_POST(self):
-        parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/") if p]
+        u = urlparse(self.path)
+        parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
             if parts == ["api", "scan"]:
                 return self._json(sessions.scan())
@@ -466,6 +496,25 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "tags"]:
                 b = self._body()
                 return self._json(sessions.store().set_tag(b["name"], b["category"], b.get("color")))
+            if parts == ["api", "tricks", "layer"]:
+                b = self._body()                                  # the pilot's layer, whole: checked as the loader checks a file
+                if not isinstance(b, dict):
+                    return self._json({"error": "the layer is a table"}, 400)
+                tricks.check_layer(b)                             # a LibraryError is a ValueError: 400 with the place named
+                if q.get("etag"):                                 # what the writer started from: another writer's change in between is a 409
+                    cur = sessions.store().setting(tricks.LAYER_KEY)
+                    if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
+                        return self._json({"error": "the layer changed since you loaded it (someone else saved); it was loaded again, redo your change"}, 409)
+                row = sessions.store().set_setting(tricks.LAYER_KEY, b)
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
+            if parts == ["api", "tricks", "import"]:                   # a tricks file's text as the layer, whole or merged over it
+                b = self._body()
+                if not isinstance(b, dict) or not isinstance(b.get("text"), str):
+                    return self._json({"error": "import takes {text: the tricks file, mode: replace|merge}"}, 400)
+                current = sessions.store().setting(tricks.LAYER_KEY)
+                table = tricks.import_table(b["text"], current["value"] if current else None, b.get("mode", "replace"))
+                row = sessions.store().set_setting(tricks.LAYER_KEY, table)
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
             if parts == ["api", "tag-categories"]:
                 b = self._body()
                 return self._json(sessions.store().set_category(b["name"], b.get("color")))
@@ -529,6 +578,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"removed": n})
             if parts[:2] == ["api", "tags"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})
+            if parts == ["api", "tricks", "layer"]:
+                return self._json({"removed": sessions.store().delete_setting(tricks.LAYER_KEY)})
             if parts[:2] == ["api", "tag-categories"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_category(parts[2])})
             return self._json({"error": "not found"}, 404)
@@ -540,9 +591,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
 
+def layer_from_store():
+    """The pilot's tricks layer from the database, for tricks.LAYER_SOURCE."""
+    row = sessions.store().setting(tricks.LAYER_KEY)
+    return (row["value"], row["updated_at"]) if row else (None, None)
+
+
 def serve(host="0.0.0.0", port=8070, warm: bool = True):
     if sessions.remote():
         sys.exit("acroscope serve: unset ACROSCOPE_URL, the server owns the database itself")
+    tricks.LAYER_SOURCE = layer_from_store
     srv = ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
     print(f"acroscope player on http://{host}:{port}/  (data {VIDEOS_DIR.parent}, {sessions.store()})")
