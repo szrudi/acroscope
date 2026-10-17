@@ -613,11 +613,23 @@ def arm_window(key: str | None, others: list[tuple[str, int]]) -> tuple[int | No
 
 PLAN_TOL = 2.0                     # session plan: seconds a run or an arm left without a partner costs
 PLAN_MARGIN = 1.0                  # a pick whose best alternative costs less than this more is ambiguous: nothing written
+PLAN_W_TOTAL = 0.3                 # weight of the OSD's total-before against the arm's place in its boot (as align())
+PLAN_SLACK = 1                     # a clip's window reaches this many arms into its neighbours' (the clip's own pass,
+                                   # with its boot fit, settles a boundary the lengths put one arm off: 2026-10-11 004)
+
+
+def _pair_cost(r: dict, a: dict) -> float:
+    """A run against an arm: the length misfit, plus (on a cumulative-timer OSD, which shows the boot's flying time
+    before the run) the misfit of that total against the arm's place in its boot, as align() weighs it."""
+    c = abs(r["length"] - a["length"])
+    if r.get("total_before") is not None and a.get("cum_before") is not None:
+        c += PLAN_W_TOTAL * abs(r["total_before"] - a["cum_before"])
+    return c
 
 
 def _plan_cost(runs: list[dict], arms: list[dict], forbid: tuple[int, int] | None = None, tol: float = PLAN_TOL):
     """Order-preserving alignment of every run of a session's clips (card order) to its arms (log order): a pair
-    costs the length misfit, a run or an arm without a partner costs `tol`. (cost, pairs)."""
+    costs _pair_cost, a run or an arm without a partner costs `tol`. (cost, pairs)."""
     n, m = len(runs), len(arms)
     INF = float("inf")
     D = [[0.0] * (m + 1) for _ in range(n + 1)]
@@ -627,11 +639,11 @@ def _plan_cost(runs: list[dict], arms: list[dict], forbid: tuple[int, int] | Non
         D[0][j] = j * tol
     for i in range(1, n + 1):
         for j in range(1, m + 1):
-            pair = INF if forbid == (i - 1, j - 1) else D[i - 1][j - 1] + abs(runs[i - 1]["length"] - arms[j - 1]["length"])
+            pair = INF if forbid == (i - 1, j - 1) else D[i - 1][j - 1] + _pair_cost(runs[i - 1], arms[j - 1])
             D[i][j] = min(pair, D[i - 1][j] + tol, D[i][j - 1] + tol)
     pairs, i, j = [], n, m
     while i and j:
-        if forbid != (i - 1, j - 1) and D[i][j] == D[i - 1][j - 1] + abs(runs[i - 1]["length"] - arms[j - 1]["length"]):
+        if forbid != (i - 1, j - 1) and D[i][j] == D[i - 1][j - 1] + _pair_cost(runs[i - 1], arms[j - 1]):
             pairs.append((i - 1, j - 1)); i -= 1; j -= 1
         elif D[i][j] == D[i - 1][j] + tol:
             i -= 1
@@ -675,17 +687,33 @@ def session_plan(session: str, fps: float = 2.0) -> dict:
     (the clips between two of them align against the arms between); arms another session holds are left out."""
     s = sessions.load(session)
     clips = sorted((v for v in s["videos"] if clip_order(v.get("name")) and not v.get("missing_since")), key=lambda v: v["name"])
-    elsewhere = {(b, a) for b, ms in _log_matches(s, None, []).items() for k, a in ms
-                 if not any(v.get("name") == k or v["file"] == k for v in s["videos"])}
+    mine = {v.get("name") for v in s["videos"]} | {v["file"] for v in s["videos"]}
+    other = {b: [(k, a) for k, a in ms if k not in mine] for b, ms in _log_matches(s, None, []).items()}
+    elsewhere = {(b, a) for b, ms in other.items() for _, a in ms}
+    # a day's clips are numbered across all its sessions, so another session's matches bound this one's arms too: an
+    # arm held by an earlier-named clip comes before them, one held by a later-named clip after (2026-10-02: a log
+    # holding the day's first session's arms too)
+    first, last = (clips[0]["name"], clips[-1]["name"]) if clips else (None, None)
+    bound = {b: (max((a for k, a in ms if clip_order(k) and k < first), default=None),
+                 min((a for k, a in ms if clip_order(k) and k > last), default=None)) for b, ms in other.items()}
     arms = []
     for b in sorted(s["blackbox"], key=_log_order):
         try:
             idx = blackbox.index_bbl(b)
         except FileNotFoundError:
             continue
+        boot_of = {i: k for k, bt in enumerate(idx.get("boots", [])) for i in bt["arms"]}
+        cum = {}
         for a in idx["arms"]:
-            if a.get("frames") and a.get("motors_spun", True) and (idx["file"], a["index"]) not in elsewhere:
-                arms.append({"bbl": idx["file"], "index": a["index"], "length": a["length"]})
+            if not (a.get("frames") and a.get("motors_spun", True)):
+                continue
+            k = boot_of.get(a["index"])
+            lo_b, hi_b = bound.get(idx["file"], (None, None))
+            if (idx["file"], a["index"]) not in elsewhere and (lo_b is None or a["index"] > lo_b) and (hi_b is None or a["index"] < hi_b):
+                arms.append({"bbl": idx["file"], "index": a["index"], "length": a["length"],
+                             "cum_before": round(cum.get(k, 0.0), 1) if k is not None else None})
+            if k is not None:
+                cum[k] = cum.get(k, 0.0) + a["length"]
     pos = {(a["bbl"], a["index"]): k for k, a in enumerate(arms)}
     held = {}                                                # clip -> positions of its matches already in the session
     for m in s["matches"]:
@@ -713,7 +741,7 @@ def session_plan(session: str, fps: float = 2.0) -> dict:
     for k, v in enumerate(clips):
         before = [p for c in clips[:k] if c["file"] not in ambiguous for p in assigned[c["file"]]]
         after = [p for c in clips[k + 1:] if c["file"] not in ambiguous for p in assigned[c["file"]]]
-        lo_p, hi_p = max(before, default=-1), min(after, default=len(arms))
+        lo_p, hi_p = max(before, default=-1) - PLAN_SLACK, min(after, default=len(arms)) + PLAN_SLACK
         windows = {}
         for b in s["blackbox"]:
             mine = [a["index"] for a in arms if a["bbl"] == b]
@@ -802,7 +830,14 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
         idx = blackbox.index_bbl(b)
         # the arms this clip may hold: from the session plan when there is one (#26), else bounded by the other clips'
         # matches (#9), which a wrong pick before this clip cascades from
-        lo, hi = bounds[idx["file"]] = windows[idx["file"]] if windows and idx["file"] in windows else arm_window(name, others.get(idx["file"], []))
+        lo, hi = arm_window(name, others.get(idx["file"], []))
+        if windows and idx["file"] in windows:
+            # the plan's window, narrowed by what the clips before this one took in this run: the plan reaches one arm
+            # into each neighbour (PLAN_SLACK), and an arm a clip before this one took bounds it as before
+            plo, phi = windows[idx["file"]]
+            lo = max(x for x in (lo, plo) if x is not None) if (lo is not None or plo is not None) else None
+            hi = min(x for x in (hi, phi) if x is not None) if (hi is not None or phi is not None) else None
+        bounds[idx["file"]] = (lo, hi)
         # a log whose last arm is cut off ended with the flash full (#9): once a STATS screen shows BLACKBOX 100 %,
         # no later run is in it, and the run at which it shows may only be that last arm
         vs = varms

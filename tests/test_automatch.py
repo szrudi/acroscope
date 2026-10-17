@@ -89,6 +89,13 @@ class AutomatchTest(unittest.TestCase):
         self.assertEqual((self.db.load("2026-10-03")["blackbox"], self.db.load("2026-10-03")["matches"]), ([], []))
         self.assertEqual(self.db.detached("2026-10-03"), {BBL})
 
+    def test_a_plan_window_narrowed_by_this_runs_picks(self):
+        """With the plan's window (one arm of slack into the neighbours), what the clips before this one took in the
+        same run still bounds it: a clip before took arm 3, so this clip's 10 s run is arm 5, not arm 2."""
+        pending = [{"session": "2026-10-03", "video": "x.mp4", "name": "2026-10-03_000", "bbl": BBL, "arm": 3}]
+        r = osd.automatch("2026-10-03", "2026-10-03_001.mp4", pending=pending, windows={BBL: (None, None)})
+        self.assertEqual(self.arms(r), [5, 6])
+
     def test_alone_the_lengths_decide(self):
         self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
 
@@ -179,6 +186,13 @@ class SessionPlanTest(unittest.TestCase):
         pairs, ambiguous = self.plan([("001", 92.0), ("002", 74.0)], [92.5, 74.2, 91.6])   # the next clip decides
         self.assertEqual((pairs, ambiguous), ([(0, 0), (1, 1)], set()))
 
+    def test_the_cumulative_total_decides_between_equal_lengths(self):
+        """On a cumulative-timer OSD a run shows the boot's flying time before it; with two arms of one length, the one
+        at that place in its boot is the run's (as in a clip's own alignment)."""
+        pairs, _ = osd.plan_session_pairs([{"clip": "001", "length": 30.0, "total_before": 0.0}],
+                                          [{"length": 30.0, "cum_before": 0.0}, {"length": 30.0, "cum_before": 60.0}])
+        self.assertEqual(pairs, [(0, 0)])                                     # by length alone a tie, which takes the later
+
     def test_a_thin_choice_inside_one_clip_is_not(self):
         """Within one clip (2026-10-16 001 and 004: a dozen short indoor hops of near equal length) which run is which
         arm is the clip's own pass to settle (its boot fit does); the clip's arms, and so every window, are the same
@@ -238,6 +252,14 @@ class SessionAutomatchTest(unittest.TestCase):
         self.run_cli("--write")
         self.assertEqual(self.arms(), {"001": 1, "002": 2, "003": 3})
 
+    def test_a_window_reaches_one_arm_into_its_neighbours(self):
+        """The lengths can put a boundary between two clips one arm off (2026-10-11 004 and 005); the clip's own pass,
+        with its boot fit, settles it, so a clip's window reaches one arm (PLAN_SLACK) into each neighbour's."""
+        self.ARMS[:] = [10.0, 20.0, 30.0, 40.0, 50.0]
+        self.RUNS.update({"2026-10-05_001.mp4": 10.0, "2026-10-05_002.mp4": 30.0, "2026-10-05_003.mp4": 50.0})
+        w = {f[-7:-4]: p["windows"][BBL] for f, p in osd.session_plan(self.S).items()}
+        self.assertEqual(w, {"001": (None, 4), "002": (None, None), "003": (2, None)})
+
     def test_a_hand_match_is_a_fixed_point(self):
         self.db.set_match(self.S, "2026-10-05_002.mp4", BBL, 3, 12.0, "by hand")     # 002 is arm 3, whatever the lengths say
         self.run_cli("--write", "--unmatched")
@@ -291,6 +313,19 @@ class SessionPlanOrderTest(unittest.TestCase):
         self.db.attach(self.S, early)
         self.clips([60.0], [60.0])
         self.assertEqual(self.planned(), {"001": [(early, 1)], "002": [(late, 1)]})
+
+    def test_another_sessions_matches_bound_this_one(self):
+        """A day's clips are numbered across its sessions, so a log arm matched to an earlier-named clip in another
+        session comes before this session's arms (2026-10-02: one log held both of the day's sessions)."""
+        self.logs = {BBL: [60.0, 61.0, 60.4]}
+        self.db.attach(self.S, BBL)
+        self.db.ensure_session("2026-10-06-earlier")
+        self.db.upsert_video("2026-10-06-earlier", f"{self.S}_001.mp4", 300.0, name=f"{self.S}_001")
+        self.db.set_match("2026-10-06-earlier", f"{self.S}_001.mp4", BBL, 2, 5.0)      # 001, in the other session: arm 2
+        f = f"{self.S}_002.mp4"
+        self.db.upsert_video(self.S, f, 300.0, name=f[:-4])
+        self.runs[f] = [60.0]
+        self.assertEqual(self.planned(), {"002": [(BBL, 3)]})                     # not arm 1, nearer in length but before
 
     def test_clips_after_a_fixed_point_align_past_it(self):
         self.logs = {BBL: [74.1, 50.0, 74.6]}
