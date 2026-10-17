@@ -62,7 +62,7 @@ def summary(arm: Arm, t0: float, t1: float) -> dict:
         "stick_pct_max": {AXES[a]: round(max(abs(rc[a][i]) for i in r) / 5) for a in range(3)},
         "stick_pct_mean": {AXES[a]: round(_mean(rc[a][i] for i in r) / 5) for a in range(3)},
         "throttle_pct": {"min": round(min(thr)), "mean": round(_mean(thr)), "max": round(max(thr))},
-        "tilt_deg": {"min": round(min(tilt)), "max": round(max(tilt)), "start": round(tilt[0]), "end": round(tilt[-1])},
+        "tilt_deg": {"min": round(min(tilt)), "max": round(max(tilt)), "mean": round(_mean(tilt)), "start": round(tilt[0]), "end": round(tilt[-1])},
         "lean_start": [round(x) for x in arm.lean(i0)], "lean_end": [round(x) for x in arm.lean(i1 - 1)],
         "lean_convention": LEAN_CONVENTION,
         "acc_g": {"min": round(min(acc), 2), "max": round(max(acc), 2)},
@@ -72,6 +72,10 @@ def summary(arm: Arm, t0: float, t1: float) -> dict:
     if motors:
         out["motor_mean"] = round(_mean(_mean(m[i] for m in motors) for i in r))
         out["motor_max"] = round(max(max(m[i] for m in motors) for i in r))
+    if "setpoint[0]" in arm:
+        # what the sticks asked for after the rate curve (deg/s): intent, against the gyro's outcome (#22)
+        sp = [arm.col(f"setpoint[{a}]") for a in range(3)]
+        out["setpoint_peak_dps"] = {AXES[a]: round(max(abs(sp[a][i]) for i in r)) for a in range(3)}
     inv = [thr[k] for k, i in enumerate(r) if tilt[k] > 135]
     if inv:
         out["throttle_inverted_pct"] = {"mean": round(_mean(inv)), "min": round(min(inv)), "frames": len(inv)}
