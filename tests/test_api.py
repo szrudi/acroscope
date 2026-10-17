@@ -388,6 +388,52 @@ class ApiTest(unittest.TestCase):
         self.assertEqual((r.status, r.headers["Content-Type"], r.headers["Content-Length"], r.headers["Content-Disposition"]),
                          (200, "application/octet-stream", str(len(LOG_BYTES)), "attachment; filename*=UTF-8''dump%20%232.bbl"))
         self.assertEqual(r.read(), LOG_BYTES)
+
+    def test_fetch_log_brings_a_log_to_the_client(self):
+        """#21: `acroscope fetch-log <bbl>` saves the .bbl as it is on the client, through the same GET /blackbox/<file>
+        the player's ⤓ uses: by its file name, or by a fragment unique among the logs the sessions know. Not a
+        proxied command: it runs here, so it needs no deploy. Anything but a log in blackbox/ is refused."""
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+        from acroscope import cli, sessions
+        self.r.refresh("2026-10-07-s", probe_videos=False)
+        self.r.attach("2026-10-07-s", "dump #2.bbl")
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "got.bbl"
+            self.assertEqual(self.r.fetch_log("dump #2.bbl", dest), dest)
+            self.assertEqual(dest.read_bytes(), LOG_BYTES)
+            with self.assertRaises(RemoteError):
+                self.r.fetch_log("x.csv", Path(tmp) / "no.csv")
+            self.assertFalse((Path(tmp) / "no.csv").exists())
+            out = io.StringIO()
+            with mock.patch.object(sessions, "SERVER_URL", self.url), mock.patch.object(sessions, "_store", None), redirect_stdout(out):
+                cli.main(["fetch-log", "dump #", "--to", tmp])                       # a fragment, resolved through the sessions
+                cli.main(["fetch-log", "dump #2.bbl", "--to", tmp])                  # the exact name, no lookup
+            got = Path(tmp) / "dump #2.bbl"
+            self.assertEqual(out.getvalue().splitlines(), [str(got)] * 2)
+            self.assertEqual(got.read_bytes(), LOG_BYTES)
+            with mock.patch.object(sessions, "SERVER_URL", self.url), mock.patch.object(sessions, "_store", None), \
+                    redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                cli.main(["fetch-log", "nothing-like-it", "--to", tmp])
+        self.r.detach("2026-10-07-s", "dump #2.bbl")
+
+    def test_fetch_log_without_a_server(self):
+        """Local store: the log is already here. Without --to its path is printed; with --to it is copied there."""
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+        from acroscope import cli, sessions
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "logs").mkdir()
+            (Path(tmp) / "logs" / "L_20261007.bbl").write_bytes(LOG_BYTES)
+            out = io.StringIO()
+            with mock.patch.object(sessions, "SERVER_URL", ""), mock.patch.object(sessions, "_store", None), \
+                    mock.patch.object(blackbox, "BLACKBOX_DIR", Path(tmp) / "logs"), redirect_stdout(out):
+                cli.main(["fetch-log", "20261007"])
+                cli.main(["fetch-log", "20261007", "--to", str(Path(tmp) / "out")])
+            self.assertEqual(out.getvalue().splitlines(), [str(Path(tmp) / "logs" / "L_20261007.bbl"), str(Path(tmp) / "out" / "L_20261007.bbl")])
+            self.assertEqual((Path(tmp) / "out" / "L_20261007.bbl").read_bytes(), LOG_BYTES)
         # only logs, only in blackbox/ itself, never through a link: a missing one, a CSV beside them, a symlink
         # to the database, a subfolder
         self.assertEqual(urllib.request.urlopen(self.url + "/blackbox/LOUD.BBL").read(), b"upper case")

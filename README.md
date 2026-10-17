@@ -126,6 +126,8 @@ acroscope recut <session> <clip>                 compress a clip again from its 
 acroscope housekeeping                           originals past retention go, trash/ days older than 7 go; the database
                                                  is backed up into state/
 acroscope arms <bbl>                             list the arms (decodes the whole file into the cache once, ~30 s)
+acroscope fetch-log <bbl> [--to DIR]             the .bbl as it is, onto this machine (the player's ⤓; for blackbox_decode or
+                                                 Blackbox Explorer); by file name or a fragment unique among the sessions' logs
 acroscope decode <bbl> <arm> [--csv]             cache one arm; --csv dumps it like blackbox_decode for the old scripts
 acroscope match <session> <video> <bbl> <arm> <offset>   record a video <-> arm match
 acroscope metrics <session> <video> <from> <to> [--profile [STEP]] [--loop] [--orbit]

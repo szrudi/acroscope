@@ -119,6 +119,24 @@ class Remote:
             f.write(r.read())
         return dest
 
+    def fetch_log(self, name: str, dest):
+        """A .bbl as it is (GET /blackbox/<file>, the player's ⤓) into `dest`. Nothing is written when it is refused."""
+        req = urllib.request.Request(self.url + "/blackbox/" + urllib.parse.quote(name))
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                data = r.read()
+        except urllib.error.HTTPError as e:
+            try:
+                msg = json.loads(e.read()).get("error", str(e))
+            except Exception:  # noqa: BLE001
+                msg = str(e)
+            raise RemoteError(f"GET /blackbox/{name}: {msg}") from None
+        except urllib.error.URLError as e:
+            raise RemoteError(f"{self.url}: {e.reason}") from None
+        with open(dest, "wb") as f:
+            f.write(data)
+        return dest
+
     def batches(self) -> list[dict]:
         return self._call("GET", "/api/inbox")
 
