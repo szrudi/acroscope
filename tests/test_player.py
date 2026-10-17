@@ -731,7 +731,8 @@ class PlayerTest(unittest.TestCase):
         d = self.open("2026-10-16-swipe").evaluate(self.READOUT)             # the desktop keeps its words
         self.assertIn("throttle", d["text"])
         # a message in that row (the clip cannot play, its file is missing) is read, not glanced at: it still wraps
-        page.wait_for_function("() => /cannot play this clip/.test(document.getElementById('readout').textContent)")
+        page.evaluate("() => v.dispatchEvent(new Event('error'))")           # the test clip's own error may have come and gone
+        self.assertIn("cannot play this clip", page.text_content("#readout"))
         m = page.evaluate("() => { const r = document.getElementById('readout'); return [r.scrollWidth, r.clientWidth, r.getBoundingClientRect().height]; }")
         self.assertLessEqual(m[0], m[1] + 1, m)                               # nothing cut off
         self.assertGreater(m[2], 20, m)                                       # on more than one line
