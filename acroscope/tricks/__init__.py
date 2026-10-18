@@ -419,8 +419,10 @@ class Run:
                             continue
                         if rule.margin is not None:
                             caught = o.window.arm_from <= h.window.arm_to + rule.margin and o.window.arm_to >= h.window.arm_from - rule.margin
-                        else:
+                        elif rule.within is not None:
                             caught = abs(o.anchor - h.anchor) < rule.within
+                        else:                                    # the other starts from so long after this one's instant on
+                            caught = o.window.arm_from >= h.anchor + rule.start_after
                         if caught:
                             new[id(o)] = h.trick.id
             if new == suppressed:

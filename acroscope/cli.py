@@ -432,7 +432,8 @@ def cmd_tricks(a):
                 print(f"  when      {c}")
             print(f"  title     {t.title}\n  why       {t.why}")
             for r in t.suppress:
-                print(f"  suppress  {', '.join(r.tags)}: " + (f"windows within {r.margin} s" if r.margin is not None else f"instants within {r.within} s"))
+                print(f"  suppress  {', '.join(r.tags)}: " + (f"windows within {r.margin} s" if r.margin is not None else f"instants within {r.within} s" if r.within is not None
+                                                           else f"windows starting from {r.start_after:+} s of the instant on"))
             if lib.requires(t):
                 print(f"  requires  {', '.join(lib.requires(t))}")
             for e in t.examples:

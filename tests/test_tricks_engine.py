@@ -308,7 +308,7 @@ class CliTest(unittest.TestCase):
         self.assertRegex(text, r"motor-loss\s+motor-loss\s+motor-drop\s+motor_drop")
         self.assertIn("flip_min_deg=270", text)
         show = self.cli("tricks", "show", "crash", "hard-landing", "split-s")
-        self.assertIn("suppress  flip, roll, barrel-roll, split-s: windows within 0 s", show)
+        self.assertIn("suppress  flip, roll, barrel-roll, split-s: windows starting from -0.5 s of the instant on", show)
         self.assertIn("suppress  motor-loss: instants within 0.5 s", show)
         self.assertIn("example   BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl arm 18 at 64.7", show)
         self.assertIn("phase 2   pitch-back: sustained, within 1.0 s", show)

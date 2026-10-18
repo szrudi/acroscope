@@ -54,8 +54,8 @@ class ShippedTest(unittest.TestCase):
     def test_the_precedence_is_in_the_file(self):
         lib = Library.load([SHIPPED])
         self.assertEqual([(r.tags, r.margin, r.within) for r in lib.tricks["crash"].suppress], [(("motor-loss",), None, 0.5)])         # #20: a mid-flight impact swallows no trick
-        self.assertEqual([(r.tags, r.margin, r.within) for r in lib.tricks["hard-landing"].suppress],
-                         [(("flip", "roll", "barrel-roll", "split-s"), 0, None), (("motor-loss",), None, 0.5)])
+        self.assertEqual([(r.tags, r.margin, r.within, r.start_after) for r in lib.tricks["hard-landing"].suppress],
+                         [(("flip", "roll", "barrel-roll", "split-s"), None, None, -0.5), (("motor-loss",), None, 0.5, None)])
         self.assertEqual(lib.tricks["powerloop"].suppress[0].margin, 0)
         self.assertGreater(lib.tricks["split-s"].priority, lib.tricks["roll"].priority)
         self.assertGreater(lib.tricks["roll"].priority, lib.tricks["roll-attempt"].priority)
@@ -140,7 +140,8 @@ class RefusalTest(unittest.TestCase):
         self.refuse(BASE.replace("priority = 10", "priority = 1.5"), "priority must be an integer")
         self.refuse(BASE.replace("priority = 10", 'enabled = "no"'), "enabled must be true or false")
         self.refuse(BASE.replace("priority = 10", "requires = \"eRPM[0]\""), "requires must be a list")
-        self.refuse(BASE.replace("priority = 10", 'suppress = [{ tags = ["flip"], margin = 1, within = 1 }]'), "either margin or within")
+        self.refuse(BASE.replace("priority = 10", 'suppress = [{ tags = ["flip"], margin = 1, within = 1 }]'), "one of margin, within, start_after")
+        self.refuse(BASE.replace("priority = 10", 'suppress = [{ tags = ["flip"], start_after = "x" }]'), "start_after must be a number")
         self.refuse(BASE.replace("priority = 10", 'suppress = [{ margin = 1 }]'), "suppress rule")
         self.refuse(BASE.replace("priority = 10", 'suppress = [{ tags = ["flip"], margin = "1" }]'), "margin must be a number")
         self.refuse(BASE.replace("priority = 10", 'examples = [{ log = "a.bbl", arm = 1 }]'), "example has `at`, or `from` and `to`")

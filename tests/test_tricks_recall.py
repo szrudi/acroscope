@@ -170,10 +170,20 @@ class RotationRulesTest(unittest.TestCase):
         acc, raw = impact(2.55)
         arm = make_arm(20, gyro=axis(0, pulse(2.0, 2.72, 500)), acc=acc, raw=raw)
         self.assertEqual(events(arm), [("roll", "right roll, ended with contact"), ("crash", "impact")])
-        # at a hard landing the tumble across the final impact is the landing; a trick that ended before it stays
+        # at a hard landing the tumble from the final impact on is the landing; a trick that led to it stays, titled
+        # so (10-16 006 m07: a roll onto the floor, the disarm 1.4 s later)
         acc, raw = impact(19.0)
-        landing = make_arm(20, gyro=axis(0, pulse(18.6, 19.32, 500)), acc=acc, raw=raw)
-        self.assertEqual(events(landing), [("crash", "hard landing (arm end)")])
+        tumble = make_arm(20, gyro=axis(0, pulse(18.8, 19.52, 500)), acc=acc, raw=raw)                 # starts 0.2 s before the impact
+        self.assertEqual(events(tumble), [("crash", "hard landing (arm end)")])
+        onto_the_floor = make_arm(20, gyro=axis(0, pulse(18.0, 19.1, 330)), acc=acc, raw=raw)          # 363 deg, starts 1 s before, ends on it
+        self.assertEqual(events(onto_the_floor), [("crash", "hard landing (arm end)")])                 # a failed attempt: hidden by default...
+        import tomllib
+        from acroscope.tricks.library import SHIPPED, Library
+        beginner = Library()
+        beginner.add(tomllib.loads(SHIPPED.read_text()), "shipped")
+        beginner.add({"skill": "beginner"}, "mine")
+        beginner.validate()
+        self.assertEqual(events(onto_the_floor, beginner), [("roll", "right roll, ended with contact"), ("crash", "hard landing (arm end)")])   # ...shown to a beginner
         before = make_arm(20, gyro=axis(0, pulse(17.0, 17.72, 500)), acc=acc, raw=raw)
         self.assertEqual(events(before), [("roll", "right roll"), ("crash", "hard landing (arm end)")])
 

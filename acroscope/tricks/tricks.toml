@@ -14,7 +14,8 @@ attempt_min_dps = 250        # ...if it was rolled or flipped at this rate at le
 roll_max_dur = 3.0           # a roll takes less than this, s: longer is a spiral or an orbit, not a roll
 yaw_share = 0.5              # yaw over this share of the main rotation makes it a flip "with yaw"
 barrel_off_axis_deg = 90     # a roll with this much yaw or pitch in it is a barrel roll
-contact_g = 4.0              # a trick with the accelerometer over this in it ended with contact
+contact_g = 4.0              # a trick with the accelerometer over this in it ended with contact...
+landing_failures = 0         # ...and one that ended on the floor at the arm's end is a failed attempt: 0 hides it, 1 shows it
 split_s_roll_min = 120       # a split-S: a half roll in this band (the furthest it gets)...
 split_s_roll_max = 240
 split_s_over_deg = 90        # ...that puts the quad at least this far over (tilt, 90 = knife edge)...
@@ -45,6 +46,7 @@ split_s_out_deg = 85
 dive_min_tilt = 30
 loop_min_deg = 270
 orbit_min_deg = 240          # two thirds of a lap was an orbit try
+landing_failures = 1         # a roll that ended on the floor and the disarm: worth seeing, as an attempt
 
 [skill.advanced]
 flip_min_deg = 300
@@ -122,8 +124,10 @@ when = ["to_arm_end_s < landing_window_s"]
 title = "hard landing (arm end)"
 why = "{impact_g:.1f} g with {jolt_dps:.0f} dps gyro jolt at arm {arm_t:.2f} s of {arm.length:.1f}"
 priority = 30
-# the tumble across the final impact is the landing, not a trick; a trick that ended before it stays
-suppress = [{ tags = ["flip", "roll", "barrel-roll", "split-s"], margin = 0 }, { tags = ["motor-loss"], within = 0.5 }]
+# the tumble from the final impact on is the landing, not a trick: rotations starting from half a second before the
+# impact go. A trick that led to it (a roll ending on the floor, the pilot disarming after: 10-16 006 m07) is left
+# to its own entry, which hides it as a failed attempt unless landing_failures says otherwise
+suppress = [{ tags = ["flip", "roll", "barrel-roll", "split-s"], start_after = -0.5 }, { tags = ["motor-loss"], within = 0.5 }]
 examples = [
   { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 20, at = 71.4, note = "the ground 1 s after the motor loss, 0.6 s before the arm ends (the 10-07 pin)" },
   { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 11, at = 7.4, note = "the 10-07 011 smoke check: hard landing at 1:24.4 of the clip" },
@@ -176,6 +180,7 @@ segment = "fast-rotation"
 # roll in a flip does not unmake it (a forward flip that drifted stays a forward flip, as before #22); yaw past
 # yaw_share makes it the "with yaw" entry
 when = [
+  "acc_g.max < contact_g or to_arm_end_s >= landing_window_s or landing_failures == 1",
   "stick_pct_max.pitch >= stick_min",
   "rotation_deg.pitch * rotation_peak_deg.pitch > 0 and abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
   "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
@@ -194,6 +199,7 @@ id = "flip-with-yaw"
 tag = "flip"
 segment = "fast-rotation"
 when = [
+  "acc_g.max < contact_g or to_arm_end_s >= landing_window_s or landing_failures == 1",
   "stick_pct_max.pitch >= stick_min",
   "rotation_deg.pitch * rotation_peak_deg.pitch > 0 and abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
   "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
@@ -211,6 +217,7 @@ id = "flip-attempt"
 tag = "flip"
 segment = "fast-rotation"
 when = [
+  "acc_g.max < contact_g or to_arm_end_s >= landing_window_s or landing_failures == 1",
   "stick_pct_max.pitch >= stick_min",
   "rotation_deg.pitch * rotation_peak_deg.pitch > 0 and abs(rotation_deg.pitch) >= held_share * abs(rotation_peak_deg.pitch)",
   "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
@@ -229,6 +236,7 @@ id = "roll"
 tag = "roll"
 segment = "fast-rotation"
 when = [
+  "acc_g.max < contact_g or to_arm_end_s >= landing_window_s or landing_failures == 1",
   "stick_pct_max.roll >= stick_min",
   "rotation_deg.roll * rotation_peak_deg.roll > 0 and abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
   "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",
@@ -245,6 +253,7 @@ examples = [
   { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 1, at = 6.5, note = "right roll, clip 003 1:32.7 (offset 86.5)" },
   { log = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl", arm = 1, at = 8.3, note = "left roll, 1:34.5" },
   { log = "BTFL_BLACKBOX_LOG_OTTO_20261011_184757_BETAFPVG473_V2.bbl", arm = 2, at = 72.3, note = "a right roll ending on the floor, the flight goes on (#20)" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261016_185732_BETAFPVG473_V2.bbl", arm = 41, from = 64.0, to = 67.5, absent = true, note = "a roll by the stairs ending on the floor 1.4 s before the disarm: a failed attempt, hidden unless landing_failures = 1 (the beginner preset; 10-16 006 m07)" },
   { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 15, from = 40.0, to = 46.0, absent = true, note = "a steep nose-down spiral: body roll 620 deg over 4.8 s, never inverted (#31)" },
 ]
 
@@ -279,6 +288,7 @@ id = "roll-attempt"
 tag = "roll"
 segment = "fast-rotation"
 when = [
+  "acc_g.max < contact_g or to_arm_end_s >= landing_window_s or landing_failures == 1",
   "stick_pct_max.roll >= stick_min",
   "rotation_deg.roll * rotation_peak_deg.roll > 0 and abs(rotation_deg.roll) >= held_share * abs(rotation_peak_deg.roll)",
   "acc_g.max >= contact_g or max(peak_rate_dps.roll, peak_rate_dps.pitch) <= tumble_dps",

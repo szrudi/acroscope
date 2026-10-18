@@ -127,7 +127,7 @@ class DescribeTest(Layered):
         self.assertEqual(d["crafts"]["OttoJr"]["source"], "database")
         self.assertEqual(d["crafts"]["default"]["hover_pct"], 35)
         roll = next(t for t in d["tricks"] if t["id"] == "roll")
-        self.assertEqual(roll["params"], ["barrel_off_axis_deg", "contact_g", "flip_min_deg", "held_share", "roll_max_dur", "stick_min", "tumble_dps"])
+        self.assertEqual(roll["params"], ["barrel_off_axis_deg", "contact_g", "flip_min_deg", "held_share", "landing_failures", "landing_window_s", "roll_max_dur", "stick_min", "tumble_dps"])
         self.assertEqual(roll["source"], str(SHIPPED))
         self.assertTrue(roll["enabled"])
         split = next(t for t in d["tricks"] if t["id"] == "split-s")
