@@ -39,7 +39,7 @@ blackbox/*.bbl                               full flash dumps, many arms per fil
 inbox/<batch>/                               what the laptop drops: VID*.mov off the card, *.bbl off a quad, an optional
                                              import.json ({date, session, imported_at, host}) and a .done marker written
                                              last (optionally a manifest {"files": {name: size}}); consumed by ingest
-originals/<session>/<id>.mov                 the originals, kept 60 days after the compressed clip verified
+originals/<session>/<id>.mov                 the originals, kept 90 days after the compressed clip verified
 originals/.ingest/<batch>/                   a batch's clips taken out of the inbox and their encodes, until each is in place
                                              (what a crashed ingest left there, the retry finishes)
 state/acroscope-<date>.db                    nightly copies of the database (seven kept)

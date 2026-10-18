@@ -254,9 +254,9 @@ class IngestTest(_Scratch):
         self.assertEqual(res["session"], "2026-10-11-unsorted")
         self.assertEqual([x["name"] for x in db.load(res["session"])["videos"]], ["2026-10-11_003"])
         self.assertEqual(db.batch_clips("b1"), {"VID0001.mov": s["videos"][0]["file"], "VID0002.mov": s["videos"][1]["file"]})
-        # an original is kept 60 days (Rudi, 2026-10-18: clips still get recut as the cutting changes)
+        # an original is kept 90 days (Rudi, 2026-10-18: clips still get recut as the cutting changes)
         until = datetime.fromisoformat(v["original_until"])
-        self.assertAlmostEqual((until - datetime.now(timezone.utc)).total_seconds() / 86400, 60, delta=0.1)
+        self.assertAlmostEqual((until - datetime.now(timezone.utc)).total_seconds() / 86400, 90, delta=0.1)
         # retention: past the date, the original goes
         db.set_video_fields(s["session"], v["file"], original_until="2000-01-01T00:00:00+00:00")
         r = self.cli("housekeeping")
