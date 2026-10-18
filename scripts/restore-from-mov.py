@@ -1,6 +1,6 @@
 """One-off (2026-10-18): the first days' clips again from the DVR's originals in videos/mov/.
 
-The clips of the first days (before 2026-10-09) were cut and encoded to HEVC by the pre-database import: keyframes
+The clips of the first days (before 2026-10-11) were cut and encoded (HEVC; 10-09/10 H.264) by the pre-database import: keyframes
 up to 29 s apart (seeking lags), and cuts made by the old static detector, which took real footage too (one clip
 kept 26 s of 148). Where the DVR's original (Motion JPEG) is still in videos/mov/<name>.mov:
 
@@ -45,13 +45,15 @@ def plan() -> tuple[list, list, list]:
         if s["session"].endswith("-recut"):
             continue
         for v in s["videos"]:
-            if v.get("codec") != "hevc" or v.get("missing_since"):
+            if v.get("missing_since") or v.get("original"):           # one with an original is done (or ingested)
                 continue
             name = v.get("name") or Path(v["file"]).stem
             src = movs.get(name)
             if src is None:
-                proxy.append((s["session"], v))
+                if v.get("codec") == "hevc":
+                    proxy.append((s["session"], v))
                 continue
+            # any codec: 2026-10-09/10's clips are H.264 (or raw Motion JPEG) from the old pipeline, without an original
             uncut = abs((v.get("duration") or 0) - duration(src)) < 0.3
             data = any(m["video"] == v["file"] for m in s["moments"] + s["matches"])
             (here if uncut or not data else copy).append((s["session"], v, src))
