@@ -56,6 +56,7 @@ Profiles, the pilot's layer over the shipped file (kept in the database; a trick
 
 The effective library for an arm is `for_craft(name)`: the files in order, the chosen preset under the files after
 the one that defines it, then the craft's own layer."""
+import copy
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,6 +117,7 @@ class Trick:
     requires: list = field(default_factory=list)
     enabled: bool = True
     examples: list = field(default_factory=list)
+    examples_source: str = ""                       # the file that made those claims: check runs them under it
     note: str = ""
     source: str = ""
     order: int = 0                                    # position in the merged file order
@@ -144,6 +146,7 @@ class Library:
         self.segments: dict[str, Segment] = {}
         self.tricks: dict[str, Trick] = {}
         self.sources: list[str] = []
+        self.tables: list = []                            # [(table as given, source)]: the files up to one, again (upto)
         self.skills: dict[str, dict] = {}                 # preset name -> params
         self._skill_sources: dict[str, str] = {}
         self.skill: str | None = None                     # the preset in force, and the source that chose it
@@ -184,6 +187,7 @@ class Library:
     def add(self, table: dict, source: str):
         """One layer's tables on top of what is loaded: params update, segments merge by name, tricks merge by id."""
         self.sources.append(source)
+        self.tables.append((copy.deepcopy(table), source))
         if not isinstance(table, dict):
             raise LibraryError(_where(source, "not a table"))
         version = table.get("version", VERSION)
@@ -311,6 +315,7 @@ class Library:
                 if not isinstance(v, list):
                     raise LibraryError(_where(source, f"trick {tid}: examples must be a list of tables"))
                 t.examples = [self._example(e, tid, source) for e in v]
+                t.examples_source = source
 
     def craft_name(self, name: str | None) -> str | None:
         """The declared spelling of a craft section for a name from a log header, matched without regard to case
@@ -573,6 +578,19 @@ class Library:
         return self._effective[key]
 
     # ---- views --------------------------------------------------------------------------------------------------
+
+    def upto(self, source: str) -> "Library":
+        """The files up to and including `source` as a library of their own: what that file's examples claim, under
+        its own numbers (check). The whole when `source` is the last file; the base of a craft's derived library."""
+        base = self._base or self
+        n = max(i for i, s in enumerate(base.sources) if s == source) + 1
+        if n == len(base.sources):
+            return base
+        lib = Library()
+        for table, src in base.tables[:n]:
+            lib.add(copy.deepcopy(table), src)
+        lib.validate()
+        return lib
 
     def ordered(self) -> list[Trick]:
         return sorted(self.tricks.values(), key=lambda t: t.order)

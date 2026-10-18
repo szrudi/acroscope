@@ -524,22 +524,28 @@ def evaluate(session: dict, load_arm, lib: Library | None = None) -> dict:
     return {"per_tag": per_tag, "found": found, "missed": missed, "untagged": sorted(untagged, key=lambda e: (e["video"], e["start"]))}
 
 
-def check(lib: Library | None = None, only: list[str] | None = None) -> dict:
+def check(lib: Library | None = None, only: list[str] | None = None, craft: str | None = None) -> dict:
     """Run the tricks' examples against the logs on this machine: a detection of the trick over `at` (or none over
     from-to when `absent`). {results: [{trick, log, arm, where, status, found}], passed, failed, unchecked}; a log
-    that is not here leaves its examples unchecked, never failed."""
+    that is not here leaves its examples unchecked, never failed. An example is a claim the file that wrote it
+    makes under that file's own numbers: the shipped examples run on the shipped file alone, a layer's on the files
+    up to and including it (`craft`: each one's section for that craft), so the pilot's preset, params or a trick
+    switched off fail no shipped example."""
     from .. import blackbox
     lib = lib or library()
     results = []
     arms: dict[tuple, list | None] = {}
+    views: dict[str, Library] = {}
     for t in lib.ordered():
         if only and t.id not in only:
             continue
+        if t.examples and t.examples_source not in views:
+            views[t.examples_source] = lib.upto(t.examples_source).for_craft(craft)
         for e in t.examples:
-            key = (e["log"], e["arm"])
+            key = (e["log"], e["arm"], t.examples_source)
             if key not in arms:
                 try:
-                    arms[key] = detect(blackbox.load_arm(e["log"], e["arm"]), lib)
+                    arms[key] = detect(blackbox.load_arm(e["log"], e["arm"]), views[t.examples_source])
                 except FileNotFoundError:
                     arms[key] = None
             events = arms[key]

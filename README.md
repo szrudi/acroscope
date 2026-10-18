@@ -285,7 +285,9 @@ The player's `/config` page (see *Configuration page*) is the same library with 
 `acroscope tricks` lists the tricks in force, `tricks show <id>` one in full, `tricks features [kind]` the names a
 condition may use, `tricks explain <bbl>:<arm> [from] [to]` every window with each trick's verdict (fired, the
 condition it failed, lost to a higher priority, suppressed by whom), `tricks check` runs every trick's `examples` (a
-real log, an arm, a moment) against the logs on the machine (a shared trick without an example is a guess), and
+real log, an arm, a moment) against the logs on the machine, each under the file that made the claim (the shipped
+examples on the shipped file alone, the pilot's own on the whole: a preset or a trick switched off fails no shipped
+example; a shared trick without an example is a guess), and
 `tricks eval <session>` scores the tricks against the session's tagged moments: per tag the moments found and
 missed (with the arm and time of each miss, ready for `explain`), and every detection on no tagged moment. The
 shipped tricks: flips, rolls and barrel rolls (by the furthest the rotation got, with the stick behind it, holding its

@@ -353,6 +353,35 @@ examples = [{ log = "SYNTH.bbl", arm = 1, at = 5.3 }, { log = "SYNTH.bbl", arm =
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("2 passed, 2 failed, 1 unchecked", out.getvalue())
 
+    def test_check_runs_an_example_under_its_own_files_numbers(self):
+        """An example is a claim the file that wrote it makes under that file's own numbers: the shipped examples
+        run on the shipped file alone, a layer's on the files up to and including it. A pilot switching a trick
+        off (or a preset, a param) fails no shipped example; the pilot's own example sees the pilot's layer."""
+        import tomllib
+        lib = Library()
+        lib.add(tomllib.loads(PrecedenceTest.TEXT.replace("{b}", "20") + '''
+[[trick]]
+id = "b"
+examples = [{ log = "SYNTH.bbl", arm = 1, at = 5.3 }]
+[[trick]]
+id = "c"
+tag = "c"
+segment = "fast"
+when = ["abs(rotation_deg.roll) >= min_deg"]
+title = "c"
+priority = 5
+'''), "shipped")                                       # c has no examples: nothing to run, nothing to rebuild
+        lib.add({"trick": [{"id": "b", "enabled": False}, {"id": "a", "examples": [{"log": "SYNTH.bbl", "arm": 1, "at": 5.3}]}]}, "database")
+        lib.validate()
+        arm = make_arm(20, gyro=axis(0, pulse(5.0, 5.72, 500)))
+        with mock.patch.object(blackbox, "load_arm", lambda b, n: arm):
+            res = tricks.check(lib)
+        # a's example from the layer: under the layer b is off and a fires; b's from the shipped file: under that
+        # file alone b wins the window (under the whole, b off, it would fail; under the shipped file alone, a would)
+        self.assertEqual([(r["trick"], r["status"]) for r in res["results"]], [("a", "ok"), ("b", "ok")])
+        self.assertEqual(lib.tricks["a"].examples_source, "database")
+        self.assertEqual(lib.tricks["b"].examples_source, "shipped")
+
 
 if __name__ == "__main__":
     unittest.main()
