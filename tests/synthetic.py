@@ -33,7 +33,7 @@ def quat_from_lean(forward_deg: float = 0.0, right_deg: float = 0.0) -> tuple:
 
 
 def make_arm(seconds: float, gyro=None, throttle=50.0, sticks=None, raw=None, acc=None, quat0=None, motors=None,
-             erpm=None, setpoint=False, vbat=3.8, rate: int = RATE, craft: str = "TEST", rates=None) -> Arm:
+             erpm=None, setpoint=False, vbat=3.8, rate: int = RATE, craft: str = "TEST", rates=None, crash_flip=None) -> Arm:
     """`gyro(t)` -> (roll, pitch, yaw) deg/s; `throttle` a number (%) or `throttle(t)`; `sticks(t)` -> (roll, pitch,
     yaw) % (default: what asks for the gyro's rate on a 670 deg/s profile, so a scripted trick is a trick the
     pilot flew); `raw(t)` the unfiltered gyro (default: the gyro); `acc(t)` -> (x, y, z) g in the body frame (default:
@@ -55,6 +55,8 @@ def make_arm(seconds: float, gyro=None, throttle=50.0, sticks=None, raw=None, ac
         names += [f"eRPM[{m}]" for m in range(4)]
     if setpoint:
         names += [f"setpoint[{a}]" for a in range(4)]
+    if crash_flip:
+        names += ["flightModeFlags"]
     for name in names:
         cols[name] = array.array("f", bytes(4 * n))
     for i in range(n):
@@ -94,6 +96,8 @@ def make_arm(seconds: float, gyro=None, throttle=50.0, sticks=None, raw=None, ac
             for k in range(3):
                 cols[f"setpoint[{k}]"][i] = g[k]
             cols["setpoint[3]"][i] = thr(tt) * 10
+        if crash_flip:
+            cols["flightModeFlags"][i] = float(1 << 31) if crash_flip(tt) else 1.0
     meta = {"bbl": "SYNTH", "file": "SYNTH.bbl", "index": 1, "frames": n, "length": round(t[-1], 3), "rate": float(rate),
             "fields": ["time", *cols], "headers": {"Craft name": craft},
             "rates": rates if rates is not None else {"type": "actual", "max_dps": [670.0] * 3, "centre_dps": [70.0] * 3}}

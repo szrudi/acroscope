@@ -259,7 +259,8 @@ name it uses that is not a feature of its segment kind is refused when the file 
 Precedence is in the file too: `priority` on one window, `suppress` across tricks (a crash swallows the rotation
 around it and a motor "dropping" at the impact; a powerloop is not also a back flip). A trick `requires` log
 fields (motor loss needs eRPM) and is skipped on a log without them. A feature the log cannot give is `none`, and a
-condition on it is simply false.
+condition on it is simply false. Frames with the crash-flip (turtle) switch on are not flight: no segmenter looks
+at them, so nothing the quad does while flipping itself over on the ground is a trick or a crash.
 
 **Your own tricks** are the **pilot's layer** over the shipped file, kept in the server's database: what the
 configuration page and `acroscope tricks set | unset | on | off | skill` write (`tricks layer` shows it,

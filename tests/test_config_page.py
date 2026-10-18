@@ -183,7 +183,7 @@ class ConfigPageTest(unittest.TestCase):
         self.assertEqual(page.input_value("#params .prm[data-p=flip_min_deg] [data-val]"), "240")
         self.assertEqual(self.events(), ["right roll"])
         page.fill("#pfilter", "orbit")
-        self.assertEqual(page.eval_on_selector_all("#params .prm", "els => els.map(e => e.dataset.p)"), ["orbit_min_deg", "orbit_min_dur"])
+        self.assertEqual(page.eval_on_selector_all("#params .prm", "els => els.map(e => e.dataset.p)"), ["orbit_min_deg", "orbit_min_dur", "orbit_max_tilt"])
 
     # ---- drones --------------------------------------------------------------------------------------------------
 

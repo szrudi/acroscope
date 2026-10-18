@@ -73,6 +73,9 @@ def summary(arm: Arm, t0: float, t1: float) -> dict:
         out["motor_mean"] = round(_mean(_mean(m[i] for m in motors) for i in r))
         out["motor_max"] = round(max(max(m[i] for m in motors) for i in r))
         out["motor_min"] = round(min(min(m[i] for m in motors) for i in r))      # 0 = a motor stopped: not flying
+    cf = arm.crash_flip()
+    if cf is not None:
+        out["crash_flip"] = round(sum(cf[i] for i in r) / len(r), 2)          # the share of the window with the turtle switch on
     if "setpoint[0]" in arm:
         # what the sticks asked for after the rate curve (deg/s): intent, against the gyro's outcome (#22)
         sp = [arm.col(f"setpoint[{a}]") for a in range(3)]

@@ -28,6 +28,12 @@ HEADER_KEYS = ["Firmware revision", "Craft name", "looptime", "pid_process_denom
 MAGIC = b"ACRO1\n"
 INDEX_VERSION = 3        # 3: rates_type read and the rate profile (max and centre rate per axis) in every arm's meta (#22)
 
+# Betaflight logs its box switches in `flightModeFlags` (not the flight modes the name suggests: arming is bit 0, which
+# is why a decoder labels an acro arm "ANGLE"). On these logs the crash-flip ("turtle") switch is bit 31: fifty arms
+# of eleven logs carry it, every one with the throttle at 0 throughout and the length of a flip-over, the few mixed
+# arms only in their last frames, where the switch was flipped after the crash (2026-10-18).
+CRASH_FLIP_BIT = 1 << 31
+
 # Betaflight's rate types (`rates_type`, since 4.2): what `rates`, `rc_rates` and `rc_expo` mean.
 RATES_TYPES = ["betaflight", "raceflight", "kiss", "actual", "quick"]
 SETPOINT_RATE_LIMIT = 1998.0
@@ -160,6 +166,15 @@ class Arm:
     def tilt(self, i: int) -> float:
         """Angle between body-up and world-up, degrees (0 level, 180 inverted)."""
         return math.degrees(math.acos(max(-1.0, min(1.0, self.up_body(i)[2]))))
+
+    def crash_flip(self) -> array.array | None:
+        """Per frame, 1 where the crash-flip (turtle) switch is on: the quad on the ground flipping itself over, not
+        flying. None when the log has no flightModeFlags."""
+        if "flightModeFlags" not in self._cols:
+            return None
+        if not hasattr(self, "_crash_flip"):
+            self._crash_flip = array.array("b", (1 if int(v) & CRASH_FLIP_BIT else 0 for v in self._cols["flightModeFlags"]))
+        return self._crash_flip
 
 
 # ---- decoding -------------------------------------------------------------------------------------------------

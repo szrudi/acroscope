@@ -10,7 +10,10 @@ judges each window it yields by the window's features. All six are the scans of 
   motor_drop    one motor's eRPM falling while its command is at full (motor loss)
 
 Each window is a frame range [i0, i1) plus the nominal arm seconds it reports (a point event's window runs around
-its instant, even past the arm's ends), the instant for point events, and what the scan itself measured."""
+its instant, even past the arm's ends), the instant for point events, and what the scan itself measured.
+
+Frames with the crash-flip (turtle) switch on are not flight: the quad is on the ground flipping itself over, and
+what it does there is no trick and no crash (the crash came before). No scan looks at them (`flying`)."""
 import math
 from dataclasses import dataclass, field
 
@@ -59,12 +62,22 @@ class Window:
     extras: dict = field(default_factory=dict)
 
 
+def flying(arm: Arm):
+    """A predicate: frame i is flight (the crash-flip switch off, or a log without the flag)."""
+    cf = arm.crash_flip()
+    if cf is None:
+        return lambda i: True
+    return lambda i: not cf[i]
+
+
 def _runs(arm: Arm, active, gap: float) -> list[tuple[int, int]]:
-    """[(first, last)] frame runs where `active(i)`, merged when the gap between two is under `gap` s."""
+    """[(first, last)] frame runs where `active(i)` and the quad is flying, merged when the gap between two is under
+    `gap` s."""
     runs, cur = [], None
     t = arm.t
+    fly = flying(arm)
     for i in range(arm.n):
-        if active(i):
+        if fly(i) and active(i):
             if cur and t[i] - t[cur[1]] < gap:
                 cur[1] = i
             else:
@@ -162,9 +175,10 @@ def throttle_cut(arm: Arm, o: dict) -> list[Window]:
     a longer one ends it where the blip began."""
     rc3 = arm.col("rcCommand[3]")
     level = 1000 + 10 * o["below"]
+    fly = flying(arm)
     out, start, up_since = [], None, None
     for i in range(arm.n + 1):
-        cut = i < arm.n and rc3[i] < level
+        cut = i < arm.n and rc3[i] < level and fly(i)
         if cut and start is None:
             start = i
         elif cut:
@@ -188,9 +202,10 @@ def impact(arm: Arm, o: dict) -> list[Window]:
     acc = [arm.col(f"accSmooth[{a}]") for a in range(3)]
     raw = [arm.col(f"gyroUnfilt[{a}]") for a in range(3)]
     w = max(1, int(arm.rate * o["jolt_window"]))
+    fly = flying(arm)
     out, last = [], -1e9
     for i in range(arm.n):
-        if arm.t[i] - last < o["cooldown"]:
+        if arm.t[i] - last < o["cooldown"] or not fly(i):
             continue
         a = math.sqrt(sum((c[i] / 2048) ** 2 for c in acc))
         if a > o["g"]:
@@ -207,10 +222,11 @@ def kick(arm: Arm, o: dict) -> list[Window]:
     raw = [arm.col(f"gyroUnfilt[{a}]") for a in range(3)]
     rc2 = arm.col("rcCommand[2]")
     stick = 5 * o["stick"]
+    fly = flying(arm)
     out, last = [], -1e9
     for i in range(arm.n):
         y = abs(raw[2][i])
-        if y > o["rate"] and y > o["ratio"] * max(abs(raw[0][i]), abs(raw[1][i])) and abs(rc2[i]) < stick and arm.t[i] - last > o["cooldown"]:
+        if fly(i) and y > o["rate"] and y > o["ratio"] * max(abs(raw[0][i]), abs(raw[1][i])) and abs(rc2[i]) < stick and arm.t[i] - last > o["cooldown"]:
             out.append(_around(arm, i, o["before"], o["after"], raw_yaw_dps=round(raw[2][i])))
             last = arm.t[i]
     return out
@@ -232,9 +248,10 @@ def motor_drop(arm: Arm, o: dict) -> list[Window]:
     def near_impact(t):
         k = bisect_left(impacts, t)
         return (k < len(impacts) and impacts[k] - t < o["skip_impact_s"]) or (k > 0 and t - impacts[k - 1] < o["skip_impact_s"])
+    fly = flying(arm)
     out, last = [], -1e9
     for i in range(w, arm.n - h):
-        if arm.t[i] - last < o["cooldown"] or near_impact(arm.t[i]):
+        if arm.t[i] - last < o["cooldown"] or near_impact(arm.t[i]) or not fly(i):
             continue
         for m in range(4):
             before, now = rpm[m][i - w], rpm[m][i]

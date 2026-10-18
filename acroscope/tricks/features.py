@@ -30,6 +30,7 @@ WINDOW = {
     "motor_min": "the lowest motor command: 0 = a motor stopped (crash flip mode, a disarm), the quad was not flying",
     "setpoint_peak_dps.roll": "peak |setpoint|: the rate the sticks asked for, deg/s; none when not logged",
     "setpoint_peak_dps.pitch": "", "setpoint_peak_dps.yaw": "",
+    "crash_flip": "the share of the window with the crash-flip (turtle) switch on; none without flightModeFlags. No scan cuts a window there",
     "to_arm_end_s": "seconds from the window's end (a point event: from its instant) to the arm's end",
 }
 ARM = {

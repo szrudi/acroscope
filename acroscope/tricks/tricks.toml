@@ -25,7 +25,9 @@ loop_min_dur = 1.5           # ...over at least this long, s (faster is a back f
 dive_min_tilt = 40           # a dive points down at least this much on average, deg from level
 dive_flying_pct = 25         # the throttle in the 2 s before a dive: the quad was flying, not armed on the ground
 orbit_min_deg = 300          # an orbit turns the heading at least this much the same way (a three-quarter turn is a turn)...
-orbit_min_dur = 3.0          # ...over at least this long, s
+orbit_min_dur = 3.0          # ...over at least this long, s...
+orbit_max_tilt = 100         # ...flown upright: the mean tilt under this (a crash flip rolling the quad over on the ground
+                             # turns its heading too: 10-16 001 m19)
 figure8_min_deg = 150        # a figure 8: a turn between this much...
 figure8_max_deg = 450        # ...and this much one way, then the other way
 landing_window_s = 2.5       # an impact this close to the arm's end is how most arms end: a landing, not a crash
@@ -298,21 +300,22 @@ examples = [{ log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl
 id = "orbit"
 tag = "orbit"
 segment = "turn"
-when = ["abs(turn_deg) >= orbit_min_deg", "duration >= orbit_min_dur"]
+when = ["abs(turn_deg) >= orbit_min_deg", "duration >= orbit_min_dur", "tilt_deg.mean <= orbit_max_tilt", "not (motor_min == 0)"]
 title = "orbit sliding {side}, {laps} laps"
 why = "heading {turn_deg:+} deg in {duration} s ({turn_rate_dps:+} dps, + = anticlockwise from above), bank {tilt_deg.mean} deg, throttle {throttle_pct.mean} % against about {craft.hover_pct} % level"
 examples = [
   { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 1, at = 120.0, note = "about 2 laps sliding right around the small tree (m06)" },
   { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 4, at = 14.0, note = "sliding left, 1.3 laps (m43)" },
   { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261014_185010_BETAFPVG473_V2.bbl", arm = 15, at = 27.0, note = "a nose-forward orbit: body yaw 451 but the heading turned 901 (m32)" },
+  { log = "BTFL_BLACKBOX_LOG_OTTOJR_20261016_185732_BETAFPVG473_V2.bbl", arm = 10, from = 0, to = 6, absent = true, note = "crash flip mode on the ground, throttle 0, a motor stopped, inverted: rolling over turned the heading 289 deg (10-16 001 m19)" },
 ]
 
 [[trick]]
 id = "figure-8"
 tag = "orbit"
 phases = [
-  { segment = "turn", when = ["figure8_min_deg <= abs(turn_deg) <= figure8_max_deg"] },
-  { segment = "turn", within = 2.0, when = ["figure8_min_deg <= abs(turn_deg) <= figure8_max_deg", "side != p1.side"] },
+  { segment = "turn", when = ["figure8_min_deg <= abs(turn_deg) <= figure8_max_deg", "tilt_deg.mean <= orbit_max_tilt", "not (motor_min == 0)"] },
+  { segment = "turn", within = 2.0, when = ["figure8_min_deg <= abs(turn_deg) <= figure8_max_deg", "side != p1.side", "tilt_deg.mean <= orbit_max_tilt", "not (motor_min == 0)"] },
 ]
 title = "figure 8: {p1.side} then {p2.side}"
 why = "turned {p1.turn_deg:+} deg then {p2.turn_deg:+} in {duration} s, bank {tilt_deg.mean} deg, throttle {throttle_pct.mean} %"

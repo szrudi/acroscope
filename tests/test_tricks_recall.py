@@ -62,6 +62,37 @@ class OrbitTest(unittest.TestCase):
         beginner.validate()
         self.assertEqual(titles(make_arm(10, gyro=banked_turn(2.0, 6.0, 60), quat0=quat_from_lean(0, 40)), beginner), ["orbit sliding right, 0.7 laps"])
 
+    def test_a_crash_flip_turning_the_heading_is_no_orbit(self):
+        """10-16 001 m19: the quad on its back in crash flip mode, rolling itself over for seconds, turned its heading
+        289 deg. An orbit is flown: the quad upright on average and no motor stopped."""
+        spin = axis(2, pulse(1.0, 7.0, 60))
+        turtle = make_arm(10, gyro=spin, throttle=0, quat0=quat_from_lean(180, 0), motors=lambda t: (0, 0, 1200, 1200))
+        self.assertEqual(titles(turtle), [])
+        inverted_only = make_arm(10, gyro=spin, quat0=quat_from_lean(180, 0))
+        self.assertEqual(titles(inverted_only), [])
+        stopped_only = make_arm(10, gyro=spin, motors=lambda t: (0, 1200, 1200, 1200))
+        self.assertEqual(titles(stopped_only), [])
+        self.assertEqual(titles(make_arm(10, gyro=spin, motors=lambda t: (1200,) * 4)), ["orbit sliding right, 1.0 laps"])
+        # the figure 8 asks the same of each half
+        import math
+        gyro = combine(banked_turn(2.0, 6.0, 60), banked_turn(6.5, 10.5, -60))
+        self.assertEqual(titles(make_arm(14, gyro=gyro, quat0=quat_from_lean(0, 40), motors=lambda t: (0, 1200, 1200, 1200))), [])
+
+    def test_turtle_mode_is_not_flight(self):
+        """The log's crash-flip switch (flightModeFlags bit 31): no scan cuts a window while it is on, so nothing that
+        happens there is a trick or a crash; a trick before the switch is flipped stays, as does the crash."""
+        spin = axis(2, pulse(1.0, 7.0, 60))
+        turtle = make_arm(10, gyro=spin, throttle=0, motors=lambda t: (1200,) * 4, crash_flip=lambda t: True)    # a whole arm in turtle
+        self.assertEqual(titles(turtle), [])
+        self.assertEqual(tricks.explain(turtle, LIB)["windows"], [])
+        acc, raw = impact(3.0)
+        rolled_then_turtle = make_arm(10, gyro=combine(axis(0, pulse(2.0, 2.72, 500)), spin), acc=acc, raw=raw, crash_flip=lambda t: t >= 3.4)
+        self.assertEqual(titles(rolled_then_turtle), ["right roll", "impact"])
+        ex = tricks.explain(rolled_then_turtle, LIB)
+        self.assertTrue(all(w["arm_from"] < 3.4 for w in ex["windows"]))
+        self.assertAlmostEqual(next(e for e in tricks.detect(rolled_then_turtle, LIB) if e["tag"] == "crash")["numbers"]["crash_flip"], 0.4, delta=0.05)     # the window runs 0.5 before to 1.0 after the impact at 3.0; turtle from 3.4
+        self.assertEqual(titles(make_arm(10, gyro=spin, motors=lambda t: (1200,) * 4, crash_flip=lambda t: False)), ["orbit sliding right, 1.0 laps"])
+
     def test_a_flat_turn_is_an_orbit_too(self):
         """Indoors Rudi orbits the lamp at 7-12 deg of bank (10-15, 10-16): the heading, not the bank, is the signal."""
         self.assertEqual(titles(make_arm(14, gyro=axis(2, pulse(2.0, 10.0, 50)))), ["orbit sliding right, 1.1 laps"])

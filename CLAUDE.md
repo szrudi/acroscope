@@ -54,6 +54,9 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   (`acroscope/static/config.html`, one file like the player, five tabs) edits that layer whole through
   `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
   against what the server then holds.
+- `flightModeFlags` in the log is Betaflight's box-switch mask, not the flight modes (arming is bit 0, which is why a
+  decoder calls an acro arm "ANGLE"); bit 31 is the crash-flip (turtle) switch on Rudi's quads (`blackbox.CRASH_FLIP_BIT`,
+  2026-10-18: fifty arms, all throttle 0 throughout). `segments.flying` keeps every scan off those frames.
 - Trick work needs real logs on joan: `acroscope fetch-log <fragment> --to <dir>/blackbox` (runs here, no deploy), then
   `ACROSCOPE_DATA=<dir> ACROSCOPE_CACHE=<cache> ACROSCOPE_URL=` with the branch's
   checkout on `PYTHONPATH` (a script run by path imports the main checkout's package otherwise): `arms` decodes, then
