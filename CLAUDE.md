@@ -97,9 +97,9 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   hand in `video-blackbox-index.md`; the #4 truths on 10-10 001) through the server. A pin of new behaviour is red
   until the server runs it. Red/green: write the test first for store, API, aligner and player work.
 - Smoke checks with known answers through the server, seconds each: `tricks check` (the tricks file's examples, the
-  10-07 pins among them); `sessions 10-07` (20 arms, 15 matches, 29
-  moments); `events 10-07 011` (motor 1 power loss at 1:23.4, hard landing at 1:24.4); `automatch 10-07 008`
-  without `--write` (arms 14/15/17 at about +4.75/+20.25/+64.25); `metrics 10-07 007 1:20 1:25 --loop` (-385 deg
+  10-07 pins among them); `sessions 2026-10-07` (20 arms, 15 matches, 29
+  moments); `events 2026-10-07 011` (motor 1 power loss at 1:23.4, hard landing at 1:24.4); `automatch 2026-10-07 008`
+  without `--write` (arms 14/15/17 at about +4.75/+20.25/+64.25); `metrics 2026-10-07 007 1:20 1:25 --loop` (-385 deg
   pitch); `automatch 2026-10-10 001` (15 arms, arm 1 at 8.0, arm 9 at 150.3, boot fit a = 0.9971).
 - `transcode --replace` rewrites clips in the data dir (a second lossy generation); Rudi's call, never run it unasked.
   Clips before 2026-10-09 are still HEVC; proxies in the cache are fine.

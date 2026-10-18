@@ -74,7 +74,7 @@ class RealDataTest(unittest.TestCase):
             runs = osd.video_arms(osd.read_timers(CLIP))
             idx = blackbox.index_bbl(BBL)
         else:
-            runs = osd.video_arms(cli_json("osd", "10-07", "008", "--json"))
+            runs = osd.video_arms(cli_json("osd", "2026-10-07", "008", "--json"))
             idx = cli_json("arms", BBL, "--json")
         real = [r for r in runs if r["length"] >= 2]
         for got, want in zip([r["start"] for r in real], [4.75, 20.25, 64.25]):     # ±0.1: the bias is 0.25, not 0.2, since #4
@@ -97,7 +97,7 @@ class RealDataTest(unittest.TestCase):
     def test_automatch_clip_008_derives_nothing_from_a_line_no_clock_explains(self):
         """#9: the 008 runs give boot 7 a line at -9 % (no clock does that); arm 16 was derived from it. The
         three read arms stay, nothing is derived."""
-        res = cli_json("automatch", "10-07", "008", "--json")
+        res = cli_json("automatch", "2026-10-07", "008", "--json")
         self.assertEqual(sorted(m["arm"] for m in res["matches"]), [14, 15, 17])
         self.assertTrue(all(f.get("rejected") for f in res["boot_fits"].values() if abs(f["a"] - 1) > osd.MAX_CLOCK))
 
