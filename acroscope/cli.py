@@ -454,7 +454,7 @@ def cmd_tricks(a):
                 last = desc or last
         return
     if what == "check":
-        res = tricks.check(lib, args or None)
+        res = tricks.check(lib, args or None, a.craft)
         if a.json:
             out(res)
         else:
