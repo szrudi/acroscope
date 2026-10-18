@@ -38,7 +38,8 @@ from .config import BLACKBOX_DIR, CACHE_DIR, DATA_DIR, H264_ARGS, VIDEOS_DIR
 INBOX_DIR = DATA_DIR / "inbox"
 ORIGINALS_DIR = DATA_DIR / "originals"
 STATE_DIR = DATA_DIR / "state"
-ORIGINAL_DAYS = 7          # an original is kept this long after its compressed clip verified
+ORIGINAL_DAYS = 60         # an original is kept this long after its compressed clip verified (Rudi, 2026-10-18: the
+                           # cutting still changes, and a clip is recut from its original; it was 7)
 TRASH_DAYS = 7             # a deleted clip waits this long in trash/<date>/ (sessions.delete_clip)
 RATE = 2                   # no-signal analysis samples per second
 THRESHOLD = 35             # luma range (16x12 frame, 10th-90th percentile) below this = flat: static, or a dark/flat picture
