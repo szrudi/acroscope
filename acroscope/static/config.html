@@ -212,7 +212,7 @@ function renderTricks() {
         `<div><span class="k">title</span><code>${esc(t.title)}</code></div><div><span class="k">why</span><code>${esc(t.why)}</code></div>` +
         (t.params.length ? `<div><span class="k">numbers</span>${t.params.map(esc).join(', ')}</div>` : '') +
         (t.requires.length ? `<div><span class="k">needs</span>${t.requires.map(esc).join(', ')}</div>` : '') +
-        t.suppress.map(r => `<div><span class="k">suppresses</span>${r.tags.map(esc).join(', ')}: ${r.margin !== null ? `windows within ${r.margin} s` : `instants within ${r.within} s`}</div>`).join('') +
+        t.suppress.map(r => `<div><span class="k">suppresses</span>${r.tags.map(esc).join(', ')}: ${r.margin !== null ? `windows within ${r.margin} s` : r.within !== null ? `instants within ${r.within} s` : `windows starting from ${r.start_after} s of the instant on`}</div>`).join('') +
         t.examples.map(e => `<div><span class="k">example</span>${esc(e.log.replace(/^BTFL_BLACKBOX_LOG_/, '').replace(/\.bbl$/, ''))} arm ${e.arm} ${e.at !== undefined ? `at ${e.at}` : `${e.absent ? 'none in' : 'in'} ${e.from}-${e.to}`}${e.note ? ` <span class="dim">(${esc(e.note)})</span>` : ''}</div>`).join('') +
         (t.note ? `<div><span class="k">note</span>${esc(t.note)}</div>` : '') + `</div></div>`;
     }).join('') + `</div>` +

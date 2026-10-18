@@ -14,9 +14,10 @@
     title = "{direction} roll"    # templates over the same names
     why = "roll {rotation_deg.roll:+} deg in {duration} s"
     priority = 10                 # on one window the highest wins; ties go to the earlier entry
-    suppress = [{ tags = ["flip"], margin = 1.0 }, { tags = ["motor-loss"], within = 0.5 }]
+    suppress = [{ tags = ["flip"], margin = 1.0 }, { tags = ["motor-loss"], within = 0.5 }, { tags = ["roll"], start_after = -0.5 }]
                                   # a detection of this trick drops those tags' detections: windows overlapping this one
-                                  # grown by `margin` s, or point events within `within` s of this one's instant
+                                  # grown by `margin` s, point events within `within` s of this one's instant, or windows
+                                  # starting from `start_after` s after this one's instant onward (negative: before it)
     requires = ["eRPM[0]"]        # log fields the trick needs beyond its segment's; without them it is skipped
     examples = [{ log = "x.bbl", arm = 20, at = 70.4 }, { log = "x.bbl", arm = 6, from = 10, to = 20, absent = true }]
                                   # `acroscope tricks check` runs them: a detection of this trick over `at`, or none over from-to
@@ -89,6 +90,7 @@ class Rule:
     tags: tuple
     margin: float | None = None
     within: float | None = None
+    start_after: float | None = None
 
 
 @dataclass
@@ -377,14 +379,14 @@ class Library:
         return Phase(seg, self._conditions(ph.get("when", []), tid, source), _number(within, f"trick {tid}: phase {k + 1} within", source))
 
     def _rule(self, r, tid: str, source: str) -> Rule:
-        if not isinstance(r, dict) or not isinstance(r.get("tags"), list) or not r["tags"] or set(r) - {"tags", "margin", "within"} \
+        kinds = ("margin", "within", "start_after")
+        if not isinstance(r, dict) or not isinstance(r.get("tags"), list) or not r["tags"] or set(r) - {"tags", *kinds} \
                 or not all(isinstance(x, str) for x in r["tags"]):
-            raise LibraryError(_where(source, f"trick {tid}: a suppress rule is {{ tags = [...], margin = s }} or {{ tags = [...], within = s }}, not {r!r}"))
-        if ("margin" in r) == ("within" in r):
-            raise LibraryError(_where(source, f"trick {tid}: a suppress rule has either margin or within"))
-        margin = _number(r["margin"], f"trick {tid}: margin", source) if "margin" in r else None
-        within = _number(r["within"], f"trick {tid}: within", source) if "within" in r else None
-        return Rule(tuple(r["tags"]), margin, within)
+            raise LibraryError(_where(source, f"trick {tid}: a suppress rule is {{ tags = [...], margin = s }}, {{ tags = [...], within = s }} or {{ tags = [...], start_after = s }}, not {r!r}"))
+        if sum(k in r for k in kinds) != 1:
+            raise LibraryError(_where(source, f"trick {tid}: a suppress rule has one of margin, within, start_after"))
+        values = {k: (_number(r[k], f"trick {tid}: {k}", source) if k in r else None) for k in kinds}
+        return Rule(tuple(r["tags"]), values["margin"], values["within"], values["start_after"])
 
     def _example(self, e, tid: str, source: str) -> dict:
         if not isinstance(e, dict) or set(e) - EXAMPLE_KEYS or not isinstance(e.get("log"), str) or not isinstance(e.get("arm"), int):
