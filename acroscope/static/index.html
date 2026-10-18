@@ -533,7 +533,8 @@ function renderMoments() {
     <span class="act"><button class="small" data-link="${esc(m.id)}" title="copy link">⛓</button><button class="small" data-edit="${esc(m.id)}" title="edit">✎</button><button class="small" data-del="${esc(m.id)}" title="delete">✕</button></span>
     <span class="t">${$('#allClips').checked ? esc(clipNum(m.video)) + ' · ' : ''}${fmt(m.start)}–${fmt(m.end)}${m.metrics ? ' · ' + metricLine(m.metrics) : ''}</span>
     <span class="note">${esc(m.note || '')}</span></div>`).join('') || '<div class="empty">no moments yet: set in/out with <kbd>i</kbd> <kbd>o</kbd>, then <kbd>t</kbd></div>';
-  document.querySelectorAll('.m').forEach(el => el.onclick = e => {
+  // its own rows only: the suggestion rows share the class, and a later render took over their clicks (accept did nothing)
+  document.querySelectorAll('#moments .m').forEach(el => el.onclick = e => {
     if (e.target.dataset.link) return copyLink(e.target.dataset.link);
     if (e.target.dataset.edit) return editMoment(e.target.dataset.edit);
     if (e.target.dataset.del) return delMoment(e.target.dataset.del);

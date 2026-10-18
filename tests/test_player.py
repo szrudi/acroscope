@@ -622,6 +622,26 @@ class PlayerTest(unittest.TestCase):
         self.assertIn("no sound", texts[1])
         self.assertNotIn("re-timed", texts[0] + texts[2])
 
+    def test_suggestions_keep_their_clicks_after_the_moments_render(self):
+        """Rudi: accept on a suggestion worked at first, then after playing and clicking around did nothing, and a
+        suggestion no longer jumped. renderMoments put its click handler on every `.m` in the page, the suggestion rows
+        included (same class), so each later render of the moments list took them over: a click "played" a moment
+        that is not there. Its handler stays on its own list now."""
+        S = "2026-10-16-all"
+        if not any(m["title"] == "one" for m in self.api.load(S)["moments"]):
+            self.api.tag(S, "2026-10-16_001.mp4", 1, 2, "one", [])
+        page = self.open(S, PHONE)
+        page.wait_for_function("() => window._open !== undefined")              # the page's own clip load has rendered
+        page.evaluate("""() => { sugg = [{tag: 'roll', title: 'right roll', start: 20, end: 22, why: 'test', numbers: {}}, {tag: 'flip', title: 'flip', start: 40, end: 41, why: 'test', numbers: {}}];
+          suggErr = ''; renderSugg(); renderMoments(); }""")                     # the moments list renders after the suggestions
+        page.click("#mtabs [data-mtab=sugg]")
+        page.locator("#sugg [data-acc]").nth(1).click()
+        self.assertTrue(page.evaluate("() => !!ed && ed.start === 40 && document.getElementById('editor').classList.contains('open')"))
+        page.click("#editor button:has-text('cancel')")
+        page.evaluate("() => { renderMoments(); v.pause = () => {}; window.__seek = null; Object.defineProperty(v, 'currentTime', {set(t) { window.__seek = t; }, get() { return 0; }, configurable: true}); v.play = () => Promise.resolve(); }")
+        page.locator("#sugg .m .ttl").first.click()
+        self.assertEqual(page.evaluate("() => window.__seek"), 19.5)                # a suggestion still jumps (half a second before it)
+
     def test_flash_restores_what_is_there_now(self):
         """A status written between two flashes (the reload clearing "decoding…") is what comes back, not the text
         before the first flash; and a flash after the last one ran out starts afresh."""
