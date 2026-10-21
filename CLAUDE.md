@@ -54,6 +54,15 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   (`acroscope/static/config.html`, one file like the player, five tabs) edits that layer whole through
   `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
   against what the server then holds.
+- Sharing (#57, `acroscope/share.py`): `acroscope share <session> <moment>` renders `shares/<token>/` (a cut of the
+  clip without sound or metadata, `static/share.html` filled with the stick samples and the text) and records it in
+  the `shares` table; `unshare` takes one down, `shares` lists them, `housekeeping` removes expired bundles. The three
+  commands are proxied (the clips are on the server); the share text is in `server.FREE_TEXT`. The server never serves a share: a static server
+  does (`compose.yaml`'s `shares` service, `shares.Caddyfile`, `:8071`), or `ACROSCOPE_SHARE_PUSH`/`_REVOKE` push the
+  bundle elsewhere. `ACROSCOPE_SHARE_URL` is the public base URL; it and the vhost in front of `:8071` are homelab
+  settings (never in this repo). The bundle must name nothing (no session, clip, log, craft, date, moment id) and
+  fetch nothing but its clip: `tests/test_share.py` and `tests/test_share_page.py` pin that; keep them when the
+  viewer changes. Tokens are `[a-z0-9]{24}` and `share.token_ok` guards every path built from one.
 - `flightModeFlags` in the log is Betaflight's box-switch mask, not the flight modes (arming is bit 0, which is why a
   decoder calls an acro arm "ANGLE"); bit 31 is the crash-flip (turtle) switch on Rudi's quads (`blackbox.CRASH_FLIP_BIT`,
   2026-10-18: fifty arms, all throttle 0 throughout). `segments.flying` keeps every scan off those frames.
