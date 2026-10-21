@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS tags (
   name TEXT PRIMARY KEY, category TEXT NOT NULL REFERENCES tag_categories(name), color TEXT, pos INTEGER NOT NULL);
 -- what the pilot set in the player, as JSON documents: the tricks layer under 'tricks' (#45)
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+-- a moment published as a static bundle on a secret link (#57): what was shared, the window, until when; the row
+-- stays after a revoke or an expiry as the record of what was public (the bundle itself is in the shares dir)
+CREATE TABLE IF NOT EXISTS shares (
+  token TEXT PRIMARY KEY, session TEXT NOT NULL, video TEXT NOT NULL, moment TEXT, start REAL NOT NULL, end REAL NOT NULL,
+  text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT);
 """
 
 # The tag vocabulary a new database starts with: categories with a colour, tags with the colour the player used
@@ -381,7 +386,7 @@ class Db:
         try:
             self.c.execute("INSERT INTO sessions (name, date, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                            (new, new[:10], row["note"], row["created_at"], now()))
-            for t in ("videos", "blackbox", "detached", "matches", "moments", "batch_clips"):
+            for t in ("videos", "blackbox", "detached", "matches", "moments", "batch_clips", "shares"):
                 self.c.execute(f"UPDATE {t} SET session = ? WHERE session = ?", (new, old))
             self.c.execute("UPDATE videos SET original = replace(original, ?, ?) WHERE session = ? AND original LIKE ?",
                            (f"originals/{old}/", f"originals/{new}/", new, f"originals/{old}/%"))   # the folder moves too
@@ -406,6 +411,7 @@ class Db:
                                (to, self.next_id(to) if taken else r["id"], session, r["id"]))
             self.c.execute("UPDATE matches SET session = ? WHERE session = ? AND video = ?", (to, session, file))
             self.c.execute("UPDATE batch_clips SET session = ? WHERE session = ? AND file = ?", (to, session, file))
+            self.c.execute("UPDATE shares SET session = ? WHERE session = ? AND video = ?", (to, session, file))
             self.c.execute("UPDATE videos SET session = ? WHERE session = ? AND file = ?", (to, session, file))
             self.c.execute("COMMIT")
         except Exception:
@@ -555,6 +561,34 @@ class Db:
             for t in json.loads(r["tags"]):
                 out[t] = out.get(t, 0) + 1
         return out
+
+    # ---- shares (#57) ------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def _share(r) -> dict:
+        """A share row with its state: active, expired (past expires_at) or revoked."""
+        d = dict(r)
+        d["state"] = "revoked" if d["revoked_at"] else ("expired" if d["expires_at"] and d["expires_at"] <= now() else "active")
+        return d
+
+    def add_share(self, token: str, session: str, video: str, moment: str | None, start: float, end: float, text: str,
+                  expires_at: str | None) -> dict:
+        self.c.execute("INSERT INTO shares (token, session, video, moment, start, end, text, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (token, session, video, moment, start, end, text, now(), expires_at))
+        return self.share(token)
+
+    def share(self, token: str) -> dict | None:
+        r = self.c.execute("SELECT * FROM shares WHERE token = ?", (token,)).fetchone()
+        return self._share(r) if r else None
+
+    def shares(self, all: bool = False) -> list[dict]:
+        """The active shares, oldest first; with `all` the expired and revoked ones too."""
+        rows = [self._share(r) for r in self.c.execute("SELECT * FROM shares ORDER BY created_at, token")]
+        return rows if all else [r for r in rows if r["state"] == "active"]
+
+    def revoke_share(self, token: str) -> bool:
+        """Mark a share revoked (once). True when it was not yet."""
+        return self.c.execute("UPDATE shares SET revoked_at = ? WHERE token = ? AND revoked_at IS NULL", (now(), token)).rowcount > 0
 
     # ---- import of the old session.json files -----------------------------------------------------------------
 
