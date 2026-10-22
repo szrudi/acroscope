@@ -329,9 +329,10 @@ The link is the secret: 24 random characters (more than 120 bits), no index anyw
 takes one down at once, and the nightly housekeeping removes expired bundles. `acroscope shares` lists what is up
 (`--all` with the expired and revoked ones). The bundle carries nothing that names the source: no session, clip,
 log, craft, date or moment id, and the viewer fetches nothing but its own clip (no fonts, no scripts, no preview
-image). The clip's picture is what it is, though: before sharing, look at the frames for anything that locates
-the place (a house, a street) or shows other people, and think about what the flying itself shows; the issue has
-the checklist.
+image). The clip's picture is what it is, though: the OSD is burned into analog DVR footage, so the craft's name, the
+timers and the battery are in every share; before sharing, look at the frames for anything that locates the place
+(a house, a street) or shows other people, and think about what the flying itself shows; the issue has the
+checklist.
 
 ## Configuration page
 

@@ -636,9 +636,13 @@ def cmd_shares(a):
         return out(rows)
     if not rows:
         return print("no shares" + ("" if a.all else " (--all lists expired and revoked ones too)"))
+    names = {}                                            # a clip's readable name (<date>_NNN), not the digits of its id
     for r in rows:
+        if r["session"] not in names:
+            names[r["session"]] = {v["file"]: v.get("name") or v["file"] for v in sessions.load(r["session"])["videos"]}
+        clip = names[r["session"]].get(r["video"], r["video"])
         until = "never expires" if not r["expires_at"] else f"until {r['expires_at'][:16]}"
-        print(f"{r['token']}  {r['state']:8} {r['session']} {r['video'][-7:-4]} {fmt_time(r['start'])}-{fmt_time(r['end'])}  "
+        print(f"{r['token']}  {r['state']:8} {r['session']} {clip[-3:]} {fmt_time(r['start'])}-{fmt_time(r['end'])}  "
               f"{r['text'][:40]!r}  {until}  {r['url'] or '(no ACROSCOPE_SHARE_URL on the server)'}")
 
 

@@ -257,6 +257,7 @@ class ShareTest(unittest.TestCase):
         r = cli(self.env, "shares")
         self.assertIn(s["token"], r.stdout)
         self.assertIn("half roll", r.stdout)
+        self.assertIn(" 001 ", r.stdout)                                                    # the clip by its readable name's number
 
     def test_text_and_expiry_options(self):
         s = self.share("m01", "--text", '<b>hi</b> & a 1/2 roll', "--expires", "never")
