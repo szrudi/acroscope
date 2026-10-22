@@ -195,6 +195,7 @@ def cmd_housekeeping(a):
     out({"originals_removed": ingest.cleanup_originals(log=lambda m: print(m, file=sys.stderr)),
          "trash_emptied": ingest.cleanup_trash(log=lambda m: print(m, file=sys.stderr)),
          "shares_taken_down": share.cleanup_expired(log=lambda m: print(m, file=sys.stderr)),
+         "shares_refreshed": share.refresh_pages(log=lambda m: print(m, file=sys.stderr)),
          "backup": str(ingest.backup_db() or "")})
 
 

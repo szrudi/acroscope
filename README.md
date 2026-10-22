@@ -345,7 +345,9 @@ fails leaves no share; a revoke that fails leaves the share up and says so.
 The link is the secret: 24 random characters (more than 120 bits), no index anywhere. A secret link is still not private
 (links get forwarded, chat apps fetch them for a preview, a link pasted in public gets indexed), so a share
 **expires after 30 days** unless `--expires` says otherwise (`12h`, `2w`, `never`); `acroscope unshare <token>`
-takes one down at once, and the nightly housekeeping removes expired bundles. `acroscope shares` lists what is up
+takes one down at once, and the nightly housekeeping removes expired bundles. A bundle is static, so housekeeping
+(at every server start too) also writes the page of every share that is up again when the viewer shipped with
+acroscope is newer than it: a better viewer reaches the links already out; the clip and the link stay as they are. `acroscope shares` lists what is up
 (`--all` with the expired and revoked ones). The bundle carries nothing that names the source: no session, clip,
 log, craft, date or moment id, and the viewer fetches nothing but its own clip (no fonts, no scripts, no preview
 image). The clip's picture is what it is, though: the OSD is burned into analog DVR footage, so the craft's name, the

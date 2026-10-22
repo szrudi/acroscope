@@ -57,7 +57,8 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - Sharing (#57, `acroscope/share.py`): `acroscope share <session> <moment>` renders `shares/<token>/` (a cut of the
   clip without sound or metadata, `static/share.html` filled with the stick samples and the text) and records it in
   the `shares` table; `unshare` takes one down, `shares` lists them, `housekeeping` removes expired bundles and
-  day-old previews. The three commands are proxied (the clips are on the server); the share text is in
+  day-old previews and re-renders the page of every active share older than `share.html` (`share.refresh_pages`:
+  a bundle is static, so this is how a viewer change reaches the links already out). The three commands are proxied (the clips are on the server); the share text is in
   `server.FREE_TEXT`. The player's panel (⤴ on a moment, `index.html`) and the configuration page's shares tab use
   the API: `POST /api/share/preview` renders into the cache's `share-preview/<id>/` (served back at
   `/share-preview/<id>/`, the viewer in an iframe), `POST /api/share` publishes (a preview whose facts match is

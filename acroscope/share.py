@@ -277,10 +277,14 @@ def build(r: dict, into: Path, log=lambda m: None) -> None:
 
 
 def _write_page(r: dict, into: Path, token: str | None) -> None:
+    """The page beside the clip; the poster is there or not (the file is the truth, so a refresh keeps it). Written
+    whole: a visitor mid-write never sees half a page."""
     poster = None
-    if r["poster"] is not None:
+    if (into / "poster.jpg").is_file():
         poster = f"{SHARE_URL}/{token}/poster.jpg" if token and SHARE_URL else "poster.jpg"
-    (into / "index.html").write_text(page(r["text"], r["samples"], audio=r["audio"], poster=poster))
+    tmp = into / "index.html.new"
+    tmp.write_text(page(r["text"], r["samples"], audio=r["audio"], poster=poster))
+    tmp.replace(into / "index.html")
 
 
 def _public(r: dict) -> dict:
@@ -389,6 +393,35 @@ def revoke(token: str, log=lambda m: None) -> dict:
     _take_down(token, SHARES_DIR / token, log)
     store.revoke_share(token)
     return _row(store.share(token))
+
+
+def refresh_pages(log=lambda m: None) -> list[str]:
+    """Housekeeping (so at every server start too): a bundle is static, and a deploy with a better viewer would
+    leave the shares that are up with the old page. Every active share whose page is older than the template gets
+    its page written again from the row (the window, the text), the match (the sticks, as before), the clip (the
+    sound, as before) and the poster beside it; the clip is not touched, the link does not change, and the push
+    hook runs again for the copy elsewhere. One that cannot be rendered (its clip or match gone) is logged and
+    kept as it is. Returns the tokens refreshed."""
+    done = []
+    stamp = TEMPLATE.stat().st_mtime
+    for r in sessions.store().shares():
+        d = SHARES_DIR / r["token"]
+        pg = d / "index.html"
+        if not token_ok(r["token"]) or not pg.is_file() or pg.stat().st_mtime >= stamp:
+            continue
+        old = pg.read_text()
+        try:
+            facts = resolve(session=r["session"], video=r["video"], start=r["start"], end=r["end"], text=r["text"],
+                            sticks="const STICKS = null;" not in old, audio="const AUDIO = true;" in old)
+            _write_page(facts, d, r["token"])
+            if SHARE_PUSH:
+                run_hook(SHARE_PUSH, r["token"], d)
+        except (ValueError, FileNotFoundError, OSError) as e:
+            log(f"share {r['token']}: page not refreshed ({e})")
+            continue
+        done.append(r["token"])
+        log(f"share {r['token']}: page refreshed")
+    return done
 
 
 def cleanup_expired(log=lambda m: None) -> list[str]:

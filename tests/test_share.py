@@ -382,6 +382,59 @@ class ShareTest(unittest.TestCase):
         r = cli(self.env, "housekeeping")                                                 # nothing to do the next day
         self.assertNotIn(tok, json.loads(r.stdout)["shares_taken_down"])
 
+    def test_a_newer_viewer_reaches_the_shares_that_are_up(self):
+        """A bundle is static, so a deploy with a better viewer left the shares that were up with the old page
+        (Rudi, 2026-10-22: the keys did nothing on a share made before them). Housekeeping, which also runs at
+        every server start, re-renders the page of every active share whose page is older than the template:
+        the same clip, poster, sticks and sound, the link unchanged; a revoked one is left alone, and the push
+        hook runs again for the copy elsewhere."""
+        pushes = self.root / "pushes.txt"
+        env = dict(self.env, ACROSCOPE_SHARE_PUSH=f'{PY} -c "import sys; open(sys.argv[1], \'a\').write(sys.argv[2] + chr(10))" {pushes} {{token}}')
+        a = self.share("m01", "--poster", "3.5", "--audio", env=env)                         # sticks, a poster, sound
+        b = self.share("m02", "--no-sticks", "--pad", "0.5", env=env)                         # none of those
+        c = self.share("m01", env=env)
+        assert cli(env, "unshare", c["token"]).returncode == 0
+        self.assertEqual(pushes.read_text().split(), [a["token"], b["token"], c["token"]])
+        pages = {t: self.root / "shares" / t / "index.html" for t in (a["token"], b["token"])}
+        old = time.time() - 7 * 86400
+        for pg in pages.values():
+            pg.write_text(pg.read_text().replace("<footer>acroscope</footer>", "<footer>old viewer</footer>"))
+            os.utime(pg, (old, old))                                                          # made before the template changed
+        clips = {t: (self.root / "shares" / t / "clip.mp4").stat() for t in pages}
+        # an expired share whose takedown fails (its revoke hook) keeps its bundle: not a page to refresh, nor to push
+        db = Db(self.root / "t.db")
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(microsecond=0).isoformat()
+        db.add_share("x" * 24, SESSION, CLIP, "m01", 2.0, 5.0, "stuck", past)
+        (self.root / "shares" / ("x" * 24)).mkdir()
+        (self.root / "shares" / ("x" * 24) / "index.html").write_text("<footer>old viewer</footer>")
+        os.utime(self.root / "shares" / ("x" * 24) / "index.html", (old, old))
+        env = dict(env, ACROSCOPE_SHARE_REVOKE=f'{PY} -c "import sys; sys.exit(2)"')
+        r = cli(env, "housekeeping")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(sorted(json.loads(r.stdout)["shares_refreshed"]), sorted(pages))
+        self.assertEqual((self.root / "shares" / ("x" * 24) / "index.html").read_text(), "<footer>old viewer</footer>")
+        for t, pg in pages.items():
+            html = pg.read_text()
+            self.assertNotIn("old viewer", html)
+            self.assertIn("<footer>acroscope</footer>", html)
+            self.assertEqual((self.root / "shares" / t / "clip.mp4").stat().st_mtime, clips[t].st_mtime)   # the clip untouched
+        html_a, html_b = pages[a["token"]].read_text(), pages[b["token"]].read_text()
+        self.assertIn('"throttle": [', html_a)
+        self.assertIn("const AUDIO = true;", html_a)
+        self.assertIn(f'content="https://share.example/{a["token"]}/poster.jpg"', html_a)
+        self.assertIn(">half roll<", html_a)
+        self.assertIn("const STICKS = null;", html_b)
+        self.assertIn("const AUDIO = false;", html_b)
+        self.assertNotIn("og:image", html_b)
+        self.assertEqual(pushes.read_text().split()[3:], sorted([a["token"], b["token"]], key=lambda t: pushes.read_text().split()[3:].index(t)))   # pushed again, the revoked one not
+        self.assertEqual(len(pushes.read_text().split()), 5)
+        r = cli(env, "housekeeping")                                                          # nothing to do the next time
+        self.assertEqual(json.loads(r.stdout)["shares_refreshed"], [])
+        env = dict(env, ACROSCOPE_SHARE_REVOKE="")
+        for t in list(pages) + ["x" * 24]:
+            cli(env, "unshare", t)
+        cli(env, "housekeeping")
+
     def test_a_clip_that_cannot_be_cut_leaves_nothing(self):
         """An empty file (ffprobe fails), and a clip cut short just after its header (ffprobe reads 8 s from the
         header, ffmpeg gets no frame out of the stub of data): one line each, no bundle, nothing half-rendered, no row."""
