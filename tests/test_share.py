@@ -37,15 +37,18 @@ def make_clip(path: Path, seconds: float = 8.0) -> None:
                     "-metadata", "title=SECRET-TITLE", "-metadata", "comment=SECRET-COMMENT", "-movflags", "+faststart", str(path)], check=True)
 
 
-def fake_arm(cache: Path, stem: str, length: float, rate: float, cols: dict) -> None:
-    """A decoded arm in the cache as index_bbl would leave it: `cols` maps a field to a function of the arm time."""
+def fake_arm(cache: Path, stem: str, length: float, rate: float, cols: dict, index: int = 1) -> None:
+    """A decoded arm in the cache as index_bbl would leave it: `cols` maps a field to a function of the arm time.
+    A second arm (index 2) joins the first in the log's index."""
     n = int(length * rate)
     t = array.array("d", (i / rate for i in range(n)))
-    meta = {"bbl": stem, "file": stem + ".bbl", "index": 1, "frames": n, "length": t[-1], "rate": rate, "fields": ["time", *cols]}
+    meta = {"bbl": stem, "file": stem + ".bbl", "index": index, "frames": n, "length": t[-1], "rate": rate, "fields": ["time", *cols]}
     (cache / "arms" / stem).mkdir(parents=True, exist_ok=True)
-    blackbox._save(meta, t, {k: array.array("f", (f(x) for x in t)) for k, f in cols.items()}, cache / "arms" / stem / "arm-01.bin")
-    (cache / "arms" / stem / "arms.json").write_text(json.dumps({"v": blackbox.INDEX_VERSION, "file": stem + ".bbl", "stem": stem, "date": "2026-10-04",
-                                                                 "arms": [{k: v for k, v in meta.items() if k != "fields"}], "boots": []}))
+    blackbox._save(meta, t, {k: array.array("f", (f(x) for x in t)) for k, f in cols.items()}, cache / "arms" / stem / f"arm-{index:02d}.bin")
+    idx_path = cache / "arms" / stem / "arms.json"
+    idx = json.loads(idx_path.read_text()) if idx_path.exists() else {"v": blackbox.INDEX_VERSION, "file": stem + ".bbl", "stem": stem, "date": "2026-10-04", "arms": [], "boots": []}
+    idx["arms"] = [a for a in idx["arms"] if a["index"] != index] + [{k: v for k, v in meta.items() if k != "fields"}]
+    idx_path.write_text(json.dumps(idx))
 
 
 def build(root: Path) -> dict:
@@ -587,6 +590,31 @@ class ShareTest(unittest.TestCase):
         for t in list(pages) + ["x" * 24]:
             cli(env, "unshare", t)
         cli(env, "housekeeping")
+
+    def test_a_refresh_keeps_the_moments_arm(self):
+        """#59 review (major): the refresh resolved the share without its moment, so the arm was picked at the padded
+        window's start: a moment less than a second into its arm never refreshed (the window started before the
+        arm), and two arms close together gave the earlier arm's sticks to a live page. Here arm 2 starts at video
+        5.0 and the moment at 5.2; the window starts in arm 1."""
+        fake_arm(self.root / "cache", LOG[:-4], 3.0, 100, {"rcCommand[0]": lambda t: 100.0, "rcCommand[1]": lambda t: 0.0,
+                                                            "rcCommand[2]": lambda t: 0.0, "rcCommand[3]": lambda t: 1500.0}, index=2)   # roll 20 %, throttle 50
+        assert cli(self.env, "match", SESSION, "001", LOG, "2", "5").returncode == 0           # arm 2 covers video 5.0-7.99
+        r = cli(self.env, "tag", SESSION, "001", "5.2", "5.8", "early in arm 2", "--tags", "roll")
+        mid = json.loads(r.stdout)["id"]
+        try:
+            s = self.share(mid)                                                               # pad 2: the window 3.2-7.8 starts in arm 1
+            pg = self.root / "shares" / s["token"] / "index.html"
+            roll = lambda: json.loads(re.search(r"const STICKS = (.*?);\n", pg.read_text()).group(1))["roll"]
+            self.assertEqual(roll()[100], 20)                                                 # 2.0 s into the bundle = video 5.2: arm 2's sticks
+            old = time.time() - 7 * 86400
+            os.utime(pg, (old, old))
+            r = cli(self.env, "housekeeping")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(s["token"], json.loads(r.stdout)["shares_refreshed"])
+            self.assertEqual(roll()[100], 20)                                                 # still arm 2, not arm 1 (whose sticks end at video 4.99)
+        finally:
+            cli(self.env, "unmatch", SESSION, "001", "2")
+            cli(self.env, "untag", SESSION, mid)
 
     def test_a_clip_that_cannot_be_cut_leaves_nothing(self):
         """An empty file (ffprobe fails), and a clip cut short just after its header (ffprobe reads 8 s from the

@@ -5,6 +5,7 @@ uses these endpoints (remote.Remote). Writes go through the same functions as th
 The data dir is only walked in the background (a scan at start and every SCAN_EVERY seconds, and on request): a
 page open never waits on the Drive mount."""
 import json
+import math
 import mimetypes
 import os
 import re
@@ -60,6 +61,9 @@ def _cli(*args: str):
 
 
 FREE_TEXT = {"title", "note", "tags", "text"}   # a client's command may say anything here; every other value names something
+# a share request's keys and their types (#57): what POST /api/share and /api/share/preview accept, nothing else
+SHARE_BODY = {"moment": str, "video": str, "text": str, "expires": str, "preview": str, "sticks": bool, "audio": bool,
+              "start": float, "end": float, "pad": float, "poster": float}
 
 
 def _check_proxied(args: list[str]) -> None:
@@ -532,20 +536,31 @@ class Handler(BaseHTTPRequestHandler):
                 b = self._body()
                 if not isinstance(b, dict) or not b.get("session"):
                     return self._json({"error": "a share names a session and a moment (or a clip with start and end)"}, 400)
-                what = {k: b[k] for k in ("moment", "video", "start", "end", "pad", "text", "sticks", "audio", "poster") if b.get(k) is not None}
-                what["session"] = str(b["session"])
-                for k in ("start", "end", "pad", "poster"):
-                    if k in what:
-                        what[k] = float(what[k])
+                # every key typed before any work (#59 review: "false" was true to bool(), NaN passed float(), a number as text was a 500)
+                what = {}
+                for k, kind in SHARE_BODY.items():
+                    v = b.get(k)
+                    if v is None:
+                        continue
+                    if (kind is bool and not isinstance(v, bool)) or (kind is str and not isinstance(v, str)) \
+                            or (kind is float and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v))):
+                        return self._json({"error": f"{k}: {'true or false' if kind is bool else 'text' if kind is str else 'a number'} expected"}, 400)
+                    what[k] = float(v) if kind is float else v
+                if not isinstance(b.get("session"), str):
+                    return self._json({"error": "session: text expected"}, 400)
+                what["session"] = b["session"]
                 if what.get("sticks", True):                              # the log decoding: not in this request (30 s with the GIL held)
                     s = sessions.load(what["session"])
                     vid = next((m["video"] for m in s["moments"] if m["id"] == what.get("moment")), what.get("video"))
+                    if vid:
+                        vid = sessions.resolve_clip(what["session"], vid)   # as resolve takes it: a number or a name too (#59 review)
                     if any(_log_state(m["bbl"]) == "decoding" for m in s["matches"] if m["video"] == vid):
                         return self._json({"error": "log not decoded yet, try again shortly"}, 503)
                 if parts[-1] == "preview":
+                    what.pop("expires", None); what.pop("preview", None)
                     return self._json(share.preview(**what))
                 token = parts[2] if len(parts) == 3 else None
-                return self._json(share.publish(expires=b.get("expires") or None, preview_id=b.get("preview"), token=token, **what))
+                return self._json(share.publish(expires=what.pop("expires", None) or None, preview_id=what.pop("preview", None), token=token, **what))
             if parts[:2] != ["api", "session"] or len(parts) != 4:
                 return self._json({"error": "not found"}, 404)
             name, what, b = parts[2], parts[3], self._body()

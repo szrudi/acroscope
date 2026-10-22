@@ -181,6 +181,8 @@ class SharePageTest(unittest.TestCase):
         page.click("#stk")
         r = page.evaluate(self.STAND_IN, 1.0)
         self.assertEqual((r["drawn"], r["on"]), ([], False))
+        page.keyboard.press("Control+s")                                                                  # the browser's save, not the sticks (#59 review)
+        self.assertEqual(page.evaluate(self.STAND_IN, 1.0)["on"], False)
         page.click("#stk")
         r = page.evaluate(self.STAND_IN, 1.0)
         self.assertEqual((len(r["drawn"]), r["on"]), (2, True))
@@ -216,7 +218,10 @@ class SharePageTest(unittest.TestCase):
         button's: space on the ½× button toggles the video and leaves the speed alone. Real playback: this clip
         decodes here."""
         page, _ = self.open(DESKTOP)
-        page.wait_for_function("() => v.readyState >= 2 && v.duration > 0", timeout=20000)
+        try:
+            page.wait_for_function("() => v.readyState >= 2 && v.duration > 0", timeout=8000)
+        except Exception:  # noqa: BLE001  (a Playwright timeout: Chromium builds without proprietary codecs decode no H.264; #59 review)
+            self.skipTest("this browser does not decode H.264: the keys need real playback")
         page.evaluate("() => { v.pause(); v.currentTime = 1.0; }")
         page.wait_for_function("() => v.paused && Math.abs(v.currentTime - 1.0) < 0.01")
         t = lambda: page.evaluate("() => v.currentTime")

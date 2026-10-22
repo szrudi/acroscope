@@ -887,7 +887,7 @@ class PlayerTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.root / "shares" / tok).iterdir()), ["clip.mp4", "index.html", "poster.jpg"])
         self.assertFalse((self.root / "cache" / "share-preview" / pid).exists())            # taken as it was, not cut again
         self.assertEqual(page.get_attribute("#shState a.btn", "href"), f"https://share.example/{tok}/")
-        self.assertIn("up until", page.inner_text("#shState"))
+        self.assertIn("up until " + page.evaluate("x => new Date(x).toLocaleDateString()", rows[0]["expires_at"]), page.inner_text("#shState"))   # the reader's day (#59 review)
         self.assertIsNotNone(page.query_selector("#moments .m[data-id=m01] .shared"))
         self.assertIsNone(page.query_selector("#moments .m[data-id=m02] .shared"))
         self.assertEqual(page.evaluate("() => $('#shOut').innerHTML"), "")                 # the preview frame is gone with the publish
@@ -981,6 +981,65 @@ class PlayerTest(unittest.TestCase):
         page.goto(f"{self.url}/?session={self.SHARE}&clip=2026-10-04_001&m=m01")          # without it: the moment alone
         page.wait_for_function("() => cur === 'm01'")
         self.assertIsNone(page.query_selector("#sharebox.open"))
+
+    def test_share_requests_one_at_a_time_and_what_comes_back_late(self):
+        """#59 review: a second publish while the first ran put up a second share; an answer that was not JSON (a
+        proxy's 502) left "publishing…" for good; an answer for a panel closed meanwhile threw and orphaned its
+        preview. Now: the buttons wait, an error is said and the buttons come back, and a late preview for a
+        closed panel is dropped."""
+        page = self.open(self.SHARE)
+        page.click("#moments .m[data-id=m01] [data-share]")
+        page.wait_for_selector("#sharebox.open")
+        page.evaluate("() => { shPublish(); shPublish(); }")                                 # two clicks in a row
+        self.assertTrue(page.is_disabled("#shPublish") and page.is_disabled("#shPreview") and page.is_disabled("#shNew"))
+        page.wait_for_selector("#shState [data-down]", timeout=60000)
+        page.wait_for_function("() => !$('#shPublish').disabled")
+        self.assertEqual(len(self.shares(self.SHARE)), 1)                                     # one share, not two
+        # a proxy's 502 on the way to the server
+        page.route("**/api/share/preview", lambda r: r.fulfill(status=502, body="bad gateway", content_type="text/html"))
+        page.click("#shPreview")
+        page.wait_for_function("() => $('#shMsg').textContent.startsWith('no answer from the server')", timeout=10000)
+        self.assertFalse(page.is_disabled("#shPreview"))
+        page.unroute("**/api/share/preview")
+        # a preview that comes back after the panel closed: dropped, not orphaned
+        held = []
+        page.route("**/api/share/preview", lambda r: held.append(r))
+        page.click("#shPreview")
+        page.wait_for_function("() => $('#shPreview').disabled")
+        page.keyboard.press("Escape")
+        self.assertIsNone(page.query_selector("#sharebox.open"))
+        self.assertEqual(len(held), 1)
+        held[0].continue_()
+        previews = lambda: [d for d in (self.root / "cache" / "share-preview").glob("*") if d.is_dir()] if (self.root / "cache" / "share-preview").exists() else []
+        for _ in range(100):                                                                 # rendered, then dropped by the page
+            if page.evaluate("() => !$('#shPreview').disabled") and not previews():
+                break
+            time.sleep(0.1)
+        self.assertEqual(previews(), [])
+        page.unroute("**/api/share/preview")
+        page.click("#moments .m[data-id=m01] [data-share]")
+        page.wait_for_selector("#sharebox.open")
+        page.once("dialog", lambda d: d.accept())
+        page.click("#shState [data-down]")
+        page.wait_for_function("() => !document.querySelector('#shState [data-down]')", timeout=20000)
+
+    def test_share_panel_follows_the_moments_clip(self):
+        """#59 review: `now` and `this frame` read the playhead of the clip that is loaded; with "all clips" on, ⤴ on
+        another clip's moment opened the panel over the wrong clip. The panel loads the moment's clip first, and a
+        clip change (n/p, a swipe) closes it."""
+        S = "2026-10-16-two"
+        self.api.tag(S, "2026-10-16_001.mp4", 1, 2, "first", [])
+        m2 = self.api.tag(S, "2026-10-16_002.mp4", 3, 4, "second", [])
+        page = self.open(S)
+        page.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        page.check("#allClips")
+        page.click(f"#moments .m[data-id={m2['id']}] [data-share]")
+        page.wait_for_selector("#sharebox.open")
+        self.assertEqual(page.evaluate("() => [clip, SH.video, SH.moment]"), ["2026-10-16_002.mp4", "2026-10-16_002.mp4", m2["id"]])
+        page.evaluate("() => loadClip('2026-10-16_001.mp4')")
+        page.wait_for_function("() => !document.querySelector('#sharebox.open')")
+        self.assertIsNone(page.evaluate("() => SH"))
+        page.uncheck("#allClips")
 
     def test_share_without_a_match_and_a_refused_window(self):
         page = self.open(self.SHARE)

@@ -236,6 +236,98 @@ class ShareApiTest(unittest.TestCase):
             self.api.unmatch(SESSION, CLIP, 1)
             self.api.set_match(SESSION, CLIP, LOG, 1, 2.0)                               # as the class set it up
 
+    def test_the_body_is_typed(self):
+        """#59 review: a string "false" is true to bool(), NaN passes float() and the window's clamps, a numeric text
+        is a 500 after the cut. Every key has a type, and a wrong one is a 400 before anything is cut."""
+        base = {"session": SESSION, "moment": "m01"}
+        for body, word in (({"audio": "false"}, "audio"), ({"sticks": "0"}, "sticks"), ({"sticks": 1}, "sticks"), ({"start": float("nan"), "end": 4.0}, "start"),
+                           ({"start": 2.0, "end": float("inf")}, "end"), ({"pad": "2"}, "pad"), ({"poster": "3.5"}, "poster"), ({"text": 7}, "text"),
+                           ({"expires": 30}, "expires"), ({"moment": 1}, "moment"), ({"video": 7, "moment": None}, "video"), ({"preview": 5}, "preview")):
+            st, r = self.call("POST", "/api/share", {**base, **body})
+            self.assertEqual(st, 400, (body, r))
+            self.assertIn(word, r["error"], body)
+        st, r = self.call("POST", "/api/share/preview", {**base, "audio": "false"})
+        self.assertEqual(st, 400)
+        self.assertEqual(self.call("GET", f"/api/shares?session={SESSION}")[1]["shares"], [])
+
+    def test_the_decoding_check_resolves_the_clip(self):
+        """#59 review: the 503-while-decoding check compared the body's video with file names; a clip number or a
+        readable name slipped past it and the request decoded the log."""
+        (self.root / "data" / "blackbox" / "cold2.bbl").write_bytes(b"")
+        self.api.set_match(SESSION, CLIP, "cold2.bbl", 1, 0.0)
+        try:
+            for video in ("001", "2026-10-04_001", CLIP):
+                st, r = self.call("POST", "/api/share/preview", {"session": SESSION, "video": video, "start": 2.5, "end": 4.5})
+                self.assertEqual((st, "decoded" in r["error"]), (503, True), video)
+        finally:
+            self.api.unmatch(SESSION, CLIP, 1)
+            self.api.set_match(SESSION, CLIP, LOG, 1, 2.0)
+        self.assertFalse((self.root / "cache" / "arms" / "cold2").exists() and (self.root / "cache" / "arms" / "cold2" / "arm-01.bin").exists())
+
+    def test_a_preview_is_taken_only_for_the_same_bundle(self):
+        """#59 review: the facts that let a preview be taken as it is name the session and the source file (its size
+        and stamp), not just the clip's name and the window; and a change of sound or poster makes a fresh cut."""
+        st, p = self.call("POST", "/api/share/preview", {"session": SESSION, "moment": "m01", "pad": 1, "audio": True, "poster": 3.5, "sticks": False})   # no sticks: session B's clip has no log, so only the session and the file tell them apart
+        self.assertEqual(st, 200, p)
+        pdir = self.root / "cache" / "share-preview" / p["preview"]
+        made = []
+        try:
+            st, s = self.call("POST", "/api/share", {"session": SESSION, "moment": "m01", "pad": 1, "audio": False, "poster": 3.5, "sticks": False, "preview": p["preview"]})
+            self.assertEqual(st, 200, s)
+            made.append(s["token"])
+            d = self.root / "shares" / s["token"]
+            self.assertEqual([x["codec_type"] for x in ffprobe(d / "clip.mp4")["streams"]], ["video"])    # sound unticked: cut again, without
+            self.assertTrue(pdir.exists())                                                               # the preview not taken (a taken one is moved)
+            st, s2 = self.call("POST", "/api/share", {"session": SESSION, "moment": "m01", "pad": 1, "audio": True, "poster": None, "sticks": False, "preview": p["preview"]})
+            self.assertEqual(st, 200, s2)
+            made.append(s2["token"])
+            self.assertNotIn("poster.jpg", {x.name for x in (self.root / "shares" / s2["token"]).iterdir()})   # no poster asked: not the preview's
+            self.assertTrue(pdir.exists())
+            # the same clip name in another session, with other footage: not that preview either
+            other = "2026-10-05-other"
+            (self.root / "data" / "videos" / other).mkdir()
+            from tests.test_share import make_clip as _mk
+            _mk(self.root / "data" / "videos" / other / CLIP, seconds=6.0)
+            self.api.refresh(other)
+            st, s3 = self.call("POST", "/api/share", {"session": other, "video": CLIP, "start": 2.0, "end": 5.0, "sticks": False, "audio": True, "poster": 3.5, "preview": p["preview"]})
+            self.assertEqual(st, 200, s3)
+            made.append(s3["token"])
+            self.assertTrue(pdir.exists())                                                               # still here: session B's bundle was cut from B's clip
+        finally:
+            for tok in made:
+                self.call("DELETE", f"/api/share/{tok}")
+            self.call("DELETE", f"/api/share/preview/{p['preview']}")
+
+    def test_a_poster_at_the_clips_end(self):
+        """#59 review: the window clamped to the clip's end let a poster sit exactly there, where ffmpeg writes no
+        frame; the API answered 404 with a cache path. The poster is clamped to the last frame."""
+        st, s = self.call("POST", "/api/share", {"session": SESSION, "moment": "m01", "start": 6.0, "end": 8.0, "sticks": False, "poster": 8.0})
+        self.assertEqual(st, 200, s)
+        self.assertLess(s["poster"], 8.0)
+        self.assertTrue((self.root / "shares" / s["token"] / "poster.jpg").exists())
+        self.call("DELETE", f"/api/share/{s['token']}")
+
+    def test_traversal_through_the_preview_id_and_a_malformed_one(self):
+        """#59 review: with an encoded '/' in the id segment, only preview_ok stands between the route and a share's
+        bundle; and a malformed preview id on publish is a 400, not a silent fresh cut."""
+        st, s = self.call("POST", "/api/share", {"session": SESSION, "moment": "m01", "pad": 0.5})
+        self.assertEqual(st, 200, s)
+        st, p = self.call("POST", "/api/share/preview", {"session": SESSION, "moment": "m01", "pad": 0.5})   # so the preview folder exists: '..' walks out of a folder that is there
+        try:
+            st, body, _ = self.get(f"/share-preview/..%2F..%2Fshares%2F{s['token']}/clip.mp4")
+            self.assertEqual(st, 404)
+            self.assertFalse(body.startswith(b"\x00\x00\x00"))                                      # not the mp4
+            for bad in ("../x", "..%2Fx", "x" * 8, "A" * 16):
+                st, r = self.call("POST", "/api/share", {"session": SESSION, "moment": "m01", "preview": bad})
+                self.assertEqual(st, 400, bad)
+                self.assertIn("preview", r["error"])
+            st, r = self.call("POST", "/api/share", {"session": SESSION, "moment": "m01", "pad": 0.5, "preview": "z" * 16})   # well formed, gone: a fresh cut
+            self.assertEqual(st, 200, r)
+            self.call("DELETE", f"/api/share/{r['token']}")
+        finally:
+            self.call("DELETE", f"/api/share/{s['token']}")
+            self.call("DELETE", f"/api/share/preview/{p['preview']}")
+
     def test_old_previews_go_with_housekeeping(self):
         st, p = self.call("POST", "/api/share/preview", {"session": SESSION, "moment": "m01", "pad": 0.5})
         d = self.root / "cache" / "share-preview" / p["preview"]

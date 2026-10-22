@@ -347,10 +347,11 @@ class ConfigPageTest(unittest.TestCase):
         db.add_share("e" * 24, S, "2026-10-04_001.mp4", "m01", 9.5, 15.0, "old", past)
         page = self.open("/config#shares")
         page.wait_for_selector(".shrow")
-        rows = page.eval_on_selector_all(".shrow", "els => els.map(e => [e.dataset.token, e.querySelector('.st').textContent, e.querySelector('.what b').textContent, e.querySelector('.what .dim').textContent])")
+        rows = page.eval_on_selector_all(".shrow", "els => els.map(e => [e.dataset.token, e.querySelector('.st').textContent, e.querySelector('.what b').textContent, [...e.querySelectorAll('.what .dim')].map(d => d.textContent).join(' | ')])")
         self.assertEqual(len(rows), 1)                                                     # the expired one is not up
         self.assertEqual(rows[0][:3], ["u" * 24, "up", "a roll"])                          # the moment's title first
         self.assertIn("2026-10-04_001 0:09.5–0:15.0 · a roll, nearly", rows[0][3])         # the clip's readable name, the window, the text
+        self.assertIn("until " + page.evaluate("x => new Date(x).toLocaleDateString()", future), rows[0][3])   # the reader's day, not the UTC date (#59 review)
         self.assertIn("no public URL", page.text_content("#shBase"))                       # this server has none
         self.assertIsNone(page.query_selector(".shrow a.btn:not([data-moment])"))           # so no link to open
         self.assertEqual(page.get_attribute(".shrow a[data-moment]", "href"), f"/?session={S}&clip=2026-10-04_001&m=m01&share=1")   # but one to the moment, panel open

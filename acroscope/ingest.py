@@ -392,7 +392,7 @@ def recut(session: str, vid: str, log=print) -> dict:
     schammer 018 and 022). Moments and matches move with the footage: old clip time -> original -> new clip time.
     A match whose arm spans an old cut held on one side of it only, so it is left as it is and listed in `check`
     for a look. The clip's cached frames and sheets go; the original stays until its date.
-    {video, old_cuts, cuts, duration, moments, matches, check}"""
+    {video, old_cuts, cuts, duration, moments, matches, shares, check}"""
     db = sessions.store()
     file = sessions.resolve_clip(session, vid)
     s = db.load(session)
@@ -440,13 +440,19 @@ def recut(session: str, vid: str, log=print) -> dict:
         if o != m["offset"]:
             db.set_match(session, file, m["bbl"], m["arm"], o, m.get("note") or "")
             matches.append({"bbl": m["bbl"], "arm": m["arm"], "from": m["offset"], "to": o})
+    shares = []
+    for sh in (x for x in db.shares() if x["session"] == session and x["video"] == file):   # the ones up: their window on the new timeline (#59 review)
+        a, b = move(sh["start"]), move(sh["end"])
+        if (a, b) != (sh["start"], sh["end"]):
+            db.update_share(sh["token"], start=a, end=b)
+            shares.append({"token": sh["token"], "from": [sh["start"], sh["end"]], "to": [a, b]})
     os.replace(work, VIDEOS_DIR / session / file)
     duration = video.probe(VIDEOS_DIR / session / file)["duration"]
     db.set_video_fields(session, file, cuts=new, duration=duration, codec=res["codec"], timescale=k_new if k_new != 1.0 else None)
     for f in (CACHE_DIR / "frames" / session).glob(f"{Path(file).stem}_*"):
         f.unlink()
     return {"video": file, "old_cuts": old, "cuts": new, "timescale": k_new, "duration": duration, "moments": moments,
-            "matches": matches, "check": check}
+            "matches": matches, "shares": shares, "check": check}
 
 
 # ---- a batch -----------------------------------------------------------------------------------------------------

@@ -522,7 +522,7 @@ document.querySelectorAll('aside .tab').forEach(tb => tb.onclick = () => {
 let loadSeq = 0;   // the latest loadClip: an earlier one finishing late (a swipe on meanwhile) writes nothing
 async function loadClip(file) {
   const seq = ++loadSeq;
-  clip = file; cur = null; loopM = null; closeEditor();
+  clip = file; cur = null; loopM = null; closeEditor(); closeShare();   // the share panel reads this clip's playhead: it goes with the clip (#59 review)
   localStorage.setItem('acro.clip', file); setUrl();
   const gone = S.videos.find(x => x.file === file)?.missing_since;
   if (gone) { v.removeAttribute('src'); v.load(); } else v.src = `/video/${encodeURIComponent(S.session)}/${encodeURIComponent(file)}`;
@@ -809,9 +809,10 @@ async function loadShares() { const r = S ? await api(`/api/shares?session=${enc
 function shCovered(video, t) {   // a match covers video time t, so the sticks would fit the picture
   return (S.matches || []).some(m => { const a = armLen[m.bbl + '#' + m.arm]; return m.video === video && t >= m.offset - 1 && (!a || t <= m.offset + a.length + 1); });
 }
-function openShare(id) {
+async function openShare(id) {
   const m = S.moments.find(x => x.id === id); if (!m) return;
   closeEditor(); closeShare();
+  if (clip !== m.video) await loadClip(m.video);        // `now` and `this frame` read the playhead: it must be this clip's (#59 review)
   const dur = S.videos.find(x => x.file === m.video)?.duration, ups = sharesOf(id), up = ups[ups.length - 1];
   // with a share up, the panel edits it (the latest, when there are several): filled from what it was made with
   SH = {moment: id, video: m.video, poster: up?.poster ?? null, preview: null, token: up?.token || null};
@@ -844,26 +845,48 @@ function shBody() {
   const [start, end] = shWindow();
   return {session: S.session, moment: SH.moment, start, end, text: $('#shText').value, sticks: $('#shSticks').checked, audio: $('#shAudio').checked, poster: SH.poster};
 }
+// one request at a time (a second publish while the first ran put up a second share), an answer that is not JSON or
+// no answer at all said in the panel, and an answer for a panel that closed or moved to another moment meanwhile
+// dropped, its preview with it (#59 review)
+let shBusy = false;
+function shLock(on) { shBusy = on; for (const id of ['#shPreview', '#shPublish', '#shNew']) $(id).disabled = on; }
 async function shPreview() {
-  shMsg('rendering the preview…', true);
-  const r = await api('/api/share/preview', {method: 'POST', body: JSON.stringify(shBody())});
-  if (r.error) { shMsg(r.error); return; }
-  if (SH.preview) api('/api/share/preview/' + SH.preview, {method: 'DELETE'});
-  SH.preview = r.preview; shMsg('');
-  $('#shOut').innerHTML = `<iframe src="${esc(r.url)}" title="the share as it will be published"></iframe>`;
+  if (shBusy || !SH) return;
+  const mine = SH;
+  shLock(true); shMsg('rendering the preview…', true);
+  try {
+    const r = await api('/api/share/preview', {method: 'POST', body: JSON.stringify(shBody())});
+    if (SH !== mine) { if (r.preview) api('/api/share/preview/' + r.preview, {method: 'DELETE'}); return; }
+    if (r.error) { shMsg(r.error); return; }
+    if (SH.preview) api('/api/share/preview/' + SH.preview, {method: 'DELETE'});
+    SH.preview = r.preview; shMsg('');
+    $('#shOut').innerHTML = `<iframe src="${esc(r.url)}" title="the share as it will be published"></iframe>`;
+  } catch (e) {
+    if (SH === mine) shMsg('no answer from the server: ' + e.message);
+  } finally { shLock(false); }
 }
 async function shPublish(asNew) {   // the share that is up, made again under its link; or a new one
-  const edit = SH.token && !asNew;
-  shMsg(edit ? 'updating…' : 'publishing…', true);
-  const r = await api(edit ? '/api/share/' + encodeURIComponent(SH.token) : '/api/share', {method: 'POST', body: JSON.stringify({...shBody(), expires: $('#shExpires').value, preview: SH.preview})});
-  if (r.error) { shMsg(r.error); return; }
-  SH.preview = null; shMsg(''); $('#shOut').innerHTML = '';
-  await loadShares(); renderMoments(); flash(edit ? 'updated' : 'published');
-  openShare(SH.moment);                                   // the panel as it is now: editing what is up
+  if (shBusy || !SH) return;
+  const mine = SH, edit = SH.token && !asNew, preview = SH.preview;
+  shLock(true); shMsg(edit ? 'updating…' : 'publishing…', true);
+  try {
+    const r = await api(edit ? '/api/share/' + encodeURIComponent(SH.token) : '/api/share', {method: 'POST', body: JSON.stringify({...shBody(), expires: $('#shExpires').value, preview})});
+    if (r.error) { if (SH === mine) shMsg(r.error); return; }
+    if (preview) api('/api/share/preview/' + preview, {method: 'DELETE'});   // taken (gone already) or passed over: not needed any more
+    await loadShares(); renderMoments();
+    if (SH !== mine) return;                               // the list is right; the panel is another moment's now, or closed
+    SH.preview = null; shMsg(''); $('#shOut').innerHTML = '';
+    flash(edit ? 'updated' : 'published');
+    openShare(SH.moment);                                  // the panel as it is now: editing what is up
+  } catch (e) {
+    if (SH === mine) shMsg('no answer from the server: ' + e.message);
+    await loadShares(); renderMoments();                   // it may have gone through before the answer was lost
+    if (SH === mine) renderShareState();
+  } finally { shLock(false); }
 }
 function renderShareState() {   // the moment's shares that are up: the link, or where the bundle is when the server has no public URL
   const ups = sharesOf(SH.moment);
-  $('#shState').innerHTML = ups.map(x => `<div class="row shup"><span>up${x.expires_at ? ' until ' + esc(x.expires_at.slice(0, 10)) : ', never expires'}</span>`
+  $('#shState').innerHTML = ups.map(x => `<div class="row shup"><span>up${x.expires_at ? ' until ' + esc(new Date(x.expires_at).toLocaleDateString()) : ', never expires'}</span>`
     + (x.url ? `<a class="btn" href="${esc(x.url)}" target="_blank" rel="noopener">open</a><button class="small" data-copy="${esc(x.url)}">copy link</button>`
              : `<span style="color:var(--dim)">no public URL on the server (ACROSCOPE_SHARE_URL): the bundle is shares/${esc(x.token)}/</span>`)
     + `<button class="small" data-down="${esc(x.token)}">take down</button></div>`).join('');
@@ -881,6 +904,7 @@ function closeShare() {
   if (!SH) return;
   if (SH.preview) api('/api/share/preview/' + SH.preview, {method: 'DELETE'});   // a preview nobody published goes
   SH = null; $('#sharebox').classList.remove('open'); drawStrip();
+  shLock(false);
 }
 
 // ---- keys

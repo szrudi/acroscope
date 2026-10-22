@@ -51,7 +51,9 @@ BRAND = Path(__file__).parent / "static" / "brand"          # the mark and the f
 PREVIEW_DIR = CACHE_DIR / "share-preview"
 ROOT_PAGE = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow">'
              '<title>acroscope</title></head><body>Nothing here.</body></html>\n')
-FACTS = ("video", "start", "end", "sticks", "audio", "poster")   # what makes two renders the same bundle (the text is in the page only)
+FACTS = ("session", "video", "src_id", "start", "end", "sticks", "audio", "poster")   # what makes two renders the same bundle (the text is in the
+                                                                                     # page only; src_id: the source file's size and stamp, since a
+                                                                                     # clip's name repeats across sessions and a recut keeps it)
 
 
 class ShareError(ValueError):
@@ -261,6 +263,7 @@ def resolve(session: str, moment: str | None = None, video: str | None = None, s
         poster = round(float(poster), 2)
         if not w0 <= poster <= w1:
             raise ValueError(f"poster {poster:g} s: outside the window {w0:g}-{w1:g} s")
+        poster = min(poster, round(w1 - 0.05, 2))          # at the clip's very end ffmpeg writes no frame: the last one instead (#59 review)
     samples = None
     if sticks:
         at = m["start"] if m and w0 <= m["start"] <= w1 else w0
@@ -271,8 +274,9 @@ def resolve(session: str, moment: str | None = None, video: str | None = None, s
             raise ValueError(f"{video}: no blackbox match covers {at:g} s, the sticks would not fit the picture; "
                              "match the clip first, or `share --no-sticks` for the clip alone")
         samples = stick_samples(blackbox.load_arm(mt["bbl"], mt["arm"]), mt["offset"], w0, w1)
-    return {"session": session, "video": video, "moment": m["id"] if m else None, "src": src, "duration": video_duration,
-            "start": w0, "end": w1, "text": (m["title"] if m else "") if text is None else text,
+    st = src.stat()
+    return {"session": session, "video": video, "moment": m["id"] if m else None, "src": src, "src_id": [st.st_size, st.st_mtime_ns],
+            "duration": video_duration, "start": w0, "end": w1, "text": (m["title"] if m else "") if text is None else text,
             "sticks": samples is not None, "samples": samples, "audio": bool(audio), "poster": poster}
 
 
@@ -291,7 +295,10 @@ def build(r: dict, into: Path, log=lambda m: None) -> None:
     log(f"cutting {r['video']} {r['start']:g}-{r['end']:g} s")
     cut_clip(r["src"], into / "clip.mp4", r["start"], r["end"], audio=r["audio"])
     if r["poster"] is not None:
-        shutil.copyfile(video.frame(r["src"], r["poster"]), into / "poster.jpg")
+        frame = video.frame(r["src"], r["poster"])
+        if not frame.is_file():                              # ffmpeg exits 0 and writes nothing past the last frame
+            raise ShareError(f"no frame at {r['poster']:g} s in {r['video']}")
+        shutil.copyfile(frame, into / "poster.jpg")
 
 
 def _write_page(r: dict, into: Path, token: str | None) -> None:
@@ -307,7 +314,7 @@ def _write_page(r: dict, into: Path, token: str | None) -> None:
 
 def _public(r: dict) -> dict:
     """A share's facts for the API and the CLI: no paths, no samples."""
-    return {k: v for k, v in r.items() if k not in ("src", "samples", "duration")}
+    return {k: v for k, v in r.items() if k not in ("src", "src_id", "samples", "duration")}
 
 
 # ---- preview, publish, revoke ----------------------------------------------------------------------------------------
@@ -357,6 +364,8 @@ def publish(expires: str | None = DEFAULT_EXPIRY, preview_id: str | None = None,
         expires_at = row["expires_at"] if expires is None else parse_expiry(expires)
     else:
         expires_at = parse_expiry(expires or DEFAULT_EXPIRY)
+    if preview_id is not None and not preview_ok(preview_id):
+        raise ValueError(f"{preview_id!r}: not a preview")
     r = resolve(**what)
     token = token or new_token()
     final, staging = SHARES_DIR / token, SHARES_DIR / ".staging" / token
@@ -366,7 +375,7 @@ def publish(expires: str | None = DEFAULT_EXPIRY, preview_id: str | None = None,
     pushed = False
     try:
         taken = False
-        if preview_id and preview_ok(preview_id) and (PREVIEW_DIR / preview_id / "preview.json").is_file():
+        if preview_id and (PREVIEW_DIR / preview_id / "preview.json").is_file():
             pd = PREVIEW_DIR / preview_id
             try:
                 taken = json.loads((pd / "preview.json").read_text()) == _facts(r)
@@ -476,7 +485,10 @@ def refresh_pages(log=lambda m: None) -> list[str]:
             continue
         old = pg.read_text()
         try:
-            facts = resolve(session=r["session"], video=r["video"], start=r["start"], end=r["end"], text=r["text"],
+            # with its moment, so the arm is the moment's (#59 review: at the padded window's start, a moment less than a
+            # second into its arm never refreshed, and two arms close together gave a live page the wrong sticks)
+            facts = resolve(session=r["session"], moment=r["moment"] or None, video=None if r["moment"] else r["video"],
+                            start=r["start"], end=r["end"], text=r["text"],
                             sticks="const STICKS = null;" not in old if r["sticks"] is None else r["sticks"],   # the row knows; a row from before: the old page
                             audio="const AUDIO = true;" in old if r["audio"] is None else r["audio"])
             _write_page(facts, d, r["token"])

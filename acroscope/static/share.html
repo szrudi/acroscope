@@ -119,6 +119,7 @@ $('#bar').onclick = e => { if (v.duration) v.currentTime = e.offsetX / e.current
 // s the sticks. Capture phase, so a focused button does not take the space as its own click.
 const FRAME = 1 / 60, seek = t => { v.currentTime = Math.max(0, Math.min(v.duration || 0, t)); };
 document.addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;         // Ctrl+S is the browser's, not the sticks
   const k = e.key; let h = true;
   if (k === ' ') { if (v.paused) v.play().catch(() => {}); else v.pause(); }
   else if (k === 'ArrowLeft') seek(v.currentTime - 2);

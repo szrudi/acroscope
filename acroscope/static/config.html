@@ -306,6 +306,7 @@ function renderShares() {
   box.innerHTML = `<h2>shares</h2><p class="hint">a moment published as a clip with the sticks drawn over it, on a secret link (the player's ⤴ on a moment makes one). A link is not private: it is forwarded and previewed, so a share expires unless told otherwise, and a takedown is final.</p>` +
     `<div class="row"><label><input type="checkbox" id="shAll"> show expired and revoked</label><span id="shBase" class="dim"></span></div><div id="shList"></div>`;
   const fmt = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); };
+  const day = x => x ? esc(new Date(x).toLocaleDateString()) : '';          // the reader's day, not the UTC date's first ten characters
   const load = async () => {
     const r = await api('/api/shares?all=' + ($('#shAll').checked ? 1 : 0));
     if (r.error) { err(r.error); return; }
@@ -313,7 +314,7 @@ function renderShares() {
     const rows = (r.shares || []).slice().reverse();
     $('#shList').innerHTML = rows.map(x => `<div class="shrow" data-token="${esc(x.token)}"><span class="st ${esc(x.state)}">${esc(x.state === 'active' ? 'up' : x.state)}</span>` +
       `<span class="what"><b>${esc(x.title || x.text || x.token)}</b> <span class="dim">${esc(x.session)} › ${esc(x.clip)} ${fmt(x.start)}–${fmt(x.end)}${x.text && x.text !== x.title ? ' · ' + esc(x.text) : ''}</span>` +
-      `<span class="dim">${x.state === 'active' ? (x.expires_at ? 'until ' + esc(x.expires_at.slice(0, 10)) : 'never expires') : esc((x.revoked_at || x.expires_at || '').slice(0, 10))} · made ${esc(x.created_at.slice(0, 10))}</span></span>` +
+      `<span class="dim">${x.state === 'active' ? (x.expires_at ? 'until ' + day(x.expires_at) : 'never expires') : day(x.revoked_at || x.expires_at)} · made ${day(x.created_at)}</span></span>` +
       `<span class="act"><a class="btn" data-moment href="${esc(x.moment ? `/?${new URLSearchParams({session: x.session, clip: x.clip, m: x.moment, share: 1})}` : `/?${new URLSearchParams({session: x.session, clip: x.clip, t: x.start})}`)}" title="the moment in the player, with its share panel">${x.moment ? 'moment' : 'clip'}</a>` +
       `${x.state === 'active' && x.url ? `<a class="btn" href="${esc(x.url)}" target="_blank" rel="noopener">open</a><button class="small" data-copy="${esc(x.url)}">copy</button>` : ''}` +
       `${x.state === 'active' ? `<button class="small" data-down="${esc(x.token)}">take down</button>` : ''}</span></div>`).join('') || '<p class="hint">nothing shared' + ($('#shAll').checked ? '' : ' right now') + '</p>';
