@@ -21,8 +21,12 @@ except ImportError:
     sync_playwright = None
 try:
     from tests.test_share import LOG as SHARE_LOG, fake_arm, make_clip
+    from tests.test_config_page import save_arm
+    from tests.synthetic import axis, combine, make_arm, pulse
 except ImportError:
     from test_share import LOG as SHARE_LOG, fake_arm, make_clip
+    from test_config_page import save_arm
+    from synthetic import axis, combine, make_arm, pulse
 
 LIBS = Path(os.environ.get("ACROSCOPE_BROWSER_LIBS", "~/.cache/acroscope-browser")).expanduser() / "usr" / "lib" / "x86_64-linux-gnu"
 PHONE = {"viewport": {"width": 412, "height": 927}, "is_mobile": True, "has_touch": True}
@@ -71,8 +75,10 @@ class PlayerTest(unittest.TestCase):
                 "2026-10-16-zero": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"],
                 "2026-10-16-quick": ["2026-10-16_001.mp4", "2026-10-16_002.mp4", "2026-10-16_003.mp4"],
                 "2026-10-16-two": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"],
-                "2026-10-04-share": []}                                          # a real clip, made below: sharing renders it
+                "2026-10-04-share": [],                                          # a real clip, made below: sharing renders it
+                "2026-10-04-sugg": ["2026-10-04_002.mp4"]}                      # a scripted arm with two attempts: suggestions
     SHARE = "2026-10-04-share"
+    SUGG = "2026-10-04-sugg"
 
     @classmethod
     def setUpClass(cls):
@@ -91,6 +97,8 @@ class PlayerTest(unittest.TestCase):
         (cls.data / "blackbox" / SHARE_LOG).write_bytes(b"")
         fake_arm(cls.root / "cache", SHARE_LOG[:-4], 3.0, 100, {"rcCommand[0]": lambda t: 250.0, "rcCommand[1]": lambda t: -100.0,
                                                                "rcCommand[2]": lambda t: 300.0, "rcCommand[3]": lambda t: 1000.0 + 100.0 * t})
+        (cls.data / "blackbox" / "sugg.bbl").write_bytes(b"")
+        save_arm(make_arm(10, gyro=combine(axis(0, pulse(2.0, 2.5, 500)), axis(0, pulse(6.0, 6.5, 500))), craft="OttO"), cls.root / "cache", "sugg")   # two 250 deg rolls: two attempts
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(cls.root / "t.db"), ACROSCOPE_DATA=str(cls.data),
                    ACROSCOPE_CACHE=str(cls.root / "cache"), ACROSCOPE_URL="",
@@ -113,6 +121,7 @@ class PlayerTest(unittest.TestCase):
         cls.api.set_match(cls.SHARE, "2026-10-04_001.mp4", SHARE_LOG, 1, 2.0)      # arm 1 covers video 2.0-4.99
         cls.api.tag(cls.SHARE, "2026-10-04_001.mp4", 3.0, 4.0, "half roll", ["roll"])    # m01
         cls.api.tag(cls.SHARE, "2026-10-04_001.mp4", 6.0, 7.0, "late", ["roll"])         # m02: no arm there
+        cls.api.set_match(cls.SUGG, "2026-10-04_002.mp4", "sugg.bbl", 1, 10.0)
         cls.pw = sync_playwright().start()
         cls.browser = _browser(cls.pw)
 
@@ -914,6 +923,30 @@ class PlayerTest(unittest.TestCase):
                 self.assertGreaterEqual(r["ttl"]["width"], 0.55 * r["row"])
                 self.assertGreaterEqual(r["bw"], min_button)
                 self.assertLessEqual(r["height"], 130)
+
+    def test_suggestion_rows_line_up(self):
+        """A suggestion has no thumbnail: its diamond had the thumbnail's column (a gap on the left) and the accept
+        button sat in the stretching column, so its distance to the title changed with the title's length (Rudi's
+        screenshot, 2026-10-22). Now: a narrow diamond column, the words left, the button at the right edge, the
+        same on every row and at both sizes."""
+        rect = """() => [...document.querySelectorAll('#sugg .m')].map(m => { const R = m.getBoundingClientRect(), r = s => m.querySelector(s).getBoundingClientRect();
+          return {left: R.left, right: R.right, dia: r('.dia'), ttl: r('.ttl'), t: r('.t'), act: r('.act'), why: r('.why')}; })"""
+        for size in (DESKTOP, PHONE):
+            page = self.open(self.SUGG, size)
+            if size is PHONE:
+                page.click("#mtabs [data-mtab=sugg]")
+            page.wait_for_function("() => document.querySelectorAll('#sugg .m').length >= 2", timeout=20000)
+            rows = page.evaluate(rect)
+            with self.subTest(size=size["viewport"]["width"]):
+                for r in rows:
+                    self.assertLessEqual(r["ttl"]["left"] - r["left"], 40)                      # no thumbnail-sized gap before the words
+                    self.assertLess(r["dia"]["right"], r["ttl"]["left"])                        # the diamond before the title
+                    self.assertAlmostEqual(r["t"]["left"], r["ttl"]["left"], delta=1)           # the time under the title, same edge
+                    self.assertGreater(r["act"]["left"], r["ttl"]["right"] - 1)                 # the button after the words
+                    self.assertLessEqual(r["right"] - r["act"]["right"], 20)                    # pinned at the right edge
+                    self.assertGreaterEqual(r["why"]["top"], r["act"]["bottom"] - 1)            # the why under it all
+                    self.assertAlmostEqual(r["why"]["left"], r["ttl"]["left"], delta=1)
+                self.assertEqual(len({round(r["act"]["left"]) for r in rows}), 1)               # the button in the same place on every row
 
     def test_share_without_a_match_and_a_refused_window(self):
         page = self.open(self.SHARE)
