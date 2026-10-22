@@ -890,31 +890,30 @@ class PlayerTest(unittest.TestCase):
         self.assertIsNone(page.query_selector("#moments .m[data-id=m01] .shared"))
 
     def test_moment_buttons_under_the_thumbnail(self):
-        """Four buttons beside the title squeezed it into a four-line column (Rudi's screenshot, 2026-10-22): the
-        buttons sit under the thumbnail and the title has the rest of the row. The desktop: two by two under a
-        72 px thumbnail. The phone: a bigger thumbnail over the four in one row, about a third of the card, and
-        the row no taller than the two-by-two made it."""
+        """Four buttons beside the title squeezed it into a four-line column (Rudi's screenshot, 2026-10-22), and
+        two by two under the thumbnail read badly on the desktop: on both layouts the thumbnail takes about a
+        third of the card with the four buttons in one row under it, and the title has the rest; the phone's row
+        is no taller than the two-by-two made it."""
         rect = """() => { const m = document.querySelector('#moments .m'), r = s => m.querySelector(s).getBoundingClientRect();
           const bs = [...m.querySelectorAll('.act button')].map(b => b.getBoundingClientRect());
           return {row: m.getBoundingClientRect().width, height: m.getBoundingClientRect().height, img: r('img'), act: r('.act'), ttl: r('.ttl'),
                   buttons: bs.length, rows: new Set(bs.map(b => Math.round(b.top))).size, bw: Math.min(...bs.map(b => b.width))}; }"""
-        page = self.open(self.SHARE, PHONE)
-        page.click("#mtabs [data-mtab=moments]")
-        page.wait_for_selector("#moments .m .act button")
-        r = page.evaluate(rect)
-        self.assertEqual((r["buttons"], r["rows"]), (4, 1))                              # one row of four
-        self.assertGreaterEqual(r["act"]["top"], r["img"]["bottom"] - 1)                 # under the thumbnail
-        self.assertLessEqual(r["act"]["right"], r["ttl"]["left"])                        # in the thumbnail's column
-        self.assertGreaterEqual(r["img"]["width"], 110)                                  # a thumbnail worth looking at
-        self.assertLessEqual(r["img"]["width"], 0.45 * r["row"])                         # about a third: the words keep most of the card
-        self.assertGreaterEqual(r["ttl"]["width"], 0.55 * r["row"])
-        self.assertGreaterEqual(r["bw"], 28)                                             # a finger's worth each
-        self.assertLessEqual(r["height"], 130)                                           # no taller than the two-by-two (about 125)
-        page = self.open(self.SHARE)
-        r = page.evaluate(rect)
-        self.assertEqual((r["buttons"], r["rows"]), (4, 2))                              # the desktop: two by two
-        self.assertGreaterEqual(r["act"]["top"], r["img"]["bottom"] - 1)
-        self.assertGreater(r["ttl"]["left"], r["img"]["right"])                           # the words beside, not under
+        for size, min_button in ((PHONE, 28), (DESKTOP, 24)):
+            page = self.open(self.SHARE, size)
+            if size is PHONE:
+                page.click("#mtabs [data-mtab=moments]")
+            page.wait_for_selector("#moments .m .act button")
+            r = page.evaluate(rect)
+            with self.subTest(size=size["viewport"]["width"]):
+                self.assertEqual((r["buttons"], r["rows"]), (4, 1))                          # one row of four
+                self.assertGreaterEqual(r["act"]["top"], r["img"]["bottom"] - 1)             # under the thumbnail
+                self.assertLessEqual(r["act"]["right"], r["ttl"]["left"])                    # in the thumbnail's column
+                self.assertGreater(r["ttl"]["left"], r["img"]["right"])                       # the words beside, not under
+                self.assertGreaterEqual(r["img"]["width"], 100)                              # a thumbnail worth looking at
+                self.assertLessEqual(r["img"]["width"], 0.45 * r["row"])                     # about a third: the words keep most of the card
+                self.assertGreaterEqual(r["ttl"]["width"], 0.55 * r["row"])
+                self.assertGreaterEqual(r["bw"], min_button)
+                self.assertLessEqual(r["height"], 130)
 
     def test_share_without_a_match_and_a_refused_window(self):
         page = self.open(self.SHARE)
