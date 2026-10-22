@@ -22,6 +22,7 @@ from acroscope import blackbox, share
 from acroscope.db import Db
 
 SESSION = "2026-10-04-motor-jitter-testing"
+REPO = "https://github.com/szrudi/acroscope"               # the footer's one link out
 CLIP = "2026-10-04_001.mp4"
 LOG = "BTFL_BLACKBOX_LOG_TEST_20261004_120000.bbl"
 PY = sys.executable
@@ -126,8 +127,10 @@ class PureTest(unittest.TestCase):
         self.assertNotIn("<b>hi", html)
         self.assertIn('<meta name="robots" content="noindex', html)
         self.assertIn('"roll": [null]', html)
-        self.assertEqual(set(re.findall(r'(?:src|href)=["\']([^"\']+)', html)), {"clip.mp4"})   # nothing else is fetched
-        self.assertNotIn("http", html.lower())
+        self.assertEqual({r for r in re.findall(r'(?:src|href)=["\']([^"\']+)', html) if not r.startswith("data:")}, {"clip.mp4", REPO})   # nothing else is fetched (the favicon is inline); one link out
+        self.assertEqual(re.findall(r"https?://[^\"'<\s]+", html), [REPO])                            # the only address in the page
+        self.assertIn('<link rel="icon" href="data:image/svg+xml;base64,', html)
+        self.assertIn("<header>", html)
         self.assertIn("<title>&lt;b&gt;hi&lt;/b&gt; &amp; &quot;you&quot; &lt;/script&gt;</title>", html)
         html = share.page("", None)
         self.assertIn("<title>acroscope</title>", html)
@@ -173,6 +176,29 @@ class DbTest(unittest.TestCase):
         self.assertIsNone(self.db.share("zzz"))
         with self.assertRaises(Exception):
             self.db.add_share("a" * 24, SESSION, CLIP, "m01", 3.0, 6.0, "again", future)          # a token is used once
+
+    def test_update_and_the_settings_remembered(self):
+        """The row keeps what the bundle was made with (sticks, sound, the poster time) and `update_share` changes
+        the window, the text, the expiry and those; a database from before the columns gets them."""
+        import sqlite3
+        other = Path(self.tmp.name) / "old.db"
+        c = sqlite3.connect(other)
+        c.executescript("""CREATE TABLE shares (token TEXT PRIMARY KEY, session TEXT NOT NULL, video TEXT NOT NULL, moment TEXT,
+                           start REAL NOT NULL, end REAL NOT NULL, text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT);
+                           INSERT INTO shares VALUES ('o' || substr('oooooooooooooooooooooooo', 1, 23), 's', 'v.mp4', 'm01', 1, 2, 'old', '2026-10-01T00:00:00+00:00', NULL, NULL)""")
+        c.commit(); c.close()
+        old = Db(other)
+        row = old.share("o" * 24)
+        self.assertEqual((row["sticks"], row["audio"], row["poster"]), (None, None, None))                 # from before: unknown
+        self.db.add_share("a" * 24, SESSION, CLIP, "m01", 3.0, 6.0, "half roll", None, sticks=True, audio=False, poster=4.5)
+        r = self.db.share("a" * 24)
+        self.assertEqual((r["sticks"], r["audio"], r["poster"]), (True, False, 4.5))
+        r = self.db.update_share("a" * 24, start=2.0, end=5.0, text="edited", expires_at="2026-12-01T00:00:00+00:00", sticks=False, audio=True, poster=None)
+        self.assertEqual((r["start"], r["end"], r["text"], r["expires_at"], r["sticks"], r["audio"], r["poster"], r["state"]),
+                         (2.0, 5.0, "edited", "2026-12-01T00:00:00+00:00", False, True, None, "active"))
+        self.assertEqual(self.db.update_share("a" * 24, text="again")["text"], "again")                  # the rest kept
+        self.assertEqual(self.db.share("a" * 24)["start"], 2.0)
+        self.assertIsNone(self.db.update_share("nope", text="x"))
 
     def test_rows_follow_a_rename_and_a_move(self):
         self.db.upsert_video(SESSION, CLIP)
@@ -243,8 +269,8 @@ class ShareTest(unittest.TestCase):
         self.assertIn(">half roll<", html)
         for secret in (SESSION, CLIP, LOG, LOG[:-4], "m01", "2026-10-04", "2026", str(self.root)):
             self.assertNotIn(secret, html, secret)
-        self.assertEqual(set(re.findall(r'(?:src|href)=["\']([^"\']+)', html)), {"clip.mp4"})
-        self.assertNotIn("http", html.lower())
+        self.assertEqual({r for r in re.findall(r'(?:src|href)=["\']([^"\']+)', html) if not r.startswith("data:")}, {"clip.mp4", REPO})
+        self.assertEqual(re.findall(r"https?://[^\"'<\s]+", html), [REPO])
         self.assertIn('name="robots" content="noindex', html)
         # the root of the shares dir answers with a page of its own that lists nothing
         root_html = (self.root / "shares" / "index.html").read_text()
@@ -284,6 +310,40 @@ class ShareTest(unittest.TestCase):
         s = self.share("m03", "--pad", "3", "--no-sticks")                                # the whole clip: no arm covers its start
         self.assertEqual((s["start"], s["end"]), (0.0, 8.0))
         self.assertAlmostEqual(float(ffprobe(self.root / "shares" / s["token"] / "clip.mp4")["format"]["duration"]), 8.0, delta=0.15)
+
+    def test_audio_poster_and_an_explicit_window(self):
+        """--audio keeps the clip's sound (an AAC track), --poster <t> adds the frame at that video time as the
+        page's poster and preview image, --from/--to set the window themselves (no padding)."""
+        s = self.share("m01", "--audio", "--poster", "3.5", "--from", "2.5", "--to", "4.5")
+        self.assertEqual((s["start"], s["end"], s["audio"], s["poster"]), (2.5, 4.5, True, 3.5))
+        d = self.root / "shares" / s["token"]
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ["clip.mp4", "index.html", "poster.jpg"])
+        p = ffprobe(d / "clip.mp4")
+        self.assertEqual(sorted((st["codec_type"], st["codec_name"]) for st in p["streams"]), [("audio", "aac"), ("video", "h264")])
+        self.assertAlmostEqual(float(p["format"]["duration"]), 2.0, delta=0.15)
+        self.assertEqual((d / "poster.jpg").read_bytes()[:2], b"\xff\xd8")
+        html = (d / "index.html").read_text()
+        self.assertIn('<video id="v" src="clip.mp4" poster="poster.jpg"', html)
+        self.assertIn(f'<meta property="og:image" content="https://share.example/{s["token"]}/poster.jpg">', html)
+        self.assertIn("const AUDIO = true;", html)
+        self.assertEqual({r for r in re.findall(r'(?:src|href|content|poster)=["\']([^"\']+)', html) if not r.startswith("data:")} - {"noindex, nofollow, noarchive", "no-referrer", "#14161a", "width=device-width, initial-scale=1, viewport-fit=cover", "half roll", "summary_large_image"},
+                         {"clip.mp4", "poster.jpg", f"https://share.example/{s['token']}/poster.jpg", REPO})
+        err = self.share("m01", "--poster", "7", ok=False)                                # outside the window
+        self.assertIn("poster", err)
+        s = self.share("m01")                                                             # the defaults: no sound, no poster
+        html = (self.root / "shares" / s["token"] / "index.html").read_text()
+        self.assertIn("const AUDIO = false;", html)
+        self.assertNotIn("poster", html)
+        self.assertNotIn("og:", html)
+
+    def test_update_from_the_cli(self):
+        s = self.share("m01", "--text", "first")
+        u = self.share("m01", "--update", s["token"], "--text", "second", "--pad", "1")
+        self.assertEqual((u["token"], u["text"], u["start"], u["end"], u["expires_at"]), (s["token"], "second", 2.0, 5.0, s["expires_at"]))
+        self.assertIn(">second<", (self.root / "shares" / s["token"] / "index.html").read_text())
+        err = self.share("m01", "--update", "z" * 24, ok=False)
+        self.assertIn("no such share", err)
+        cli(self.env, "unshare", s["token"])
 
     def test_revoke(self):
         s = self.share("m01")
@@ -356,6 +416,59 @@ class ShareTest(unittest.TestCase):
         self.assertEqual(db.share(tok)["state"], "expired")                                # the row stays as the record
         r = cli(self.env, "housekeeping")                                                 # nothing to do the next day
         self.assertNotIn(tok, json.loads(r.stdout)["shares_taken_down"])
+
+    def test_a_newer_viewer_reaches_the_shares_that_are_up(self):
+        """A bundle is static, so a deploy with a better viewer left the shares that were up with the old page
+        (Rudi, 2026-10-22: the keys did nothing on a share made before them). Housekeeping, which also runs at
+        every server start, re-renders the page of every active share whose page is older than the template:
+        the same clip, poster, sticks and sound, the link unchanged; a revoked one is left alone, and the push
+        hook runs again for the copy elsewhere."""
+        pushes = self.root / "pushes.txt"
+        env = dict(self.env, ACROSCOPE_SHARE_PUSH=f'{PY} -c "import sys; open(sys.argv[1], \'a\').write(sys.argv[2] + chr(10))" {pushes} {{token}}')
+        a = self.share("m01", "--poster", "3.5", "--audio", env=env)                         # sticks, a poster, sound
+        b = self.share("m02", "--no-sticks", "--pad", "0.5", env=env)                         # none of those
+        c = self.share("m01", env=env)
+        assert cli(env, "unshare", c["token"]).returncode == 0
+        self.assertEqual(pushes.read_text().split(), [a["token"], b["token"], c["token"]])
+        pages = {t: self.root / "shares" / t / "index.html" for t in (a["token"], b["token"])}
+        old = time.time() - 7 * 86400
+        for pg in pages.values():
+            pg.write_text(pg.read_text().replace(">acroscope</a></footer>", ">old viewer</a></footer>"))
+            os.utime(pg, (old, old))                                                          # made before the template changed
+        clips = {t: (self.root / "shares" / t / "clip.mp4").stat() for t in pages}
+        # an expired share whose takedown fails (its revoke hook) keeps its bundle: not a page to refresh, nor to push
+        db = Db(self.root / "t.db")
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(microsecond=0).isoformat()
+        db.add_share("x" * 24, SESSION, CLIP, "m01", 2.0, 5.0, "stuck", past)
+        (self.root / "shares" / ("x" * 24)).mkdir()
+        (self.root / "shares" / ("x" * 24) / "index.html").write_text("<footer>old viewer</footer>")
+        os.utime(self.root / "shares" / ("x" * 24) / "index.html", (old, old))
+        env = dict(env, ACROSCOPE_SHARE_REVOKE=f'{PY} -c "import sys; sys.exit(2)"')
+        r = cli(env, "housekeeping")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(sorted(json.loads(r.stdout)["shares_refreshed"]), sorted(pages))
+        self.assertEqual((self.root / "shares" / ("x" * 24) / "index.html").read_text(), "<footer>old viewer</footer>")
+        for t, pg in pages.items():
+            html = pg.read_text()
+            self.assertNotIn("old viewer", html)
+            self.assertIn(">acroscope</a></footer>", html)
+            self.assertEqual((self.root / "shares" / t / "clip.mp4").stat().st_mtime, clips[t].st_mtime)   # the clip untouched
+        html_a, html_b = pages[a["token"]].read_text(), pages[b["token"]].read_text()
+        self.assertIn('"throttle": [', html_a)
+        self.assertIn("const AUDIO = true;", html_a)
+        self.assertIn(f'content="https://share.example/{a["token"]}/poster.jpg"', html_a)
+        self.assertIn(">half roll<", html_a)
+        self.assertIn("const STICKS = null;", html_b)
+        self.assertIn("const AUDIO = false;", html_b)
+        self.assertNotIn("og:image", html_b)
+        self.assertEqual(pushes.read_text().split()[3:], sorted([a["token"], b["token"]], key=lambda t: pushes.read_text().split()[3:].index(t)))   # pushed again, the revoked one not
+        self.assertEqual(len(pushes.read_text().split()), 5)
+        r = cli(env, "housekeeping")                                                          # nothing to do the next time
+        self.assertEqual(json.loads(r.stdout)["shares_refreshed"], [])
+        env = dict(env, ACROSCOPE_SHARE_REVOKE="")
+        for t in list(pages) + ["x" * 24]:
+            cli(env, "unshare", t)
+        cli(env, "housekeeping")
 
     def test_a_clip_that_cannot_be_cut_leaves_nothing(self):
         """An empty file (ffprobe fails), and a clip cut short just after its header (ffprobe reads 8 s from the
