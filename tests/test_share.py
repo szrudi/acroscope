@@ -126,8 +126,10 @@ class PureTest(unittest.TestCase):
         self.assertNotIn("<b>hi", html)
         self.assertIn('<meta name="robots" content="noindex', html)
         self.assertIn('"roll": [null]', html)
-        self.assertEqual(set(re.findall(r'(?:src|href)=["\']([^"\']+)', html)), {"clip.mp4"})   # nothing else is fetched
+        self.assertEqual({r for r in re.findall(r'(?:src|href)=["\']([^"\']+)', html) if not r.startswith("data:")}, {"clip.mp4"})   # nothing else is fetched (the favicon is inline)
         self.assertNotIn("http", html.lower())
+        self.assertIn('<link rel="icon" href="data:image/svg+xml;base64,', html)
+        self.assertIn("<header>", html)
         self.assertIn("<title>&lt;b&gt;hi&lt;/b&gt; &amp; &quot;you&quot; &lt;/script&gt;</title>", html)
         html = share.page("", None)
         self.assertIn("<title>acroscope</title>", html)
@@ -243,7 +245,7 @@ class ShareTest(unittest.TestCase):
         self.assertIn(">half roll<", html)
         for secret in (SESSION, CLIP, LOG, LOG[:-4], "m01", "2026-10-04", "2026", str(self.root)):
             self.assertNotIn(secret, html, secret)
-        self.assertEqual(set(re.findall(r'(?:src|href)=["\']([^"\']+)', html)), {"clip.mp4"})
+        self.assertEqual({r for r in re.findall(r'(?:src|href)=["\']([^"\']+)', html) if not r.startswith("data:")}, {"clip.mp4"})
         self.assertNotIn("http", html.lower())
         self.assertIn('name="robots" content="noindex', html)
         # the root of the shares dir answers with a page of its own that lists nothing
@@ -300,7 +302,7 @@ class ShareTest(unittest.TestCase):
         self.assertIn('<video id="v" src="clip.mp4" poster="poster.jpg"', html)
         self.assertIn(f'<meta property="og:image" content="https://share.example/{s["token"]}/poster.jpg">', html)
         self.assertIn("const AUDIO = true;", html)
-        self.assertEqual(set(re.findall(r'(?:src|href|content|poster)=["\']([^"\']+)', html)) - {"noindex, nofollow, noarchive", "no-referrer", "#14161a", "width=device-width, initial-scale=1, viewport-fit=cover", "half roll", "summary_large_image"},
+        self.assertEqual({r for r in re.findall(r'(?:src|href|content|poster)=["\']([^"\']+)', html) if not r.startswith("data:")} - {"noindex, nofollow, noarchive", "no-referrer", "#14161a", "width=device-width, initial-scale=1, viewport-fit=cover", "half roll", "summary_large_image"},
                          {"clip.mp4", "poster.jpg", f"https://share.example/{s['token']}/poster.jpg"})
         err = self.share("m01", "--poster", "7", ok=False)                                # outside the window
         self.assertIn("poster", err)

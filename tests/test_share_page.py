@@ -153,6 +153,10 @@ class SharePageTest(unittest.TestCase):
         self.assertIsNone(page.query_selector("#text b"))                                    # shown, not rendered
         self.assertEqual(page.inner_text("footer"), "acroscope")
         self.assertIn("space", page.inner_text(".keys"))                                      # the keys, said at the bottom
+        # the brand (Rudi, 2026-10-22): the mark and the name in a header, the favicon; both inline, nothing fetched
+        self.assertEqual(page.inner_text("header"), "acroscope")
+        self.assertIsNotNone(page.query_selector("header svg path"))
+        self.assertTrue(page.get_attribute("link[rel=icon]", "href").startswith("data:image/svg+xml;base64,"))
 
     def test_sticks_drawn_from_the_samples_and_hidden_by_a_tap(self):
         """At 1 s into the bundle the fake arm's sticks are: throttle 10 %, yaw 60 % left, roll 50 % right, pitch

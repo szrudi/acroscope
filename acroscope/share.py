@@ -18,6 +18,7 @@ else (a host, a bucket), so a laptop needs no web server of its own. The token i
 [a-z0-9] (more than 2^124 of them), lower case so a case-blind file system keeps two apart, and never used in a path
 without token_ok (`unshare` takes it from the command line, the API from the URL).
 """
+import base64
 import html
 import json
 import re
@@ -45,6 +46,7 @@ STEP = 0.02                # the sticks every 20 ms, as the player's overlay
 PREVIEW_KEEP = 86400       # seconds a preview nobody published stays in the cache
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
 TEMPLATE = Path(__file__).parent / "static" / "share.html"
+BRAND = Path(__file__).parent / "static" / "brand"          # the mark and the favicon go into the page inline: nothing to fetch
 PREVIEW_DIR = CACHE_DIR / "share-preview"
 ROOT_PAGE = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow">'
              '<title>acroscope</title></head><body>Nothing here.</body></html>\n')
@@ -152,9 +154,12 @@ def page(text: str, sticks: dict | None, audio: bool = False, poster: str | None
     if poster:
         og = (f'<meta property="og:title" content="{title}">\n<meta property="og:image" content="{html.escape(poster, quote=True)}">\n'
               '<meta name="twitter:card" content="summary_large_image">\n')
+    mark = re.sub(r'\s*xmlns="[^"]*"', "", (BRAND / "icon.svg").read_text().strip())      # inline in HTML: no namespace, so no URL in the page
+    favicon = "data:image/svg+xml;base64," + base64.b64encode((BRAND / "favicon.svg").read_bytes()).decode()
     parts = {"TITLE": title, "TEXT": html.escape(text, quote=True), "STICKS": json.dumps(sticks).replace("</", "<\\/"),
-             "AUDIO": "true" if audio else "false", "POSTER": ' poster="poster.jpg"' if poster else "", "OG": og}
-    return re.sub(r"__(TITLE|TEXT|STICKS|AUDIO|POSTER|OG)__", lambda m: parts[m.group(1)], TEMPLATE.read_text())
+             "AUDIO": "true" if audio else "false", "POSTER": ' poster="poster.jpg"' if poster else "", "OG": og,
+             "MARK": mark, "FAVICON": favicon}
+    return re.sub(r"__(TITLE|TEXT|STICKS|AUDIO|POSTER|OG|MARK|FAVICON)__", lambda m: parts[m.group(1)], TEMPLATE.read_text())
 
 
 def run_hook(template: str, token: str, d: Path) -> None:
@@ -403,7 +408,7 @@ def refresh_pages(log=lambda m: None) -> list[str]:
     hook runs again for the copy elsewhere. One that cannot be rendered (its clip or match gone) is logged and
     kept as it is. Returns the tokens refreshed."""
     done = []
-    stamp = TEMPLATE.stat().st_mtime
+    stamp = max(p.stat().st_mtime for p in (TEMPLATE, BRAND / "icon.svg", BRAND / "favicon.svg"))   # the page is made of these
     for r in sessions.store().shares():
         d = SHARES_DIR / r["token"]
         pg = d / "index.html"

@@ -6,6 +6,7 @@
 <meta name="robots" content="noindex, nofollow, noarchive">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#14161a">
+<link rel="icon" href="__FAVICON__">
 <title>__TITLE__</title>
 __OG__
 <style>
@@ -14,6 +15,8 @@ __OG__
   html, body { margin:0; background:var(--bg); color:var(--fg) }
   body { font:15px/1.45 system-ui, sans-serif; min-height:100vh; min-height:100dvh; display:flex; justify-content:center }
   main { width:100%; max-width:720px; padding:0 0 32px }
+  header { display:flex; align-items:center; gap:7px; padding:10px 14px; color:var(--acc); font-size:16px; font-weight:600; letter-spacing:.5px }
+  header svg { width:22px; height:22px; flex:none }
   .vwrap { position:relative; background:#000; line-height:0; cursor:pointer; -webkit-tap-highlight-color:transparent }
   video { width:100%; max-height:72vh; display:block; background:#000 }
   canvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none }
@@ -28,6 +31,7 @@ __OG__
 </head>
 <body>
 <main>
+  <header>__MARK__acroscope</header>
   <div class="vwrap" id="wrap"><video id="v" src="clip.mp4"__POSTER__ autoplay muted loop playsinline preload="auto"></video><canvas id="sticks"></canvas></div>
   <div class="bar" id="bar"><i id="pos"></i></div>
   <div class="row">
