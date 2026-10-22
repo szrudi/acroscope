@@ -49,6 +49,11 @@
   .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:13px } .kv b { color:var(--dim); font-weight:500 }
   table.ev { border-collapse:collapse; font-size:13px; margin:6px 0 } table.ev td, table.ev th { padding:3px 10px 3px 0; text-align:left; border-bottom:1px solid var(--line) } table.ev th { color:var(--dim); font-weight:500 }
   .ok { color:var(--ok) } .bad { color:var(--bad) } .dim { color:var(--dim) }
+  .shrow { display:grid; grid-template-columns:72px minmax(0, 1fr) auto; gap:4px 10px; align-items:center; padding:7px 0; border-bottom:1px solid var(--line) }
+  .shrow .st { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--dim) } .shrow .st.active { color:var(--ok) } .shrow .st.expired { color:var(--acc) } .shrow .st.revoked { color:var(--bad) }
+  .shrow .what { min-width:0 } .shrow .what b { font-weight:500 } .shrow .what .dim { display:block; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .shrow .act { display:flex; gap:6px; align-items:center; white-space:nowrap }
+  body.phone .shrow { grid-template-columns:72px minmax(0, 1fr) } body.phone .shrow .act { grid-column:2 }
   .list .m { padding:4px 0; border-bottom:1px solid var(--line); font-size:13px } .list .m .t { color:var(--dim); font-variant-numeric:tabular-nums; margin-right:8px }
   #tagsPanel .row { gap:6px }
   body.phone header { height:auto; min-height:44px; flex-wrap:wrap; padding:6px 10px; gap:8px } body.phone header #status { width:100%; font-size:12px }
@@ -63,7 +68,7 @@
   <span id="status"></span>
   <a class="btn" href="/" id="toPlayer">← player</a>
 </header>
-<div class="tabs" id="tabs"><span data-tab="profile">profile</span><span data-tab="drones">drones</span><span data-tab="tricks">tricks</span><span data-tab="settings">settings</span><span data-tab="tags">tags</span></div>
+<div class="tabs" id="tabs"><span data-tab="profile">profile</span><span data-tab="drones">drones</span><span data-tab="tricks">tricks</span><span data-tab="settings">settings</span><span data-tab="tags">tags</span><span data-tab="shares">shares</span></div>
 <main>
   <div id="err"></div>
   <section data-panel="profile" id="profilePanel"></section>
@@ -71,6 +76,7 @@
   <section data-panel="tricks" id="tricksPanel"></section>
   <section data-panel="settings" id="settingsPanel"></section>
   <section data-panel="tags" id="tagsPanel"></section>
+  <section data-panel="shares" id="sharesPanel"></section>
 </main>
 <script>
 // The configuration page (#45): profile (the preset and the numbers), drones (per craft), tricks (on/off, their
@@ -294,6 +300,37 @@ function renderSettings() {
   $('#layerClear').onclick = async () => { if (!confirm('Clear everything set on this page? The shipped tricks stay.')) return; err(''); await api('/api/tricks/layer', {method: 'DELETE'}); await load(); };
 }
 
+// ---- shares (#57): the moments published on a secret link, what is up and until when, the way to take one down
+function renderShares() {
+  const box = $('#sharesPanel');
+  box.innerHTML = `<h2>shares</h2><p class="hint">a moment published as a clip with the sticks drawn over it, on a secret link (the player's ⤴ on a moment makes one). A link is not private: it is forwarded and previewed, so a share expires unless told otherwise, and a takedown is final.</p>` +
+    `<div class="row"><label><input type="checkbox" id="shAll"> show expired and revoked</label><span id="shBase" class="dim"></span></div><div id="shList"></div>`;
+  const fmt = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); };
+  const day = x => x ? esc(new Date(x).toLocaleDateString()) : '';          // the reader's day, not the UTC date's first ten characters
+  const load = async () => {
+    const r = await api('/api/shares?all=' + ($('#shAll').checked ? 1 : 0));
+    if (r.error) { err(r.error); return; }
+    $('#shBase').textContent = r.public ? `links on ${r.base}` : 'no public URL on the server (ACROSCOPE_SHARE_URL): the bundles are folders in the data dir only';
+    const rows = (r.shares || []).slice().reverse();
+    $('#shList').innerHTML = rows.map(x => `<div class="shrow" data-token="${esc(x.token)}"><span class="st ${esc(x.state)}">${esc(x.state === 'active' ? 'up' : x.state)}</span>` +
+      `<span class="what"><b>${esc(x.title || x.text || x.token)}</b> <span class="dim">${esc(x.session)} › ${esc(x.clip)} ${fmt(x.start)}–${fmt(x.end)}${x.text && x.text !== x.title ? ' · ' + esc(x.text) : ''}</span>` +
+      `<span class="dim">${x.state === 'active' ? (x.expires_at ? 'until ' + day(x.expires_at) : 'never expires') : day(x.revoked_at || x.expires_at)} · made ${day(x.created_at)}</span></span>` +
+      `<span class="act"><a class="btn" data-moment href="${esc(x.moment ? `/?${new URLSearchParams({session: x.session, clip: x.clip, m: x.moment, share: 1})}` : `/?${new URLSearchParams({session: x.session, clip: x.clip, t: x.start})}`)}" title="the moment in the player, with its share panel">${x.moment ? 'moment' : 'clip'}</a>` +
+      `${x.state === 'active' && x.url ? `<a class="btn" href="${esc(x.url)}" target="_blank" rel="noopener">open</a><button class="small" data-copy="${esc(x.url)}">copy</button>` : ''}` +
+      `${x.state === 'active' ? `<button class="small" data-down="${esc(x.token)}">take down</button>` : ''}</span></div>`).join('') || '<p class="hint">nothing shared' + ($('#shAll').checked ? '' : ' right now') + '</p>';
+    $('#shList').querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.copy); status('link copied'); } catch { prompt('link', b.dataset.copy); } });
+    $('#shList').querySelectorAll('[data-down]').forEach(b => b.onclick = async () => {
+      if (!confirm('Take this share down? The link stops working.')) return;
+      const d = await api('/api/share/' + encodeURIComponent(b.dataset.down), {method: 'DELETE'});
+      if (d.error) { err(d.error); return; }
+      await load();
+    });
+    renders++;
+  };
+  $('#shAll').onchange = load;
+  load();
+}
+
 // ---- tags: categories and tags with their colours (moved here from the player)
 function renderTags() {
   const box = $('#tagsPanel');
@@ -330,7 +367,7 @@ function render() {
   if (!D) return;
   renders++;
   status(`${D.tricks.filter(t => t.enabled).length} of ${D.tricks.length} tricks on · ${D.skill ? 'skill ' + D.skill : 'the default numbers'}${D.database ? ' · your layer in the database' : ''}`);
-  ({profile: renderProfile, drones: renderDrones, tricks: renderTricks, settings: renderSettings, tags: renderTags})[tab]();
+  ({profile: renderProfile, drones: renderDrones, tricks: renderTricks, settings: renderSettings, tags: renderTags, shares: renderShares})[tab]();
 }
 function show(t) {
   tab = t;
@@ -348,7 +385,7 @@ setPhone();
 (async () => {
   status('loading…');
   const first = location.hash.slice(1);
-  tab = ['profile', 'drones', 'tricks', 'settings', 'tags'].includes(first) ? first : (() => { try { return localStorage.getItem('acro.cfgtab'); } catch { return null; } })() || 'profile';
+  tab = ['profile', 'drones', 'tricks', 'settings', 'tags', 'shares'].includes(first) ? first : (() => { try { return localStorage.getItem('acro.cfgtab'); } catch { return null; } })() || 'profile';
   SESS = (await api('/api/sessions')).filter(s => s.moments).map(s => ({session: s.session, moments: s.moments}));
   await load();
   show(tab);

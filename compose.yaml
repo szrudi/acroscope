@@ -10,6 +10,25 @@ services:
     ports:
       - "8070:8070"
     volumes:
-      - /data:/data                            # CT 109's mp0 of Data/fpv: videos/, blackbox/, inbox/, originals/, state/
+      - /data:/data                            # CT 109's mp0 of Data/fpv: videos/, blackbox/, inbox/, originals/, state/, shares/
       - /opt/acroscope/cache:/cache            # decoded arms, frames, OSD readings, H.264 proxies: disposable
       - /opt/acroscope/state:/state            # the database (matches, moments, notes): backed up nightly into /data/state too
+    environment:
+      # shares (#57): the public base URL the links are printed with, and the optional push and revoke commands
+      # (a copy to another host or a bucket). They name the host, so they come from the stack's environment
+      # (Komodo), not from this file; unset, a share is a folder under /data/shares and `share` prints no link.
+      ACROSCOPE_SHARE_URL: ${ACROSCOPE_SHARE_URL:-}
+      ACROSCOPE_SHARE_PUSH: ${ACROSCOPE_SHARE_PUSH:-}
+      ACROSCOPE_SHARE_REVOKE: ${ACROSCOPE_SHARE_REVOKE:-}
+  shares:
+    # the shares dir as a static site (#57), read-only, on :8071: what a public vhost on a domain of its own proxies
+    # to (that vhost is the host's, outside this repo). It is the only thing a share's visitor reaches; the acroscope
+    # container's port stays where it is. Drop this service when the bundles are pushed elsewhere instead.
+    image: caddy:2-alpine
+    container_name: acroscope-shares
+    restart: unless-stopped
+    ports:
+      - "8071:8071"
+    volumes:
+      - /data/shares:/srv:ro
+      - ./shares.Caddyfile:/etc/caddy/Caddyfile:ro

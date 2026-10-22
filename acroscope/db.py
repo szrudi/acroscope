@@ -49,6 +49,13 @@ CREATE TABLE IF NOT EXISTS tags (
   name TEXT PRIMARY KEY, category TEXT NOT NULL REFERENCES tag_categories(name), color TEXT, pos INTEGER NOT NULL);
 -- what the pilot set in the player, as JSON documents: the tricks layer under 'tricks' (#45)
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+-- a moment published as a static bundle on a secret link (#57): what was shared, the window, until when; the row
+-- stays after a revoke or an expiry as the record of what was public (the bundle itself is in the shares dir)
+CREATE TABLE IF NOT EXISTS shares (
+  token TEXT PRIMARY KEY, session TEXT NOT NULL, video TEXT NOT NULL, moment TEXT, start REAL NOT NULL, end REAL NOT NULL,
+  text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT,
+  sticks INTEGER, audio INTEGER, poster REAL,   -- what the bundle was made with, so an edit starts from it
+  down_at TEXT);   -- when the bundle was taken out of the world (here and where it was pushed); NULL = may still be up
 """
 
 # The tag vocabulary a new database starts with: categories with a colour, tags with the colour the player used
@@ -103,6 +110,13 @@ class Db:
                 self.c.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
         if "result" not in {r["name"] for r in self.c.execute("PRAGMA table_info(batches)")}:
             self.c.execute("ALTER TABLE batches ADD COLUMN result TEXT")
+        have = {r["name"] for r in self.c.execute("PRAGMA table_info(shares)")}
+        for col, decl in (("sticks", "INTEGER"), ("audio", "INTEGER"), ("poster", "REAL")):
+            if col not in have:
+                self.c.execute(f"ALTER TABLE shares ADD COLUMN {col} {decl}")
+        if "down_at" not in have:
+            self.c.execute("ALTER TABLE shares ADD COLUMN down_at TEXT")
+            self.c.execute("UPDATE shares SET down_at = revoked_at WHERE revoked_at IS NOT NULL")   # taken down when revoked, as it was then
         self._backfill_batch_results()
 
     def _backfill_batch_results(self) -> None:
@@ -333,6 +347,8 @@ class Db:
 
     def untag(self, session: str, mid: str) -> bool:
         cur = self.c.execute("DELETE FROM moments WHERE session = ? AND id = ?", (session, mid))
+        if cur.rowcount:                                   # the next moment may get this id: a share made from it keeps no pointer
+            self.c.execute("UPDATE shares SET moment = NULL WHERE session = ? AND moment = ?", (session, mid))
         self._touch(session)
         return cur.rowcount > 0
 
@@ -352,6 +368,7 @@ class Db:
         for r in rows:
             n_m = self.c.execute("DELETE FROM matches WHERE session = ? AND video = ?", (session, r["file"])).rowcount
             n_t = self.c.execute("DELETE FROM moments WHERE session = ? AND video = ?", (session, r["file"])).rowcount
+            self.c.execute("UPDATE shares SET moment = NULL WHERE session = ? AND video = ?", (session, r["file"]))
             self.c.execute("DELETE FROM videos WHERE session = ? AND file = ?", (session, r["file"]))
             out.append({"video": r["file"], "missing_since": r["missing_since"], "matches": n_m, "moments": n_t})
         if out:
@@ -364,6 +381,7 @@ class Db:
             raise ValueError(f"{session}: no clip {video}")
         n_m = self.c.execute("DELETE FROM matches WHERE session = ? AND video = ?", (session, video)).rowcount
         n_t = self.c.execute("DELETE FROM moments WHERE session = ? AND video = ?", (session, video)).rowcount
+        self.c.execute("UPDATE shares SET moment = NULL WHERE session = ? AND video = ?", (session, video))   # the shares stay: the record
         self.c.execute("DELETE FROM videos WHERE session = ? AND file = ?", (session, video))
         self._touch(session)
         return {"video": video, "matches": n_m, "moments": n_t}
@@ -381,7 +399,7 @@ class Db:
         try:
             self.c.execute("INSERT INTO sessions (name, date, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                            (new, new[:10], row["note"], row["created_at"], now()))
-            for t in ("videos", "blackbox", "detached", "matches", "moments", "batch_clips"):
+            for t in ("videos", "blackbox", "detached", "matches", "moments", "batch_clips", "shares"):
                 self.c.execute(f"UPDATE {t} SET session = ? WHERE session = ?", (new, old))
             self.c.execute("UPDATE videos SET original = replace(original, ?, ?) WHERE session = ? AND original LIKE ?",
                            (f"originals/{old}/", f"originals/{new}/", new, f"originals/{old}/%"))   # the folder moves too
@@ -402,10 +420,13 @@ class Db:
             # moment ids count per session (m01, m02, ...): one that `to` already uses gets the next free id there
             for r in self.c.execute("SELECT id FROM moments WHERE session = ? AND video = ? ORDER BY start", (session, file)).fetchall():
                 taken = self.c.execute("SELECT 1 FROM moments WHERE session = ? AND id = ?", (to, r["id"])).fetchone()
-                self.c.execute("UPDATE moments SET session = ?, id = ? WHERE session = ? AND id = ?",
-                               (to, self.next_id(to) if taken else r["id"], session, r["id"]))
+                new_id = self.next_id(to) if taken else r["id"]
+                self.c.execute("UPDATE moments SET session = ?, id = ? WHERE session = ? AND id = ?", (to, new_id, session, r["id"]))
+                self.c.execute("UPDATE shares SET session = ?, moment = ? WHERE session = ? AND video = ? AND moment = ?",   # a share follows its moment's new id
+                               (to, new_id, session, file, r["id"]))
             self.c.execute("UPDATE matches SET session = ? WHERE session = ? AND video = ?", (to, session, file))
             self.c.execute("UPDATE batch_clips SET session = ? WHERE session = ? AND file = ?", (to, session, file))
+            self.c.execute("UPDATE shares SET session = ? WHERE session = ? AND video = ?", (to, session, file))   # the rest: no moment, or one kept its id
             self.c.execute("UPDATE videos SET session = ? WHERE session = ? AND file = ?", (to, session, file))
             self.c.execute("COMMIT")
         except Exception:
@@ -555,6 +576,51 @@ class Db:
             for t in json.loads(r["tags"]):
                 out[t] = out.get(t, 0) + 1
         return out
+
+    # ---- shares (#57) ------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def _share(r) -> dict:
+        """A share row with its state: active, expired (past expires_at) or revoked. sticks and audio are booleans
+        (None on a row from before they were kept)."""
+        d = dict(r)
+        d["state"] = "revoked" if d["revoked_at"] else ("expired" if d["expires_at"] and d["expires_at"] <= now() else "active")
+        for k in ("sticks", "audio"):
+            d[k] = None if d.get(k) is None else bool(d[k])
+        return d
+
+    def add_share(self, token: str, session: str, video: str, moment: str | None, start: float, end: float, text: str,
+                  expires_at: str | None, sticks: bool | None = None, audio: bool | None = None, poster: float | None = None) -> dict:
+        self.c.execute("INSERT INTO shares (token, session, video, moment, start, end, text, created_at, expires_at, sticks, audio, poster) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (token, session, video, moment, start, end, text, now(), expires_at,
+                        None if sticks is None else int(sticks), None if audio is None else int(audio), poster))
+        return self.share(token)
+
+    def update_share(self, token: str, **fields) -> dict | None:
+        """An edit of a share that is up: start, end, text, expires_at, sticks, audio, poster (the ones given); the
+        row as it is then, or None for an unknown token."""
+        allowed = {"start", "end", "text", "expires_at", "sticks", "audio", "poster"}
+        cols = {k: (None if v is None else int(v)) if k in ("sticks", "audio") else v for k, v in fields.items() if k in allowed}
+        if cols:
+            self.c.execute(f"UPDATE shares SET {', '.join(k + ' = ?' for k in cols)} WHERE token = ?", (*cols.values(), token))
+        return self.share(token)
+
+    def share(self, token: str) -> dict | None:
+        r = self.c.execute("SELECT * FROM shares WHERE token = ?", (token,)).fetchone()
+        return self._share(r) if r else None
+
+    def shares(self, all: bool = False) -> list[dict]:
+        """The active shares, oldest first; with `all` the expired and revoked ones too."""
+        rows = [self._share(r) for r in self.c.execute("SELECT * FROM shares ORDER BY created_at, token")]
+        return rows if all else [r for r in rows if r["state"] == "active"]
+
+    def revoke_share(self, token: str) -> bool:
+        """Mark a share revoked (once). True when it was not yet."""
+        return self.c.execute("UPDATE shares SET revoked_at = ? WHERE token = ? AND revoked_at IS NULL", (now(), token)).rowcount > 0
+
+    def mark_down(self, token: str) -> bool:
+        """The bundle is out of the world, here and wherever it was pushed (once)."""
+        return self.c.execute("UPDATE shares SET down_at = ? WHERE token = ? AND down_at IS NULL", (now(), token)).rowcount > 0
 
     # ---- import of the old session.json files -----------------------------------------------------------------
 

@@ -314,6 +314,9 @@ class IngestTest(_Scratch):
                                    "arms": [{"index": 1, "length": 2.0, "frames": 10}, {"index": 2, "length": 3.0, "frames": 10}]}))
         db.set_match(S, v["file"], "BTFL_d.bbl", 1, 4.5)                  # 4.5-6.5: inside the second stretch
         db.set_match(S, v["file"], "BTFL_d.bbl", 2, 3.0)                  # 3-6: across the old cut at 4.0
+        db.add_share("s" * 24, S, v["file"], "m02", 4.5, 6.5, "shared", None)                  # a share's window moves with the footage too (#59 review)
+        db.add_share("r" * 24, S, v["file"], "m01", 2.0, 3.0, "revoked", None)
+        db.revoke_share("r" * 24)
         stale = self.root / "cache" / "frames" / S / (Path(v["file"]).stem + "_5.00.jpg")
         stale.parent.mkdir(parents=True)
         stale.write_bytes(b"old")
@@ -330,6 +333,9 @@ class IngestTest(_Scratch):
         off = {m["arm"]: m["offset"] for m in s["matches"]}
         self.assertEqual(off, {1: 9.5, 2: 3.0})
         self.assertEqual([(c["bbl"], c["arm"]) for c in res["check"]], [("BTFL_d.bbl", 2)])
+        self.assertEqual((db.share("s" * 24)["start"], db.share("s" * 24)["end"]), (9.5, 11.5))
+        self.assertEqual((db.share("r" * 24)["start"], db.share("r" * 24)["end"]), (2.0, 3.0))     # not up: left as it was
+        self.assertEqual(res["shares"], [{"token": "s" * 24, "from": [4.5, 6.5], "to": [9.5, 11.5]}])
         self.assertFalse(stale.exists())
         self.assertTrue((self.data / v["original"]).exists())               # the original stays until its date
 

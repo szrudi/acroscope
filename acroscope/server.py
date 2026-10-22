@@ -5,6 +5,7 @@ uses these endpoints (remote.Remote). Writes go through the same functions as th
 The data dir is only walked in the background (a scan at start and every SCAN_EVERY seconds, and on request): a
 page open never waits on the Drive mount."""
 import json
+import math
 import mimetypes
 import os
 import re
@@ -18,8 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import blackbox, ingest, metrics, sessions, tricks, video
-from .config import BLACKBOX_DIR, CACHE_DIR, VIDEOS_DIR
+from . import blackbox, ingest, metrics, sessions, share, tricks, video
+from .config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -29,7 +30,8 @@ _busy_lock = threading.Lock()
 SCAN_EVERY = 300                 # seconds between background walks of the data dir
 # CLI commands a client may run here (they need the clips, the logs or the cache, which only the server has);
 # each runs in a child process, so the reader's pure-Python work never holds this process's GIL
-PROXIED = {"arms", "decode", "metrics", "events", "tricks", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach", "tag", "recut"}
+PROXIED = {"arms", "decode", "metrics", "events", "tricks", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach", "tag", "recut",
+           "share", "unshare", "shares"}
 INBOX_EVERY = 20                 # seconds between looks at inbox/ for a complete batch
 
 
@@ -58,7 +60,10 @@ def _cli(*args: str):
     subprocess.run([sys.executable, "-m", "acroscope.cli", *args], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
 
-FREE_TEXT = {"title", "note", "tags"}   # a client's command may say anything here; every other value names something
+FREE_TEXT = {"title", "note", "tags", "text"}   # a client's command may say anything here; every other value names something
+# a share request's keys and their types (#57): what POST /api/share and /api/share/preview accept, nothing else
+SHARE_BODY = {"moment": str, "video": str, "text": str, "expires": str, "preview": str, "sticks": bool, "audio": bool,
+              "start": float, "end": float, "pad": float, "poster": float}
 
 
 def _check_proxied(args: list[str]) -> None:
@@ -380,6 +385,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file(p, "application/octet-stream", download=True)
             if parts[0] == "frame" and len(parts) == 4:
                 return self._file(video.frame(_under(VIDEOS_DIR, parts[1], parts[2]), float(parts[3])), "image/jpeg", "max-age=86400")
+            if parts[0] == "share-preview":                             # a bundle rendered for the player's look (#57): cache only, by id
+                name = parts[2] if len(parts) == 3 else "index.html"       # /share-preview/<id>/ is the page, its files beside it
+                if len(parts) not in (2, 3) or not share.preview_ok(parts[1]) or name not in ("index.html", "clip.mp4", "poster.jpg"):
+                    return self._json({"error": "not a preview"}, 404)
+                return self._file(share.PREVIEW_DIR / parts[1] / name, "text/html; charset=utf-8" if name == "index.html" else None)
+            if parts == ["api", "shares"]:
+                return self._json({"shares": share.list_shares(all=q.get("all") in ("1", "true"), session=q.get("session") or None),
+                                   "public": bool(SHARE_URL), "base": SHARE_URL or None, "push": bool(SHARE_PUSH)})
             if parts[:2] == ["api", "sessions"]:
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
             if parts == ["api", "inbox"]:
@@ -518,6 +531,36 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "tag-categories"]:
                 b = self._body()
                 return self._json(sessions.store().set_category(b["name"], b.get("color")))
+            if parts[:2] == ["api", "share"] and len(parts) <= 3 and (len(parts) == 2 or parts[2] == "preview" or share.token_ok(parts[2])):
+                # a share from the player (#57): a preview, the share itself, or an edit of one that is up (its token)
+                b = self._body()
+                if not isinstance(b, dict) or not b.get("session"):
+                    return self._json({"error": "a share names a session and a moment (or a clip with start and end)"}, 400)
+                # every key typed before any work (#59 review: "false" was true to bool(), NaN passed float(), a number as text was a 500)
+                what = {}
+                for k, kind in SHARE_BODY.items():
+                    v = b.get(k)
+                    if v is None:
+                        continue
+                    if (kind is bool and not isinstance(v, bool)) or (kind is str and not isinstance(v, str)) \
+                            or (kind is float and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v))):
+                        return self._json({"error": f"{k}: {'true or false' if kind is bool else 'text' if kind is str else 'a number'} expected"}, 400)
+                    what[k] = float(v) if kind is float else v
+                if not isinstance(b.get("session"), str):
+                    return self._json({"error": "session: text expected"}, 400)
+                what["session"] = b["session"]
+                if what.get("sticks", True):                              # the log decoding: not in this request (30 s with the GIL held)
+                    s = sessions.load(what["session"])
+                    vid = next((m["video"] for m in s["moments"] if m["id"] == what.get("moment")), what.get("video"))
+                    if vid:
+                        vid = sessions.resolve_clip(what["session"], vid)   # as resolve takes it: a number or a name too (#59 review)
+                    if any(_log_state(m["bbl"]) == "decoding" for m in s["matches"] if m["video"] == vid):
+                        return self._json({"error": "log not decoded yet, try again shortly"}, 503)
+                if parts[-1] == "preview":
+                    what.pop("expires", None); what.pop("preview", None)
+                    return self._json(share.preview(**what))
+                token = parts[2] if len(parts) == 3 else None
+                return self._json(share.publish(expires=what.pop("expires", None) or None, preview_id=what.pop("preview", None), token=token, **what))
             if parts[:2] != ["api", "session"] or len(parts) != 4:
                 return self._json({"error": "not found"}, 404)
             name, what, b = parts[2], parts[3], self._body()
@@ -580,6 +623,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})
             if parts == ["api", "tricks", "layer"]:
                 return self._json({"removed": sessions.store().delete_setting(tricks.LAYER_KEY)})
+            if parts[:3] == ["api", "share", "preview"] and len(parts) == 4:
+                return self._json({"removed": share.drop_preview(parts[3])})
+            if parts[:2] == ["api", "share"] and len(parts) == 3:              # a share taken down (#57)
+                return self._json(share.revoke(parts[2]))
             if parts[:2] == ["api", "tag-categories"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_category(parts[2])})
             return self._json({"error": "not found"}, 404)

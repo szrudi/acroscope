@@ -54,6 +54,23 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   (`acroscope/static/config.html`, one file like the player, five tabs) edits that layer whole through
   `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
   against what the server then holds.
+- Sharing (#57, `acroscope/share.py`): `acroscope share <session> <moment>` renders `shares/<token>/` (a cut of the
+  clip without sound or metadata, `static/share.html` filled with the stick samples and the text) and records it in
+  the `shares` table; `unshare` takes one down, `shares` lists them, `housekeeping` removes expired bundles and
+  day-old previews and re-renders the page of every active share older than `share.html` (`share.refresh_pages`:
+  a bundle is static, so this is how a viewer change reaches the links already out). The three commands are proxied (the clips are on the server); the share text is in
+  `server.FREE_TEXT`. The player's panel (⤴ on a moment, `index.html`) and the configuration page's shares tab use
+  the API: `POST /api/share/preview` renders into the cache's `share-preview/<id>/` (served back at
+  `/share-preview/<id>/`, the viewer in an iframe), `POST /api/share` publishes (a preview whose facts match is
+  moved, not cut again), `GET /api/shares`, `DELETE /api/share/<token>`; `share.resolve` is the one place the
+  window, the text, the sticks and the poster are decided. The server never serves a published share: a static server
+  does (`compose.yaml`'s `shares` service, `shares.Caddyfile`, `:8071`), or `ACROSCOPE_SHARE_PUSH`/`_REVOKE` push the
+  bundle elsewhere. `ACROSCOPE_SHARE_URL` is the public base URL; it and the vhost in front of `:8071` are homelab
+  settings (never in this repo). The bundle must name nothing (no session, clip, log, craft, date, moment id) and
+  fetch nothing but its own files: `tests/test_share.py`, `tests/test_share_api.py` and `tests/test_share_page.py`
+  pin that (the panel and the tab are in `test_player.py` and `test_config_page.py`); keep them when the viewer
+  changes. Tokens are `[a-z0-9]{24}` and `share.token_ok` guards every path built from one; preview ids likewise
+  (`preview_ok`).
 - `flightModeFlags` in the log is Betaflight's box-switch mask, not the flight modes (arming is bit 0, which is why a
   decoder calls an acro arm "ANGLE"); bit 31 is the crash-flip (turtle) switch on Rudi's quads (`blackbox.CRASH_FLIP_BIT`,
   2026-10-18: fifty arms, all throttle 0 throughout). `segments.flying` keeps every scan off those frames.

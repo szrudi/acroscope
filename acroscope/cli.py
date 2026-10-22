@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import blackbox, ingest, metrics, osd, sessions, tricks, video, xspf
+from . import blackbox, ingest, metrics, osd, sessions, share, tricks, video, xspf
 from .config import CACHE_DIR, DATA_DIR, DB_PATH, SERVER_URL, TAGS
 from .remote import RemoteError
 
@@ -194,6 +194,8 @@ def cmd_housekeeping(a):
         sys.exit("housekeeping runs on the server")
     out({"originals_removed": ingest.cleanup_originals(log=lambda m: print(m, file=sys.stderr)),
          "trash_emptied": ingest.cleanup_trash(log=lambda m: print(m, file=sys.stderr)),
+         "shares_taken_down": share.cleanup_expired(log=lambda m: print(m, file=sys.stderr)),
+         "shares_refreshed": share.refresh_pages(log=lambda m: print(m, file=sys.stderr)),
          "backup": str(ingest.backup_db() or "")})
 
 
@@ -618,6 +620,31 @@ def cmd_moments(a):
         print(f"{m['id']:4} {m['video'][-7:-4]} {fmt_time(m['start'])}-{fmt_time(m['end'])}  {m['title']}  [{', '.join(m['tags'])}]" + (f"  | {m['note']}" if m.get("note") else ""))
 
 
+def cmd_share(a):
+    """Publish one moment (#57): the clip around it with the sticks drawn over, on a secret link. Runs where the
+    clips and the logs are (proxied to the server); prints the share with its url."""
+    out(share.render(_session(a.session), a.moment, pad=a.pad, text=a.text, expires=a.expires, sticks=not a.no_sticks,
+                     audio=a.audio, poster=parse_time(a.poster) if a.poster else None,
+                     start=parse_time(a.start) if a.start else None, end=parse_time(a.end) if a.end else None,
+                     token=a.update, log=lambda m: print(m, file=sys.stderr)))
+
+
+def cmd_unshare(a):
+    out(share.revoke(a.token, log=lambda m: print(m, file=sys.stderr)))
+
+
+def cmd_shares(a):
+    rows = share.list_shares(all=a.all)
+    if a.json:
+        return out(rows)
+    if not rows:
+        return print("no shares" + ("" if a.all else " (--all lists expired and revoked ones too)"))
+    for r in rows:
+        until = "never expires" if not r["expires_at"] else f"until {r['expires_at'][:16]}"
+        print(f"{r['token']}  {r['state']:8} {r['session']} {r['clip'][-3:]} {fmt_time(r['start'])}-{fmt_time(r['end'])}  "
+              f"{r['text'][:40]!r}  {until}  {r['url'] or '(no ACROSCOPE_SHARE_URL on the server)'}")
+
+
 def cmd_import_xspf(a):
     out(xspf.import_session(_session(a.session)))
 
@@ -771,7 +798,8 @@ def cmd_serve(a):
 
 # with ACROSCOPE_URL set these run on the server (they need the clips, the logs or the cache); frames and sheets
 # come back as files into the local cache under the same relative path
-PROXIED = {"arms", "decode", "metrics", "events", "tricks", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach", "tag", "recut"}
+PROXIED = {"arms", "decode", "metrics", "events", "tricks", "frame", "sheet", "osd", "automatch", "inbox", "sessions", "match", "attach", "detach", "tag", "recut",
+           "share", "unshare", "shares"}
 
 
 def _proxy(argv: list[str]) -> None:
@@ -878,6 +906,22 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--metrics", action="store_true", help="store a metrics snapshot (needs a match)"); p.set_defaults(f=cmd_tag)
     p = sp.add_parser("untag", help="remove a moment by id"); p.add_argument("session"); p.add_argument("id"); p.set_defaults(f=cmd_untag)
     p = sp.add_parser("moments", help="list a session's moments"); p.add_argument("session"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_moments)
+    p = sp.add_parser("share", help="publish one moment on a secret link: the clip around it (no sound, no metadata) with the sticks drawn over it, as a static bundle")
+    p.add_argument("session"); p.add_argument("moment", help="the moment's id (m12)")
+    p.add_argument("--pad", type=float, default=2.0, help=f"seconds kept before and after the moment (default 2, at most {share.PAD_MAX:g})")
+    p.add_argument("--text", help="the line shown under the clip (default: the moment's title; never the session or the date)")
+    p.add_argument("--expires", help=f"30d, 12h, 2w or never (default {share.DEFAULT_EXPIRY}; with --update the share's own unless given): the bundle is taken down after that")
+    p.add_argument("--no-sticks", action="store_true", help="the clip alone (a clip without a blackbox match)")
+    p.add_argument("--audio", action="store_true", help="keep the clip's sound (off by default: a DVR's track is motors and bystanders)")
+    p.add_argument("--poster", metavar="T", help="the frame at this video time as the page's poster and the preview image messengers show (none by default)")
+    p.add_argument("--from", dest="start", help="the window's start in video time (instead of the moment minus --pad)")
+    p.add_argument("--to", dest="end", help="the window's end in video time")
+    p.add_argument("--update", metavar="TOKEN", help="edit the share with this token instead of making a new one: the bundle made again, the link kept")
+    p.set_defaults(f=cmd_share)
+    p = sp.add_parser("unshare", help="take a share down: its bundle removed (and the revoke command run, when set), the link dead")
+    p.add_argument("token"); p.set_defaults(f=cmd_unshare)
+    p = sp.add_parser("shares", help="the shares that are up; --all lists the expired and revoked ones too")
+    p.add_argument("--all", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_shares)
     p = sp.add_parser("import-xspf", help="one-off: import videos/<session>/moments.xspf into the session file"); p.add_argument("session"); p.set_defaults(f=cmd_import_xspf)
     p = sp.add_parser("transcode", help="H.264 for the player: proxies in the cache, or --replace the clips in the data dir")
     p.add_argument("session"); p.add_argument("videos", nargs="*"); p.add_argument("--replace", action="store_true"); p.add_argument("--force", action="store_true"); p.set_defaults(f=cmd_transcode)

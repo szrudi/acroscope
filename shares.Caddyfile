@@ -1,0 +1,13 @@
+# The shares dir (#57) as a static site: one folder per token, each with its index.html and clip.mp4. Served by the
+# `shares` container in compose.yaml on :8071, read-only. No listing (a listing would hand out the tokens), nothing
+# hidden served, every answer marked noindex and sending no referrer on. A public vhost in front of this port, on a
+# domain of its own, is the host's business and lives outside this repo; this container never reaches acroscope's.
+:8071 {
+	root * /srv
+	header X-Robots-Tag "noindex, nofollow, noarchive"
+	header Referrer-Policy "no-referrer"
+	header -Server
+	@hidden path */.*
+	respond @hidden 404
+	file_server
+}
