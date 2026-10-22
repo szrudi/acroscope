@@ -4,6 +4,7 @@ driven by Chromium through Playwright, at a desktop size and at a phone's (Rudi'
 Needs `scripts/browser-setup.sh` once (Playwright in the venv, the browser and its libraries under ~/.cache, no
 root); skipped where the browser is not there, so the suite still runs anywhere. What a browser cannot stand in for:
 the installed app's own viewport on the phone, and how a gesture feels."""
+import json
 import os
 import socket
 import subprocess
@@ -18,6 +19,14 @@ try:
     from playwright.sync_api import sync_playwright
 except ImportError:
     sync_playwright = None
+try:
+    from tests.test_share import LOG as SHARE_LOG, fake_arm, make_clip
+    from tests.test_config_page import save_arm
+    from tests.synthetic import axis, combine, make_arm, pulse
+except ImportError:
+    from test_share import LOG as SHARE_LOG, fake_arm, make_clip
+    from test_config_page import save_arm
+    from synthetic import axis, combine, make_arm, pulse
 
 LIBS = Path(os.environ.get("ACROSCOPE_BROWSER_LIBS", "~/.cache/acroscope-browser")).expanduser() / "usr" / "lib" / "x86_64-linux-gnu"
 PHONE = {"viewport": {"width": 412, "height": 927}, "is_mobile": True, "has_touch": True}
@@ -65,7 +74,11 @@ class PlayerTest(unittest.TestCase):
                 "2026-10-16-step": ["2026-10-16_001.mp4", "2026-10-16_002.mp4", "2026-10-16_003.mp4"],
                 "2026-10-16-zero": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"],
                 "2026-10-16-quick": ["2026-10-16_001.mp4", "2026-10-16_002.mp4", "2026-10-16_003.mp4"],
-                "2026-10-16-two": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"]}
+                "2026-10-16-two": ["2026-10-16_001.mp4", "2026-10-16_002.mp4"],
+                "2026-10-04-share": [],                                          # a real clip, made below: sharing renders it
+                "2026-10-04-sugg": ["2026-10-04_002.mp4"]}                      # a scripted arm with two attempts: suggestions
+    SHARE = "2026-10-04-share"
+    SUGG = "2026-10-04-sugg"
 
     @classmethod
     def setUpClass(cls):
@@ -80,9 +93,16 @@ class PlayerTest(unittest.TestCase):
         for b in (cls.LOG_A, cls.LOG_B):
             (cls.data / "blackbox" / b).write_bytes(b"")              # decodes to nothing; the logs tab lists it all the same
         (cls.data / "blackbox" / cls.LOG_ODD).write_bytes(cls.ODD_BYTES)
+        make_clip(cls.data / "videos" / cls.SHARE / "2026-10-04_001.mp4")       # 8 s that ffmpeg can cut and frame
+        (cls.data / "blackbox" / SHARE_LOG).write_bytes(b"")
+        fake_arm(cls.root / "cache", SHARE_LOG[:-4], 3.0, 100, {"rcCommand[0]": lambda t: 250.0, "rcCommand[1]": lambda t: -100.0,
+                                                               "rcCommand[2]": lambda t: 300.0, "rcCommand[3]": lambda t: 1000.0 + 100.0 * t})
+        (cls.data / "blackbox" / "sugg.bbl").write_bytes(b"")
+        save_arm(make_arm(10, gyro=combine(axis(0, pulse(2.0, 2.5, 500)), axis(0, pulse(6.0, 6.5, 500))), craft="OttO"), cls.root / "cache", "sugg")   # two 250 deg rolls: two attempts
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(cls.root / "t.db"), ACROSCOPE_DATA=str(cls.data),
-                   ACROSCOPE_CACHE=str(cls.root / "cache"), ACROSCOPE_URL="")
+                   ACROSCOPE_CACHE=str(cls.root / "cache"), ACROSCOPE_URL="",
+                   ACROSCOPE_SHARES=str(cls.root / "shares"), ACROSCOPE_SHARE_URL="https://share.example")
         cls.proc = subprocess.Popen([sys.executable, "-m", "acroscope.cli", "serve", "--host", "127.0.0.1", "--port", str(cls.port), "--no-warm"],
                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.url = f"http://127.0.0.1:{cls.port}"
@@ -97,7 +117,11 @@ class PlayerTest(unittest.TestCase):
         from acroscope.remote import Remote
         cls.api = Remote(cls.url)
         for s in cls.SESSIONS:
-            cls.api.refresh(s, probe_videos=False)
+            cls.api.refresh(s, probe_videos=s == cls.SHARE)
+        cls.api.set_match(cls.SHARE, "2026-10-04_001.mp4", SHARE_LOG, 1, 2.0)      # arm 1 covers video 2.0-4.99
+        cls.api.tag(cls.SHARE, "2026-10-04_001.mp4", 3.0, 4.0, "half roll", ["roll"])    # m01
+        cls.api.tag(cls.SHARE, "2026-10-04_001.mp4", 6.0, 7.0, "late", ["roll"])         # m02: no arm there
+        cls.api.set_match(cls.SUGG, "2026-10-04_002.mp4", "sugg.bbl", 1, 10.0)
         cls.pw = sync_playwright().start()
         cls.browser = _browser(cls.pw)
 
@@ -818,6 +842,188 @@ class PlayerTest(unittest.TestCase):
         self.assertEqual(len(page.evaluate(draw, 5.0)["drawn"]), 2)
 
     # ---- editing sessions ----------------------------------------------------------------------------------------
+
+    # ---- sharing a moment (#57) ----------------------------------------------------------------------------------
+
+    def shares(self, session=None):
+        q = f"?session={session}" if session else "?all=1"
+        return json.loads(urllib.request.urlopen(f"{self.url}/api/shares{q}").read())["shares"]
+
+    def test_share_a_moment(self):
+        """The ⤴ on a moment opens the panel filled in (the moment plus 2 s each side, its title, the sticks on
+        since a match covers it), frames across the window to pick the preview image, a preview of the bundle in a
+        frame, then publish: the moment carries the mark, the panel the link, the server the bundle with the
+        chosen poster and the preview taken as it was. Take down: the link row goes, the mark too."""
+        page = self.open(self.SHARE)
+        page.click("#moments .m[data-id=m01] [data-share]")
+        page.wait_for_selector("#sharebox.open")
+        self.assertEqual([page.input_value("#shFrom"), page.input_value("#shTo"), page.input_value("#shText")], ["0:01.0", "0:06.0", "half roll"])
+        self.assertTrue(page.is_checked("#shSticks") and page.is_enabled("#shSticks"))
+        self.assertFalse(page.is_checked("#shAudio"))
+        self.assertEqual(page.input_value("#shExpires"), "30d")
+        self.assertEqual(page.eval_on_selector_all("#shThumbs img", "els => els.map(e => e.dataset.t)"), ["1", "2.25", "3.5", "4.75", "6"])
+        self.assertEqual(page.eval_on_selector_all("#shThumbs .chip.on", "els => els.map(e => e.textContent)"), ["none"])
+        page.click('#shThumbs img[data-t="3.5"]')
+        self.assertEqual(page.eval_on_selector_all("#shThumbs img.on", "els => els.map(e => e.dataset.t)"), ["3.5"])
+        page.evaluate("() => { Object.defineProperty(v, 'currentTime', {get: () => 4.1, set: () => {}, configurable: true}); }")
+        page.click("#shThisFrame")                                                         # the playhead's frame joins the strip, picked
+        self.assertEqual(page.eval_on_selector_all("#shThumbs img", "els => els.map(e => e.dataset.t)"), ["1", "2.25", "3.5", "4.1", "4.75", "6"])
+        self.assertEqual(page.eval_on_selector_all("#shThumbs img.on", "els => els.map(e => e.dataset.t)"), ["4.1"])
+        page.click("#shPreview")
+        page.wait_for_selector("#shOut iframe", timeout=60000)
+        src = page.get_attribute("#shOut iframe", "src")
+        self.assertRegex(src, r"^/share-preview/[a-z0-9]+/$")
+        pid = src.split("/")[2]
+        self.assertTrue((self.root / "cache" / "share-preview" / pid / "poster.jpg").exists())
+        frame = page.frame_locator("#shOut iframe")
+        frame.locator("#v").wait_for(timeout=20000)                                        # the viewer itself, from the server's cache
+        self.assertEqual(self.shares(self.SHARE), [])                                      # nothing published yet
+        page.click("#shPublish")
+        page.wait_for_selector("#shState [data-down]", timeout=60000)
+        rows = self.shares(self.SHARE)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["moment"], rows[0]["start"], rows[0]["end"], rows[0]["text"], rows[0]["state"]), ("m01", 1.0, 6.0, "half roll", "active"))
+        tok = rows[0]["token"]
+        self.assertEqual(sorted(p.name for p in (self.root / "shares" / tok).iterdir()), ["clip.mp4", "index.html", "poster.jpg"])
+        self.assertFalse((self.root / "cache" / "share-preview" / pid).exists())            # taken as it was, not cut again
+        self.assertEqual(page.get_attribute("#shState a.btn", "href"), f"https://share.example/{tok}/")
+        self.assertIn("up until", page.inner_text("#shState"))
+        self.assertIsNotNone(page.query_selector("#moments .m[data-id=m01] .shared"))
+        self.assertIsNone(page.query_selector("#moments .m[data-id=m02] .shared"))
+        self.assertEqual(page.evaluate("() => $('#shOut').innerHTML"), "")                 # the preview frame is gone with the publish
+        # with a share up the panel edits it (Rudi, 2026-10-22): `update` keeps the link, `new link` makes another
+        self.assertEqual((page.text_content("#shPublish"), page.input_value("#shExpires")), ("update", ""))
+        self.assertTrue(page.is_visible("#shNew"))
+        page.fill("#shText", "half roll, edited")
+        page.click("#shPublish")
+        page.wait_for_function("() => $('#status').textContent === 'updated'", timeout=60000)
+        rows = self.shares(self.SHARE)
+        self.assertEqual([(r["token"], r["text"], r["poster"]) for r in rows], [(tok, "half roll, edited", 4.1)])
+        self.assertIn(">half roll, edited<", (self.root / "shares" / tok / "index.html").read_text())
+        page.click("#moments .m[data-id=m01] [data-share]")                                 # opened again: prefilled from the share
+        page.wait_for_function("() => $('#shText').value === 'half roll, edited'")
+        self.assertEqual(page.eval_on_selector_all("#shThumbs img.on", "els => els.map(e => e.dataset.t)"), ["4.1"])
+        self.assertTrue(page.is_checked("#shSticks"))
+        self.assertFalse(page.is_checked("#shAudio"))
+        page.click("#shNew")
+        page.wait_for_function("() => document.querySelectorAll('#shState [data-down]').length === 2", timeout=60000)
+        self.assertEqual(len(self.shares(self.SHARE)), 2)
+        for _ in range(2):
+            page.once("dialog", lambda d: d.accept())
+            n = page.evaluate("() => document.querySelectorAll('#shState [data-down]').length")
+            page.click("#shState [data-down]")
+            page.wait_for_function("(n) => document.querySelectorAll('#shState [data-down]').length < n", arg=n, timeout=20000)
+        self.assertEqual(self.shares(self.SHARE), [])
+        self.assertFalse((self.root / "shares" / tok).exists())
+        self.assertIsNone(page.query_selector("#moments .m[data-id=m01] .shared"))
+        self.assertEqual((page.text_content("#shPublish"), page.input_value("#shExpires")), ("publish", "30d"))   # nothing up: a new one again
+
+    def test_moment_buttons_under_the_thumbnail(self):
+        """Four buttons beside the title squeezed it into a four-line column (Rudi's screenshot, 2026-10-22), and
+        two by two under the thumbnail read badly on the desktop: on both layouts the thumbnail takes about a
+        third of the card with the four buttons in one row under it, and the title has the rest; the phone's row
+        is no taller than the two-by-two made it."""
+        rect = """() => { const m = document.querySelector('#moments .m'), r = s => m.querySelector(s).getBoundingClientRect();
+          const bs = [...m.querySelectorAll('.act button')].map(b => b.getBoundingClientRect());
+          return {row: m.getBoundingClientRect().width, height: m.getBoundingClientRect().height, img: r('img'), act: r('.act'), ttl: r('.ttl'),
+                  buttons: bs.length, rows: new Set(bs.map(b => Math.round(b.top))).size, bw: Math.min(...bs.map(b => b.width))}; }"""
+        for size, min_button in ((PHONE, 28), (DESKTOP, 24)):
+            page = self.open(self.SHARE, size)
+            if size is PHONE:
+                page.click("#mtabs [data-mtab=moments]")
+            page.wait_for_selector("#moments .m .act button")
+            r = page.evaluate(rect)
+            with self.subTest(size=size["viewport"]["width"]):
+                self.assertEqual((r["buttons"], r["rows"]), (4, 1))                          # one row of four
+                self.assertGreaterEqual(r["act"]["top"], r["img"]["bottom"] - 1)             # under the thumbnail
+                self.assertLessEqual(r["act"]["right"], r["ttl"]["left"])                    # in the thumbnail's column
+                self.assertGreater(r["ttl"]["left"], r["img"]["right"])                       # the words beside, not under
+                self.assertGreaterEqual(r["img"]["width"], 100)                              # a thumbnail worth looking at
+                self.assertLessEqual(r["img"]["width"], 0.45 * r["row"])                     # about a third: the words keep most of the card
+                self.assertGreaterEqual(r["ttl"]["width"], 0.55 * r["row"])
+                self.assertGreaterEqual(r["bw"], min_button)
+                self.assertLessEqual(r["height"], 130)
+
+    def test_suggestion_rows_line_up(self):
+        """A suggestion has no thumbnail: its diamond had the thumbnail's column (a gap on the left) and the accept
+        button sat in the stretching column, so its distance to the title changed with the title's length (Rudi's
+        screenshot, 2026-10-22). Now: a narrow diamond column, the words left, the button at the right edge, the
+        same on every row and at both sizes."""
+        rect = """() => [...document.querySelectorAll('#sugg .m')].map(m => { const R = m.getBoundingClientRect(), r = s => m.querySelector(s).getBoundingClientRect();
+          return {left: R.left, right: R.right, dia: r('.dia'), ttl: r('.ttl'), t: r('.t'), act: r('.act'), why: r('.why')}; })"""
+        for size in (DESKTOP, PHONE):
+            page = self.open(self.SUGG, size)
+            if size is PHONE:
+                page.click("#mtabs [data-mtab=sugg]")
+            page.wait_for_function("() => document.querySelectorAll('#sugg .m').length >= 2", timeout=20000)
+            rows = page.evaluate(rect)
+            with self.subTest(size=size["viewport"]["width"]):
+                for r in rows:
+                    self.assertLessEqual(r["ttl"]["left"] - r["left"], 40)                      # no thumbnail-sized gap before the words
+                    self.assertLess(r["dia"]["right"], r["ttl"]["left"])                        # the diamond before the title
+                    self.assertAlmostEqual(r["t"]["left"], r["ttl"]["left"], delta=1)           # the time under the title, same edge
+                    self.assertGreater(r["act"]["left"], r["ttl"]["right"] - 1)                 # the button after the words
+                    self.assertLessEqual(r["right"] - r["act"]["right"], 20)                    # pinned at the right edge
+                    self.assertGreaterEqual(r["why"]["top"], r["act"]["bottom"] - 1)            # the why under it all
+                    self.assertAlmostEqual(r["why"]["left"], r["ttl"]["left"], delta=1)
+                self.assertEqual(len({round(r["act"]["left"]) for r in rows}), 1)               # the button in the same place on every row
+
+    def test_share_panel_from_a_link_and_back(self):
+        """The shares tab links a moment as the player's own links do, plus &share=1: the moment plays and its
+        share panel opens. The panel links back to the tab."""
+        ctx = self.browser.new_context(**DESKTOP)
+        self.addCleanup(ctx.close)
+        page = ctx.new_page()
+        page.goto(f"{self.url}/?session={self.SHARE}&clip=2026-10-04_001&m=m01&share=1")
+        page.wait_for_selector("#sharebox.open")
+        self.assertEqual((page.text_content("#shId"), page.text_content("#shTitle"), page.evaluate("() => cur")), ("m01", "half roll", "m01"))
+        self.assertEqual(page.get_attribute("#shAllLink", "href"), "/config#shares")
+        page.goto(f"{self.url}/?session={self.SHARE}&clip=2026-10-04_001&m=m01")          # without it: the moment alone
+        page.wait_for_function("() => cur === 'm01'")
+        self.assertIsNone(page.query_selector("#sharebox.open"))
+
+    def test_share_without_a_match_and_a_refused_window(self):
+        page = self.open(self.SHARE)
+        page.click("#moments .m[data-id=m02] [data-share]")
+        page.wait_for_selector("#sharebox.open")
+        self.assertFalse(page.is_checked("#shSticks"))
+        self.assertTrue(page.is_disabled("#shSticks"))
+        self.assertIn("no blackbox match", page.text_content("#shSticksNote"))
+        page.fill("#shTo", "0:03.0")                                                       # before the start: refused by the server, said in the panel
+        page.click("#shPublish")
+        page.wait_for_function("() => $('#shMsg').textContent.length > 0 && !$('#shMsg').classList.contains('busy')", timeout=20000)
+        self.assertIn("before the start", page.text_content("#shMsg"))
+        self.assertEqual(self.shares(self.SHARE), [])
+        page.fill("#shTo", "0:08.0")
+        page.click("#shPublish")
+        page.wait_for_selector("#shState [data-down]", timeout=60000)
+        rows = self.shares(self.SHARE)
+        self.assertEqual((rows[0]["moment"], rows[0]["start"], rows[0]["end"]), ("m02", 4.0, 8.0))
+        self.assertIn("const STICKS = null;", (self.root / "shares" / rows[0]["token"] / "index.html").read_text())
+        page.once("dialog", lambda d: d.accept())
+        page.click("#shState [data-down]")
+        page.wait_for_function("() => !document.querySelector('#shState [data-down]')", timeout=20000)
+
+    def test_share_panel_on_the_phone(self):
+        """A sheet over the bottom of the screen, its buttons reachable; a preview nobody published goes with the close."""
+        page = self.open(self.SHARE, PHONE)
+        page.click("#moments .m[data-id=m01] [data-share]")
+        page.wait_for_selector("#sharebox.open")
+        box = page.locator("#sharebox").bounding_box()
+        self.assertLessEqual(box["y"] + box["height"], 927 + 0.5)
+        self.assertGreaterEqual(box["y"], 0)
+        self.assertTrue(page.locator("#shPublish").is_visible())
+        page.click("#shPreview")
+        page.wait_for_selector("#shOut iframe", timeout=60000)
+        pid = page.get_attribute("#shOut iframe", "src").split("/")[2]
+        self.assertTrue((self.root / "cache" / "share-preview" / pid).exists())
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('#sharebox.open')")
+        for _ in range(50):
+            if not (self.root / "cache" / "share-preview" / pid).exists():
+                break
+            time.sleep(0.1)
+        self.assertFalse((self.root / "cache" / "share-preview" / pid).exists())
 
     def test_rename_onto_an_existing_session_merges(self):
         """#16: ✎ with the name of another session asks, then merges into it and opens it."""

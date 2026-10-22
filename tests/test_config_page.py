@@ -131,14 +131,14 @@ class ConfigPageTest(unittest.TestCase):
 
     def test_tabs_and_the_way_in(self):
         page = self.open()
-        self.assertEqual(page.eval_on_selector_all("#tabs span", "els => els.map(e => e.dataset.tab)"), ["profile", "drones", "tricks", "settings", "tags"])
+        self.assertEqual(page.eval_on_selector_all("#tabs span", "els => els.map(e => e.dataset.tab)"), ["profile", "drones", "tricks", "settings", "tags", "shares"])
         self.assertEqual(page.get_attribute("section.on", "data-panel"), "profile")
         self.assertIn("15 of 15 tricks on", page.text_content("#status"))
-        for t in ("drones", "tricks", "settings", "tags"):
+        for t in ("drones", "tricks", "settings", "tags", "shares"):
             page.click(f"#tabs [data-tab={t}]")
             self.assertEqual(page.get_attribute("section.on", "data-panel"), t)
             self.assertTrue(page.eval_on_selector(f"section[data-panel={t}]", "e => e.innerHTML.length > 100"), t)
-        self.assertEqual(page.evaluate("() => location.hash"), "#tags")
+        self.assertEqual(page.evaluate("() => location.hash"), "#shares")
         tags = self.open("/config#tags")
         self.assertEqual(tags.get_attribute("section.on", "data-panel"), "tags")
         # from the player: the header's gear, and the tag bar's button, both to this page
@@ -331,6 +331,37 @@ class ConfigPageTest(unittest.TestCase):
         page.click("[data-cn=cruise] [data-cdel]")
         page.wait_for_function("() => !document.querySelector('[data-cn=cruise]')")
         self.assertNotIn("cruise", [c["name"] for c in self.api.tags()["categories"]])
+
+
+    # ---- the shares tab (#57) -----------------------------------------------------------------------------------
+
+    def test_shares_tab(self):
+        """What is up, with the moment's title, the clip and the link; take down; the expired and revoked ones on
+        request. The rows come from the database (the bundles themselves are the player's business)."""
+        from acroscope.db import Db
+        from datetime import datetime, timedelta, timezone
+        db = Db(Path(self.tmp.name) / "t.db")
+        future = (datetime.now(timezone.utc) + timedelta(days=9)).replace(microsecond=0).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).replace(microsecond=0).isoformat()
+        db.add_share("u" * 24, S, "2026-10-04_001.mp4", "m01", 9.5, 15.0, "a roll, nearly", future)
+        db.add_share("e" * 24, S, "2026-10-04_001.mp4", "m01", 9.5, 15.0, "old", past)
+        page = self.open("/config#shares")
+        page.wait_for_selector(".shrow")
+        rows = page.eval_on_selector_all(".shrow", "els => els.map(e => [e.dataset.token, e.querySelector('.st').textContent, e.querySelector('.what b').textContent, e.querySelector('.what .dim').textContent])")
+        self.assertEqual(len(rows), 1)                                                     # the expired one is not up
+        self.assertEqual(rows[0][:3], ["u" * 24, "up", "a roll"])                          # the moment's title first
+        self.assertIn("2026-10-04_001 0:09.5–0:15.0 · a roll, nearly", rows[0][3])         # the clip's readable name, the window, the text
+        self.assertIn("no public URL", page.text_content("#shBase"))                       # this server has none
+        self.assertIsNone(page.query_selector(".shrow a.btn:not([data-moment])"))           # so no link to open
+        self.assertEqual(page.get_attribute(".shrow a[data-moment]", "href"), f"/?session={S}&clip=2026-10-04_001&m=m01&share=1")   # but one to the moment, panel open
+        page.check("#shAll")
+        page.wait_for_function("() => document.querySelectorAll('.shrow').length === 2")
+        self.assertEqual(sorted(page.eval_on_selector_all(".shrow .st", "els => els.map(e => e.textContent)")), ["expired", "up"])
+        page.once("dialog", lambda d: d.accept())
+        page.click(f'.shrow[data-token="{"u" * 24}"] [data-down]')
+        page.wait_for_function("() => [...document.querySelectorAll('.shrow .st')].map(e => e.textContent).sort().join() === 'expired,revoked'")
+        self.assertEqual(db.share("u" * 24)["state"], "revoked")
+        self.assertIsNone(page.query_selector(".shrow [data-down]"))
 
 
 if __name__ == "__main__":

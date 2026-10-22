@@ -6,13 +6,17 @@
 <meta name="robots" content="noindex, nofollow, noarchive">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#14161a">
+<link rel="icon" href="__FAVICON__">
 <title>__TITLE__</title>
+__OG__
 <style>
   :root { --bg:#14161a; --line:#2b3039; --fg:#e6e8ec; --dim:#9aa3b2; --acc:#f5a524; }
   * { box-sizing:border-box }
   html, body { margin:0; background:var(--bg); color:var(--fg) }
   body { font:15px/1.45 system-ui, sans-serif; min-height:100vh; min-height:100dvh; display:flex; justify-content:center }
   main { width:100%; max-width:720px; padding:0 0 32px }
+  header { display:flex; align-items:center; gap:7px; padding:10px 14px; color:var(--acc); font-size:16px; font-weight:600; letter-spacing:.5px }
+  header svg { width:22px; height:22px; flex:none }
   .vwrap { position:relative; background:#000; line-height:0; cursor:pointer; -webkit-tap-highlight-color:transparent }
   video { width:100%; max-height:72vh; display:block; background:#000 }
   canvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none }
@@ -21,26 +25,34 @@
   button { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:7px 0; cursor:pointer; font:inherit; flex:1; min-width:0; white-space:nowrap }
   button.on { background:var(--acc); color:#1a1200; border-color:var(--acc) }
   .text { margin:4px 14px 0; white-space:pre-wrap; overflow-wrap:anywhere } .text:empty { display:none }
-  footer { margin:20px 14px 0; color:var(--dim); font-size:12px; letter-spacing:.5px }
+  .keys { margin:18px 14px 0; color:var(--dim); font-size:12px }
+  footer { margin:10px 14px 0; color:var(--dim); font-size:12px; letter-spacing:.5px }
+  footer a { color:inherit; text-decoration:none; border-bottom:1px solid var(--line) } footer a:hover { color:var(--fg) }
 </style>
 </head>
 <body>
 <main>
-  <div class="vwrap" id="wrap"><video id="v" src="clip.mp4" autoplay muted loop playsinline preload="auto"></video><canvas id="sticks"></canvas></div>
+  <header>__MARK__acroscope</header>
+  <div class="vwrap" id="wrap"><video id="v" src="clip.mp4"__POSTER__ autoplay muted loop playsinline preload="auto"></video><canvas id="sticks"></canvas></div>
   <div class="bar" id="bar"><i id="pos"></i></div>
   <div class="row">
-    <button id="play" title="play / pause">pause</button>
+    <button id="play" title="play / pause (space; , and . step a frame, the arrows 2 s)">pause</button>
     <button data-rate="0.25">¼×</button><button data-rate="0.5">½×</button><button data-rate="1" class="on">1×</button>
-    <button id="stk" class="on" title="the sticks from the flight log; a tap on the picture does the same">sticks</button>
+    <button id="stk" class="on" title="the sticks from the flight log (s)">sticks</button>
+    <button id="snd" title="the sound (it starts muted: browsers allow no other autoplay)">sound</button>
   </div>
   <p class="text" id="text">__TEXT__</p>
-  <footer>acroscope</footer>
+  <p class="keys">space play / pause · , . a frame · ← → 2 s · s sticks · a tap on the picture plays and pauses</p>
+  <footer><a href="https://github.com/szrudi/acroscope" target="_blank" rel="noopener">acroscope</a></footer>
 </main>
 <script>
 // One trick, shared: the clip loops, and the sticks it was flown with are drawn over the picture from the samples
 // below (Mode 2: throttle and yaw left, pitch and roll right; every axis + = stick right or up, in %; null where the
-// log does not cover the picture). The page talks to nothing: the clip beside it is the only other file.
+// log does not cover the picture). The page talks to nothing: the clip beside it is the only other file; the one
+// link out (the footer, to the repository) sends no referrer. A tap on the picture plays and pauses; the sticks
+// button (and s) hides the sticks.
 const STICKS = __STICKS__;
+const AUDIO = __AUDIO__;       // the clip carries a sound track (off by default: a DVR's track is motors and bystanders)
 const TRAIL = 0.8, $ = s => document.querySelector(s), v = $('#v'), sk = $('#sticks'), skx = sk.getContext('2d');
 let show = true, raf = 0;
 function sample(i) {           // the sticks at sample i as {lx, ly, rx, ry} in -100..100, or null off the log
@@ -94,13 +106,29 @@ for (const ev of ['seeked', 'loadedmetadata', 'timeupdate']) v.addEventListener(
 v.addEventListener('loadedmetadata', label);
 new ResizeObserver(draw).observe(v);
 function toggleSticks() { show = !show; $('#stk').classList.toggle('on', show); drawSticks(); }
-if (STICKS) { $('#wrap').onclick = toggleSticks; $('#stk').onclick = toggleSticks; } else $('#stk').remove();
+if (STICKS) $('#stk').onclick = toggleSticks; else $('#stk').remove();
+$('#wrap').onclick = () => { if (v.paused) v.play().catch(() => {}); else v.pause(); };   // a tap on the picture: play or pause
+if (AUDIO) { $('#snd').onclick = () => { v.muted = !v.muted; $('#snd').classList.toggle('on', !v.muted); }; } else $('#snd').remove();
 $('#play').onclick = () => { if (v.paused) v.play().catch(() => {}); else v.pause(); };
 for (const b of document.querySelectorAll('[data-rate]')) b.onclick = () => {
   v.playbackRate = +b.dataset.rate;
   for (const o of document.querySelectorAll('[data-rate]')) o.classList.toggle('on', o === b);
 };
 $('#bar').onclick = e => { if (v.duration) v.currentTime = e.offsetX / e.currentTarget.clientWidth * v.duration; };
+// the player's keys: space plays and pauses, , and . step a frame (the DVR's sixtieth) and pause, the arrows 2 s,
+// s the sticks. Capture phase, so a focused button does not take the space as its own click.
+const FRAME = 1 / 60, seek = t => { v.currentTime = Math.max(0, Math.min(v.duration || 0, t)); };
+document.addEventListener('keydown', e => {
+  const k = e.key; let h = true;
+  if (k === ' ') { if (v.paused) v.play().catch(() => {}); else v.pause(); }
+  else if (k === 'ArrowLeft') seek(v.currentTime - 2);
+  else if (k === 'ArrowRight') seek(v.currentTime + 2);
+  else if (k === ',') { v.pause(); seek(v.currentTime - FRAME); }
+  else if (k === '.') { v.pause(); seek(v.currentTime + FRAME); }
+  else if (k === 's' && STICKS) toggleSticks();
+  else h = false;
+  if (h) { e.preventDefault(); e.stopPropagation(); }
+}, true);
 label();
 </script>
 </body>

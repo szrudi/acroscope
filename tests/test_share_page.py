@@ -7,6 +7,7 @@ import functools
 import http.server
 import json
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -52,9 +53,36 @@ def browser_available() -> bool:
 
 
 class _Static(http.server.SimpleHTTPRequestHandler):
-    """A static host: the shares dir as files, nothing else."""
+    """A static host: the shares dir as files, nothing else, with byte ranges as any real one has (a video seeks
+    by them; without, Chromium never settles a seek)."""
     def log_message(self, *a):
         pass
+
+    def end_headers(self):
+        if not getattr(self, "_ranged", False):
+            self.send_header("Accept-Ranges", "bytes")
+        super().end_headers()
+
+    def do_GET(self):
+        path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            path = os.path.join(path, "index.html")
+        m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range") or "")
+        if not m or not (m.group(1) or m.group(2)) or not os.path.isfile(path):
+            return super().do_GET()
+        size = os.path.getsize(path)
+        start = int(m.group(1)) if m.group(1) else max(0, size - int(m.group(2)))
+        end = min(int(m.group(2)) if m.group(1) and m.group(2) else size - 1, size - 1)
+        self._ranged = True
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
+        with open(path, "rb") as f:
+            f.seek(start)
+            self.wfile.write(f.read(end - start + 1))
 
 
 @unittest.skipUnless(browser_available(), "no headless browser: run scripts/browser-setup.sh")
@@ -124,6 +152,13 @@ class SharePageTest(unittest.TestCase):
         self.assertEqual(page.inner_text("#text"), TEXT)
         self.assertIsNone(page.query_selector("#text b"))                                    # shown, not rendered
         self.assertEqual(page.inner_text("footer"), "acroscope")
+        self.assertEqual(page.get_attribute("footer a", "href"), "https://github.com/szrudi/acroscope")   # the one link out (Rudi, 2026-10-22); no referrer goes with it
+        self.assertEqual(page.get_attribute("footer a", "rel"), "noopener")
+        self.assertIn("space", page.inner_text(".keys"))                                      # the keys, said at the bottom
+        # the brand (Rudi, 2026-10-22): the mark and the name in a header, the favicon; both inline, nothing fetched
+        self.assertEqual(page.inner_text("header"), "acroscope")
+        self.assertIsNotNone(page.query_selector("header svg path"))
+        self.assertTrue(page.get_attribute("link[rel=icon]", "href").startswith("data:image/svg+xml;base64,"))
 
     def test_sticks_drawn_from_the_samples_and_hidden_by_a_tap(self):
         """At 1 s into the bundle the fake arm's sticks are: throttle 10 %, yaw 60 % left, roll 50 % right, pitch
@@ -143,12 +178,19 @@ class SharePageTest(unittest.TestCase):
         self.assertTrue(all(p[3] == 255 and p[0] > 200 for p in r["pixels"]), r["pixels"])                  # the dots are drawn
         self.assertEqual(page.evaluate(self.STAND_IN, 3.5)["drawn"], [])                                   # past the arm: nothing
         self.assertEqual(len(page.evaluate(self.STAND_IN, 2.99)["drawn"]), 2)                              # the last sample still draws
-        page.click("#wrap")
+        page.click("#stk")
         r = page.evaluate(self.STAND_IN, 1.0)
         self.assertEqual((r["drawn"], r["on"]), ([], False))
         page.click("#stk")
         r = page.evaluate(self.STAND_IN, 1.0)
         self.assertEqual((len(r["drawn"]), r["on"]), (2, True))
+        # a tap on the picture plays and pauses (Rudi, 2026-10-22), and leaves the sticks as they are
+        page.evaluate("""() => { window._p = []; v.play = () => { _p.push('play'); return Promise.resolve(); }; v.pause = () => _p.push('pause');
+                               Object.defineProperty(v, 'paused', {get: () => _p.length % 2 === 0, configurable: true}); }""")
+        page.click("#wrap")
+        page.click("#wrap")
+        self.assertEqual(page.evaluate("() => _p"), ["play", "pause"])
+        self.assertEqual((len(page.evaluate(self.STAND_IN, 1.0)["drawn"]), page.evaluate("() => $('#stk').classList.contains('on')")), (2, True))
 
     def test_slow_motion_play_and_seek(self):
         page, _ = self.open()
@@ -167,6 +209,39 @@ class SharePageTest(unittest.TestCase):
         box = page.locator("#bar").bounding_box()
         page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
         self.assertAlmostEqual(page.evaluate("() => _t"), 1.5, delta=0.05)
+
+    def test_keys(self):
+        """The player's keys on the share too (Rudi, 2026-10-22): space plays and pauses, , and . step a frame
+        (a sixtieth, the DVR's rate) and pause, the arrows 2 s, s the sticks. The page's keys, not a focused
+        button's: space on the ½× button toggles the video and leaves the speed alone. Real playback: this clip
+        decodes here."""
+        page, _ = self.open(DESKTOP)
+        page.wait_for_function("() => v.readyState >= 2 && v.duration > 0", timeout=20000)
+        page.evaluate("() => { v.pause(); v.currentTime = 1.0; }")
+        page.wait_for_function("() => v.paused && Math.abs(v.currentTime - 1.0) < 0.01")
+        t = lambda: page.evaluate("() => v.currentTime")
+        page.keyboard.press(".")
+        self.assertAlmostEqual(t(), 1 + 1 / 60, delta=0.005)
+        page.keyboard.press(",")
+        page.keyboard.press(",")
+        self.assertAlmostEqual(t(), 1 - 1 / 60, delta=0.005)
+        self.assertTrue(page.evaluate("() => v.paused"))
+        page.keyboard.press("ArrowRight")
+        self.assertAlmostEqual(t(), 3 - 1 / 60, delta=0.01)
+        page.keyboard.press("ArrowLeft")
+        self.assertAlmostEqual(t(), 1 - 1 / 60, delta=0.01)
+        page.keyboard.press(" ")
+        page.wait_for_function("() => !v.paused", timeout=5000)
+        page.keyboard.press(" ")
+        page.wait_for_function("() => v.paused", timeout=5000)
+        page.keyboard.press(".")                                                           # a step while playing pauses first
+        self.assertTrue(page.evaluate("() => v.paused"))
+        page.keyboard.press("s")
+        self.assertFalse(page.evaluate("() => $('#stk').classList.contains('on')"))
+        page.focus('[data-rate="0.5"]')
+        page.keyboard.press(" ")
+        page.wait_for_function("() => !v.paused", timeout=5000)
+        self.assertEqual(page.evaluate("() => v.playbackRate"), 1)                           # the button did not fire
 
     def test_fits_the_phone_and_stays_narrow_on_the_desktop(self):
         page, _ = self.open(PHONE)

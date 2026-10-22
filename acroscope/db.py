@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS shares (
   token TEXT PRIMARY KEY, session TEXT NOT NULL, video TEXT NOT NULL, moment TEXT, start REAL NOT NULL, end REAL NOT NULL,
   text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT,
+  sticks INTEGER, audio INTEGER, poster REAL,   -- what the bundle was made with, so an edit starts from it
   down_at TEXT);   -- when the bundle was taken out of the world (here and where it was pushed); NULL = may still be up
 """
 
@@ -109,7 +110,11 @@ class Db:
                 self.c.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
         if "result" not in {r["name"] for r in self.c.execute("PRAGMA table_info(batches)")}:
             self.c.execute("ALTER TABLE batches ADD COLUMN result TEXT")
-        if "down_at" not in {r["name"] for r in self.c.execute("PRAGMA table_info(shares)")}:
+        have = {r["name"] for r in self.c.execute("PRAGMA table_info(shares)")}
+        for col, decl in (("sticks", "INTEGER"), ("audio", "INTEGER"), ("poster", "REAL")):
+            if col not in have:
+                self.c.execute(f"ALTER TABLE shares ADD COLUMN {col} {decl}")
+        if "down_at" not in have:
             self.c.execute("ALTER TABLE shares ADD COLUMN down_at TEXT")
             self.c.execute("UPDATE shares SET down_at = revoked_at WHERE revoked_at IS NOT NULL")   # taken down when revoked, as it was then
         self._backfill_batch_results()
@@ -576,15 +581,28 @@ class Db:
 
     @staticmethod
     def _share(r) -> dict:
-        """A share row with its state: active, expired (past expires_at) or revoked."""
+        """A share row with its state: active, expired (past expires_at) or revoked. sticks and audio are booleans
+        (None on a row from before they were kept)."""
         d = dict(r)
         d["state"] = "revoked" if d["revoked_at"] else ("expired" if d["expires_at"] and d["expires_at"] <= now() else "active")
+        for k in ("sticks", "audio"):
+            d[k] = None if d.get(k) is None else bool(d[k])
         return d
 
     def add_share(self, token: str, session: str, video: str, moment: str | None, start: float, end: float, text: str,
-                  expires_at: str | None) -> dict:
-        self.c.execute("INSERT INTO shares (token, session, video, moment, start, end, text, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                       (token, session, video, moment, start, end, text, now(), expires_at))
+                  expires_at: str | None, sticks: bool | None = None, audio: bool | None = None, poster: float | None = None) -> dict:
+        self.c.execute("INSERT INTO shares (token, session, video, moment, start, end, text, created_at, expires_at, sticks, audio, poster) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (token, session, video, moment, start, end, text, now(), expires_at,
+                        None if sticks is None else int(sticks), None if audio is None else int(audio), poster))
+        return self.share(token)
+
+    def update_share(self, token: str, **fields) -> dict | None:
+        """An edit of a share that is up: start, end, text, expires_at, sticks, audio, poster (the ones given); the
+        row as it is then, or None for an unknown token."""
+        allowed = {"start", "end", "text", "expires_at", "sticks", "audio", "poster"}
+        cols = {k: (None if v is None else int(v)) if k in ("sticks", "audio") else v for k, v in fields.items() if k in allowed}
+        if cols:
+            self.c.execute(f"UPDATE shares SET {', '.join(k + ' = ?' for k in cols)} WHERE token = ?", (*cols.values(), token))
         return self.share(token)
 
     def share(self, token: str) -> dict | None:

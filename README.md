@@ -148,7 +148,7 @@ acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
 acroscope untag <session> <id>
 acroscope moments <session>
-acroscope share <session> <moment> [--pad 2] [--text "..."] [--expires 30d|never] [--no-sticks]
+acroscope share <session> <moment> [--pad 2 | --from T --to T] [--text "..."] [--expires 30d|never] [--no-sticks] [--audio] [--poster T] [--update TOKEN]
                                                  publish one moment on a secret link: the clip around it with the sticks
                                                  drawn over it, as a static bundle (see below); prints the link
 acroscope unshare <token>                        take a share down     acroscope shares [--all]   the shares that are up
@@ -189,6 +189,15 @@ GET  /api/tricks[?craft=]               the tricks in force: params with default
 GET  /api/tricks/layer                  the pilot's layer kept in the database      POST /api/tricks/layer   {the layer, whole}
 DELETE /api/tricks/layer                                                            (a bad layer: 400 with the place named)
 GET  /api/tricks/export                 the layer as a tricks file (TOML)           POST /api/tricks/import  {text, mode: replace|merge}
+GET  /api/shares[?session=&all=1]       the shares that are up (with the clip's name and the moment's title), plus
+                                        whether the server has a public URL      DELETE /api/share/<token>   take one down
+POST /api/share/preview                 {session, moment | video, start?, end?, pad?, text?, sticks?, audio?, poster?}:
+                                        the bundle rendered into the cache, served back at /share-preview/<id>/ (the
+                                        player's look before publishing)          DELETE /api/share/preview/<id>
+POST /api/share                         the same plus {expires?, preview?}: published (a preview whose facts still match
+                                        is taken as it is), the share's row with its url
+POST /api/share/<token>                 the same, as an edit of a share that is up: the bundle made again and swapped in
+                                        under its token, the row updated, the expiry kept unless given
 POST /api/scan   POST /api/import       GET /api/store
 ```
 
@@ -312,7 +321,20 @@ with the pilot's sticks drawn over the picture (the four stick channels of that 
 clip's blackbox match; `--no-sticks` shares a clip without one), slow motion at ¼× and ½×, a tap to hide the
 sticks, and a line of text under it (`--text`; the moment's title by default, never the session or the date). The
 command runs where the clips are (on the server, like `frame`), writes the bundle to `shares/<token>/` in the data
-dir (`ACROSCOPE_SHARES` for another folder) and prints the link, `ACROSCOPE_SHARE_URL/<token>/`.
+dir (`ACROSCOPE_SHARES` for another folder) and prints the link, `ACROSCOPE_SHARE_URL/<token>/`. `--audio` keeps the
+clip's sound (off by default), `--poster <t>` puts the frame at that video time in the bundle as the page's poster
+and the preview image a messenger shows (none by default: the title and the link are what a chat sees), `--from`
+and `--to` set the window themselves.
+
+In the player, ⤴ on a moment opens the share panel under the video: the window (the moment plus 2 s each side, or
+what you type, `now` for the playhead), the text, the sticks (off, and said why, when no match covers the moment),
+the sound, when it expires, and the preview image picked from frames across the window or `this frame` at the
+playhead. `preview` renders the bundle into the server's cache and shows the viewer itself in the panel; `publish`
+takes that preview as it is (nothing is cut twice) and shows the link to open or copy, and `take down`. With a
+share up, the panel opens on it, filled as it was made: `update` makes the bundle again under the same link (the
+expiry stays unless changed), `new link` publishes another. A shared moment carries 🔗 in the moments list. The configuration page's **shares** tab lists every share that is up (the
+moment, the clip, the window, until when), opens or copies the link, takes one down, and shows the expired and
+revoked ones on request.
 
 **acroscope itself is never reachable from a share.** The server has no authentication of its own, so a share is a
 static bundle: a web server serves the shares folder, read-only, on a domain of its own (`compose.yaml` runs one on
@@ -326,7 +348,9 @@ fails leaves no share; a revoke that fails leaves the share up and says so.
 The link is the secret: 24 random characters (more than 120 bits), no index anywhere. A secret link is still not private
 (links get forwarded, chat apps fetch them for a preview, a link pasted in public gets indexed), so a share
 **expires after 30 days** unless `--expires` says otherwise (`12h`, `2w`, `never`); `acroscope unshare <token>`
-takes one down at once, and the nightly housekeeping removes expired bundles. `acroscope shares` lists what is up
+takes one down at once, and the nightly housekeeping removes expired bundles. A bundle is static, so housekeeping
+(at every server start too) also writes the page of every share that is up again when the viewer shipped with
+acroscope is newer than it: a better viewer reaches the links already out; the clip and the link stay as they are. `acroscope shares` lists what is up
 (`--all` with the expired and revoked ones). The bundle carries nothing that names the source: no session, clip,
 log, craft, date or moment id, and the viewer fetches nothing but its own clip (no fonts, no scripts, no preview
 image). The clip's picture is what it is, though: the OSD is burned into analog DVR footage, so the craft's name, the
@@ -342,7 +366,7 @@ from, filtered by number or trick), **drones** (the crafts seen in the logs by t
 and numbers for that quad, its tricks on and off), **tricks** (the list in force with switches, each one's definition
 and examples, "check the examples" against the server's logs, and the tricks scored against a session's tagged
 moments: found, missed with arm and time, detections on no moment), **settings** (what this browser remembers, your layer
-exported as a tricks file or one imported, and the raw layer as the server keeps it) and **tags** (the tag manager, moved here from the player). Every change goes to
+exported as a tricks file or one imported, and the raw layer as the server keeps it), **tags** (the tag manager, moved here from the player) and **shares** (what is published on a secret link, see *Sharing a trick*). Every change goes to
 the server as the whole layer, checked as a tricks file is; a refused one shows its message and changes nothing. The
 player's suggestions follow on the next look.
 
