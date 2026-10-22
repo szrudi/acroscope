@@ -889,6 +889,28 @@ class PlayerTest(unittest.TestCase):
         self.assertFalse((self.root / "shares" / tok).exists())
         self.assertIsNone(page.query_selector("#moments .m[data-id=m01] .shared"))
 
+    def test_moment_buttons_under_the_thumbnail_on_the_phone(self):
+        """Four buttons beside the title squeezed it into a four-line column (Rudi's screenshot, 2026-10-22): on the
+        phone they sit under the thumbnail, two by two, and the title has the row's width. The desktop keeps them
+        beside the title."""
+        rect = """() => { const m = document.querySelector('#moments .m'), r = s => m.querySelector(s).getBoundingClientRect();
+          const bs = [...m.querySelectorAll('.act button')].map(b => b.getBoundingClientRect());
+          return {row: m.getBoundingClientRect().width, img: r('img'), act: r('.act'), ttl: r('.ttl'), buttons: bs.length,
+                  rows: new Set(bs.map(b => Math.round(b.top))).size, bw: Math.max(...bs.map(b => b.width))}; }"""
+        page = self.open(self.SHARE, PHONE)
+        page.click("#mtabs [data-mtab=moments]")
+        page.wait_for_selector("#moments .m .act button")
+        r = page.evaluate(rect)
+        self.assertEqual((r["buttons"], r["rows"]), (4, 2))                              # two by two
+        self.assertGreaterEqual(r["act"]["top"], r["img"]["bottom"] - 1)                 # under the thumbnail
+        self.assertLessEqual(r["act"]["right"], r["ttl"]["left"])                        # in the thumbnail's column
+        self.assertGreaterEqual(r["ttl"]["width"], 0.6 * r["row"])                       # the title has the row
+        self.assertGreaterEqual(r["bw"], 28)                                             # a finger's worth each
+        page = self.open(self.SHARE)
+        r = page.evaluate(rect)
+        self.assertEqual(r["rows"], 1)                                                   # the desktop: one row beside the thumbnail, as before
+        self.assertLess(r["act"]["top"], r["img"]["bottom"])
+
     def test_share_without_a_match_and_a_refused_window(self):
         page = self.open(self.SHARE)
         page.click("#moments .m[data-id=m02] [data-share]")
