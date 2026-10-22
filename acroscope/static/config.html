@@ -314,7 +314,8 @@ function renderShares() {
     $('#shList').innerHTML = rows.map(x => `<div class="shrow" data-token="${esc(x.token)}"><span class="st ${esc(x.state)}">${esc(x.state === 'active' ? 'up' : x.state)}</span>` +
       `<span class="what"><b>${esc(x.title || x.text || x.token)}</b> <span class="dim">${esc(x.session)} › ${esc(x.clip)} ${fmt(x.start)}–${fmt(x.end)}${x.text && x.text !== x.title ? ' · ' + esc(x.text) : ''}</span>` +
       `<span class="dim">${x.state === 'active' ? (x.expires_at ? 'until ' + esc(x.expires_at.slice(0, 10)) : 'never expires') : esc((x.revoked_at || x.expires_at || '').slice(0, 10))} · made ${esc(x.created_at.slice(0, 10))}</span></span>` +
-      `<span class="act">${x.state === 'active' && x.url ? `<a class="btn" href="${esc(x.url)}" target="_blank" rel="noopener">open</a><button class="small" data-copy="${esc(x.url)}">copy</button>` : ''}` +
+      `<span class="act"><a class="btn" data-moment href="${esc(x.moment ? `/?${new URLSearchParams({session: x.session, clip: x.clip, m: x.moment, share: 1})}` : `/?${new URLSearchParams({session: x.session, clip: x.clip, t: x.start})}`)}" title="the moment in the player, with its share panel">${x.moment ? 'moment' : 'clip'}</a>` +
+      `${x.state === 'active' && x.url ? `<a class="btn" href="${esc(x.url)}" target="_blank" rel="noopener">open</a><button class="small" data-copy="${esc(x.url)}">copy</button>` : ''}` +
       `${x.state === 'active' ? `<button class="small" data-down="${esc(x.token)}">take down</button>` : ''}</span></div>`).join('') || '<p class="hint">nothing shared' + ($('#shAll').checked ? '' : ' right now') + '</p>';
     $('#shList').querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.copy); status('link copied'); } catch { prompt('link', b.dataset.copy); } });
     $('#shList').querySelectorAll('[data-down]').forEach(b => b.onclick = async () => {

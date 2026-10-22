@@ -352,7 +352,8 @@ class ConfigPageTest(unittest.TestCase):
         self.assertEqual(rows[0][:3], ["u" * 24, "up", "a roll"])                          # the moment's title first
         self.assertIn("2026-10-04_001 0:09.5–0:15.0 · a roll, nearly", rows[0][3])         # the clip's readable name, the window, the text
         self.assertIn("no public URL", page.text_content("#shBase"))                       # this server has none
-        self.assertIsNone(page.query_selector(".shrow a.btn"))                              # so no link to open
+        self.assertIsNone(page.query_selector(".shrow a.btn:not([data-moment])"))           # so no link to open
+        self.assertEqual(page.get_attribute(".shrow a[data-moment]", "href"), f"/?session={S}&clip=2026-10-04_001&m=m01&share=1")   # but one to the moment, panel open
         page.check("#shAll")
         page.wait_for_function("() => document.querySelectorAll('.shrow').length === 2")
         self.assertEqual(sorted(page.eval_on_selector_all(".shrow .st", "els => els.map(e => e.textContent)")), ["expired", "up"])

@@ -212,7 +212,8 @@
     </div>
     <div class="editor" id="sharebox">
       <div class="row"><b>share</b> <span id="shId" style="color:var(--dim)"></span> <span id="shTitle"></span>
-        <span style="margin-left:auto;color:var(--dim);font-size:12px">a clip around the moment, the sticks drawn over it, on a secret link</span></div>
+        <span style="margin-left:auto;color:var(--dim);font-size:12px">a clip around the moment, the sticks drawn over it, on a secret link</span>
+        <a class="btn" id="shAllLink" href="/config#shares" title="every share that is up: the configuration page's shares tab">all shares</a></div>
       <div id="shState"></div>
       <div class="row">
         from <input class="t" id="shFrom"> <button class="small" onclick="shNow('from')">now</button>
@@ -274,7 +275,7 @@ async function init() {
   const want = q.get('session') || localStorage.getItem('acro.session');
   sel.value = list.some(s => s.session === want) ? want : (list.filter(s => s.moments).pop() || list[list.length - 1]).session;
   await loadSession(sel.value, q.get('clip') || localStorage.getItem('acro.clip'));
-  if (q.get('m') && S.moments.some(m => m.id === q.get('m'))) playMoment(q.get('m'));
+  if (q.get('m') && S.moments.some(m => m.id === q.get('m'))) { playMoment(q.get('m')); if (q.get('share')) openShare(q.get('m')); }   // &share=1: the shares tab's way to a moment's share
   else if (q.get('t') && clip) { v.currentTime = +q.get('t'); setUrl(); }
 }
 

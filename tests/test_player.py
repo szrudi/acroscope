@@ -948,6 +948,20 @@ class PlayerTest(unittest.TestCase):
                     self.assertAlmostEqual(r["why"]["left"], r["ttl"]["left"], delta=1)
                 self.assertEqual(len({round(r["act"]["left"]) for r in rows}), 1)               # the button in the same place on every row
 
+    def test_share_panel_from_a_link_and_back(self):
+        """The shares tab links a moment as the player's own links do, plus &share=1: the moment plays and its
+        share panel opens. The panel links back to the tab."""
+        ctx = self.browser.new_context(**DESKTOP)
+        self.addCleanup(ctx.close)
+        page = ctx.new_page()
+        page.goto(f"{self.url}/?session={self.SHARE}&clip=2026-10-04_001&m=m01&share=1")
+        page.wait_for_selector("#sharebox.open")
+        self.assertEqual((page.text_content("#shId"), page.text_content("#shTitle"), page.evaluate("() => cur")), ("m01", "half roll", "m01"))
+        self.assertEqual(page.get_attribute("#shAllLink", "href"), "/config#shares")
+        page.goto(f"{self.url}/?session={self.SHARE}&clip=2026-10-04_001&m=m01")          # without it: the moment alone
+        page.wait_for_function("() => cur === 'm01'")
+        self.assertIsNone(page.query_selector("#sharebox.open"))
+
     def test_share_without_a_match_and_a_refused_window(self):
         page = self.open(self.SHARE)
         page.click("#moments .m[data-id=m02] [data-share]")
