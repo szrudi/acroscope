@@ -22,7 +22,8 @@ __OG__
   button { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:7px 0; cursor:pointer; font:inherit; flex:1; min-width:0; white-space:nowrap }
   button.on { background:var(--acc); color:#1a1200; border-color:var(--acc) }
   .text { margin:4px 14px 0; white-space:pre-wrap; overflow-wrap:anywhere } .text:empty { display:none }
-  footer { margin:20px 14px 0; color:var(--dim); font-size:12px; letter-spacing:.5px }
+  .keys { margin:18px 14px 0; color:var(--dim); font-size:12px }
+  footer { margin:10px 14px 0; color:var(--dim); font-size:12px; letter-spacing:.5px }
 </style>
 </head>
 <body>
@@ -32,16 +33,18 @@ __OG__
   <div class="row">
     <button id="play" title="play / pause (space; , and . step a frame, the arrows 2 s)">pause</button>
     <button data-rate="0.25">¼×</button><button data-rate="0.5">½×</button><button data-rate="1" class="on">1×</button>
-    <button id="stk" class="on" title="the sticks from the flight log; a tap on the picture does the same">sticks</button>
+    <button id="stk" class="on" title="the sticks from the flight log (s)">sticks</button>
     <button id="snd" title="the sound (it starts muted: browsers allow no other autoplay)">sound</button>
   </div>
   <p class="text" id="text">__TEXT__</p>
+  <p class="keys">space play / pause · , . a frame · ← → 2 s · s sticks · a tap on the picture plays and pauses</p>
   <footer>acroscope</footer>
 </main>
 <script>
 // One trick, shared: the clip loops, and the sticks it was flown with are drawn over the picture from the samples
 // below (Mode 2: throttle and yaw left, pitch and roll right; every axis + = stick right or up, in %; null where the
-// log does not cover the picture). The page talks to nothing: the clip beside it is the only other file.
+// log does not cover the picture). The page talks to nothing: the clip beside it is the only other file. A tap on
+// the picture plays and pauses; the sticks button (and s) hides the sticks.
 const STICKS = __STICKS__;
 const AUDIO = __AUDIO__;       // the clip carries a sound track (off by default: a DVR's track is motors and bystanders)
 const TRAIL = 0.8, $ = s => document.querySelector(s), v = $('#v'), sk = $('#sticks'), skx = sk.getContext('2d');
@@ -97,7 +100,8 @@ for (const ev of ['seeked', 'loadedmetadata', 'timeupdate']) v.addEventListener(
 v.addEventListener('loadedmetadata', label);
 new ResizeObserver(draw).observe(v);
 function toggleSticks() { show = !show; $('#stk').classList.toggle('on', show); drawSticks(); }
-if (STICKS) { $('#wrap').onclick = toggleSticks; $('#stk').onclick = toggleSticks; } else $('#stk').remove();
+if (STICKS) $('#stk').onclick = toggleSticks; else $('#stk').remove();
+$('#wrap').onclick = () => { if (v.paused) v.play().catch(() => {}); else v.pause(); };   // a tap on the picture: play or pause
 if (AUDIO) { $('#snd').onclick = () => { v.muted = !v.muted; $('#snd').classList.toggle('on', !v.muted); }; } else $('#snd').remove();
 $('#play').onclick = () => { if (v.paused) v.play().catch(() => {}); else v.pause(); };
 for (const b of document.querySelectorAll('[data-rate]')) b.onclick = () => {

@@ -152,6 +152,7 @@ class SharePageTest(unittest.TestCase):
         self.assertEqual(page.inner_text("#text"), TEXT)
         self.assertIsNone(page.query_selector("#text b"))                                    # shown, not rendered
         self.assertEqual(page.inner_text("footer"), "acroscope")
+        self.assertIn("space", page.inner_text(".keys"))                                      # the keys, said at the bottom
 
     def test_sticks_drawn_from_the_samples_and_hidden_by_a_tap(self):
         """At 1 s into the bundle the fake arm's sticks are: throttle 10 %, yaw 60 % left, roll 50 % right, pitch
@@ -171,12 +172,19 @@ class SharePageTest(unittest.TestCase):
         self.assertTrue(all(p[3] == 255 and p[0] > 200 for p in r["pixels"]), r["pixels"])                  # the dots are drawn
         self.assertEqual(page.evaluate(self.STAND_IN, 3.5)["drawn"], [])                                   # past the arm: nothing
         self.assertEqual(len(page.evaluate(self.STAND_IN, 2.99)["drawn"]), 2)                              # the last sample still draws
-        page.click("#wrap")
+        page.click("#stk")
         r = page.evaluate(self.STAND_IN, 1.0)
         self.assertEqual((r["drawn"], r["on"]), ([], False))
         page.click("#stk")
         r = page.evaluate(self.STAND_IN, 1.0)
         self.assertEqual((len(r["drawn"]), r["on"]), (2, True))
+        # a tap on the picture plays and pauses (Rudi, 2026-10-22), and leaves the sticks as they are
+        page.evaluate("""() => { window._p = []; v.play = () => { _p.push('play'); return Promise.resolve(); }; v.pause = () => _p.push('pause');
+                               Object.defineProperty(v, 'paused', {get: () => _p.length % 2 === 0, configurable: true}); }""")
+        page.click("#wrap")
+        page.click("#wrap")
+        self.assertEqual(page.evaluate("() => _p"), ["play", "pause"])
+        self.assertEqual((len(page.evaluate(self.STAND_IN, 1.0)["drawn"]), page.evaluate("() => $('#stk').classList.contains('on')")), (2, True))
 
     def test_slow_motion_play_and_seek(self):
         page, _ = self.open()
