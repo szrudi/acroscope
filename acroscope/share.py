@@ -15,6 +15,7 @@ without token_ok (`unshare` takes it from the command line).
 """
 import html
 import json
+import math
 import re
 import secrets
 import shlex
@@ -66,12 +67,19 @@ def parse_expiry(spec: str, start: datetime | None = None) -> str | None:
 
 
 def window(start: float, end: float, pad: float, duration: float) -> tuple[float, float]:
-    """The moment plus `pad` s each side, inside the clip (a point gets MIN_SECONDS around it), at most MAX_SECONDS."""
+    """The moment plus `pad` s each side, inside the clip (a point gets MIN_SECONDS around it, grown inwards at an
+    edge), at most MAX_SECONDS. Only finite numbers: a NaN slips past every comparison and a clamp makes it the
+    whole clip (#58 review)."""
+    if not all(math.isfinite(x) for x in (start, end, pad, duration)):
+        raise ValueError(f"{start}-{end} s, pad {pad}, clip {duration}: not numbers")
     if not 0 <= pad <= PAD_MAX:
         raise ValueError(f"--pad {pad:g}: between 0 and {PAD_MAX:g} s")
+    if end < start:
+        raise ValueError(f"{start:g}-{end:g} s: the end is before the start")
     if end - start < MIN_SECONDS:
         mid = (start + end) / 2
-        start, end = mid - MIN_SECONDS / 2, mid + MIN_SECONDS / 2
+        start = max(0.0, min(mid - MIN_SECONDS / 2, duration - MIN_SECONDS))
+        end = start + MIN_SECONDS
     w0, w1 = max(0.0, start - pad), min(duration, end + pad)
     if w1 - w0 < MIN_SECONDS:
         raise ValueError(f"{start:g}-{end:g} s: outside the clip ({duration:g} s)")
@@ -148,6 +156,13 @@ def run_hook(template: str, token: str, d: Path) -> None:
         raise ShareError(f"{args[0]} exited {r.returncode}: {(r.stderr or r.stdout).strip()[-300:]}")
 
 
+def check_hooks() -> None:
+    """A push command without a revoke command would push a share that can never be taken down, with the row
+    calling it dead while the copy is up (#58 review): neither a publish nor a takedown goes through in that state."""
+    if SHARE_PUSH and not SHARE_REVOKE:
+        raise ShareError("ACROSCOPE_SHARE_PUSH is set without ACROSCOPE_SHARE_REVOKE: a pushed share could never be taken down; set both")
+
+
 def link(token: str) -> str | None:
     return f"{SHARE_URL}/{token}/" if SHARE_URL else None
 
@@ -175,6 +190,7 @@ def render(session: str, moment_id: str, pad: float = 2.0, text: str | None = No
     with sticks=False the clip alone. Returns the share with its url and dir."""
     if sessions.remote():
         raise ValueError("share runs where the clips are (on the server: this command is proxied there)")
+    check_hooks()
     expires_at = parse_expiry(expires)
     s = sessions.load(session)
     m = next((x for x in s["moments"] if x["id"] == moment_id), None)
@@ -202,6 +218,7 @@ def render(session: str, moment_id: str, pad: float = 2.0, text: str | None = No
     token = new_token()
     final, staging = SHARES_DIR / token, SHARES_DIR / ".staging" / token
     staging.mkdir(parents=True)
+    pushed = False
     try:
         log(f"cutting {vid} {w0:g}-{w1:g} s")
         cut_clip(src, staging / "clip.mp4", w0, w1)
@@ -210,9 +227,15 @@ def render(session: str, moment_id: str, pad: float = 2.0, text: str | None = No
         staging.rename(final)                              # whole or not there: a static server next to this dir sees no half bundle
         if SHARE_PUSH:
             log(f"pushing {token}")
+            pushed = True
             run_hook(SHARE_PUSH, token, final)
         row = sessions.store().add_share(token, session, vid, moment_id, w0, w1, text, expires_at)
     except BaseException:
+        if pushed:                                         # a push that failed partway, or a row that could not be written after a
+            try:                                           # good one, would leave a copy out there with no row to take it down by
+                run_hook(SHARE_REVOKE, token, final)
+            except ShareError as e:
+                log(f"{token}: the half-pushed copy could not be taken down ({e})")
         shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(final, ignore_errors=True)
         raise
@@ -224,15 +247,21 @@ def render(session: str, moment_id: str, pad: float = 2.0, text: str | None = No
     return {**_row(row), "dir": str(final), "sticks": samples is not None}
 
 
-def _take_down(token: str, d: Path, log) -> bool:
-    """The bundle out of the world: the revoke command when one is set (the copy pushed elsewhere), then the folder
-    here. The folder is the marker: while it is here, the share is still up somewhere. True when there was one."""
-    if not d.is_dir():
+def _take_down(r: dict, log) -> bool:
+    """The bundle out of the world: the revoke command when one is set (the copy pushed elsewhere), whether or not
+    the folder is still here (a moved shares dir, a restore, a hand cleanup took it, not the copy); then the folder
+    here; then the row stamped `down_at`, which is the marker that nothing is up anywhere (#58 review: the folder
+    was the marker, and it is not reliable). True when there was something to do."""
+    if r.get("down_at"):
         return False
+    check_hooks()
+    d = SHARES_DIR / r["token"]
     if SHARE_REVOKE:
-        log(f"revoking {token} where it was pushed")
-        run_hook(SHARE_REVOKE, token, d)
-    shutil.rmtree(d)
+        log(f"revoking {r['token']} where it was pushed")
+        run_hook(SHARE_REVOKE, r["token"], d)
+    if d.is_dir():
+        shutil.rmtree(d)
+    sessions.store().mark_down(r["token"])
     return True
 
 
@@ -242,24 +271,26 @@ def revoke(token: str, log=lambda m: None) -> dict:
     if not token_ok(token):
         raise ValueError(f"{token!r}: not a share token")
     store = sessions.store()
-    if store.share(token) is None:
+    row = store.share(token)
+    if row is None:
         raise FileNotFoundError(f"{token}: no such share")
-    _take_down(token, SHARES_DIR / token, log)
+    _take_down(row, log)
     store.revoke_share(token)
     return _row(store.share(token))
 
 
 def cleanup_expired(log=lambda m: None) -> list[str]:
-    """Housekeeping: the bundles of shares past their expiry (and of revoked ones still here) go; the rows stay as
-    the record. A takedown that fails is logged and tried again next time. Returns the tokens taken down."""
+    """Housekeeping: the bundles of shares past their expiry (and of revoked ones not taken down yet) go; the rows
+    stay as the record. A takedown that fails, whatever the reason (the hook, a folder that will not go), is logged
+    and tried again next time; it never stops the rest (#58 review). Returns the tokens taken down."""
     gone = []
     for r in sessions.store().shares(all=True):
         if r["state"] == "active" or not token_ok(r["token"]):
             continue
         try:
-            if _take_down(r["token"], SHARES_DIR / r["token"], log):
+            if _take_down(r, log):
                 gone.append(r["token"])
-                log(f"share {r['token']} {r['state']}: bundle removed")
-        except ShareError as e:
-            log(f"share {r['token']}: {e}")
+                log(f"share {r['token']} {r['state']}: taken down")
+        except Exception as e:  # noqa: BLE001  (an OSError from rmtree, a hook that failed: the next row still gets its turn)
+            log(f"share {r['token']}: not taken down ({type(e).__name__}: {e})")
     return gone

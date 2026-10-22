@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, 
 -- stays after a revoke or an expiry as the record of what was public (the bundle itself is in the shares dir)
 CREATE TABLE IF NOT EXISTS shares (
   token TEXT PRIMARY KEY, session TEXT NOT NULL, video TEXT NOT NULL, moment TEXT, start REAL NOT NULL, end REAL NOT NULL,
-  text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT);
+  text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT,
+  down_at TEXT);   -- when the bundle was taken out of the world (here and where it was pushed); NULL = may still be up
 """
 
 # The tag vocabulary a new database starts with: categories with a colour, tags with the colour the player used
@@ -108,6 +109,9 @@ class Db:
                 self.c.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
         if "result" not in {r["name"] for r in self.c.execute("PRAGMA table_info(batches)")}:
             self.c.execute("ALTER TABLE batches ADD COLUMN result TEXT")
+        if "down_at" not in {r["name"] for r in self.c.execute("PRAGMA table_info(shares)")}:
+            self.c.execute("ALTER TABLE shares ADD COLUMN down_at TEXT")
+            self.c.execute("UPDATE shares SET down_at = revoked_at WHERE revoked_at IS NOT NULL")   # taken down when revoked, as it was then
         self._backfill_batch_results()
 
     def _backfill_batch_results(self) -> None:
@@ -338,6 +342,8 @@ class Db:
 
     def untag(self, session: str, mid: str) -> bool:
         cur = self.c.execute("DELETE FROM moments WHERE session = ? AND id = ?", (session, mid))
+        if cur.rowcount:                                   # the next moment may get this id: a share made from it keeps no pointer
+            self.c.execute("UPDATE shares SET moment = NULL WHERE session = ? AND moment = ?", (session, mid))
         self._touch(session)
         return cur.rowcount > 0
 
@@ -357,6 +363,7 @@ class Db:
         for r in rows:
             n_m = self.c.execute("DELETE FROM matches WHERE session = ? AND video = ?", (session, r["file"])).rowcount
             n_t = self.c.execute("DELETE FROM moments WHERE session = ? AND video = ?", (session, r["file"])).rowcount
+            self.c.execute("UPDATE shares SET moment = NULL WHERE session = ? AND video = ?", (session, r["file"]))
             self.c.execute("DELETE FROM videos WHERE session = ? AND file = ?", (session, r["file"]))
             out.append({"video": r["file"], "missing_since": r["missing_since"], "matches": n_m, "moments": n_t})
         if out:
@@ -369,6 +376,7 @@ class Db:
             raise ValueError(f"{session}: no clip {video}")
         n_m = self.c.execute("DELETE FROM matches WHERE session = ? AND video = ?", (session, video)).rowcount
         n_t = self.c.execute("DELETE FROM moments WHERE session = ? AND video = ?", (session, video)).rowcount
+        self.c.execute("UPDATE shares SET moment = NULL WHERE session = ? AND video = ?", (session, video))   # the shares stay: the record
         self.c.execute("DELETE FROM videos WHERE session = ? AND file = ?", (session, video))
         self._touch(session)
         return {"video": video, "matches": n_m, "moments": n_t}
@@ -407,11 +415,13 @@ class Db:
             # moment ids count per session (m01, m02, ...): one that `to` already uses gets the next free id there
             for r in self.c.execute("SELECT id FROM moments WHERE session = ? AND video = ? ORDER BY start", (session, file)).fetchall():
                 taken = self.c.execute("SELECT 1 FROM moments WHERE session = ? AND id = ?", (to, r["id"])).fetchone()
-                self.c.execute("UPDATE moments SET session = ?, id = ? WHERE session = ? AND id = ?",
-                               (to, self.next_id(to) if taken else r["id"], session, r["id"]))
+                new_id = self.next_id(to) if taken else r["id"]
+                self.c.execute("UPDATE moments SET session = ?, id = ? WHERE session = ? AND id = ?", (to, new_id, session, r["id"]))
+                self.c.execute("UPDATE shares SET session = ?, moment = ? WHERE session = ? AND video = ? AND moment = ?",   # a share follows its moment's new id
+                               (to, new_id, session, file, r["id"]))
             self.c.execute("UPDATE matches SET session = ? WHERE session = ? AND video = ?", (to, session, file))
             self.c.execute("UPDATE batch_clips SET session = ? WHERE session = ? AND file = ?", (to, session, file))
-            self.c.execute("UPDATE shares SET session = ? WHERE session = ? AND video = ?", (to, session, file))
+            self.c.execute("UPDATE shares SET session = ? WHERE session = ? AND video = ?", (to, session, file))   # the rest: no moment, or one kept its id
             self.c.execute("UPDATE videos SET session = ? WHERE session = ? AND file = ?", (to, session, file))
             self.c.execute("COMMIT")
         except Exception:
@@ -589,6 +599,10 @@ class Db:
     def revoke_share(self, token: str) -> bool:
         """Mark a share revoked (once). True when it was not yet."""
         return self.c.execute("UPDATE shares SET revoked_at = ? WHERE token = ? AND revoked_at IS NULL", (now(), token)).rowcount > 0
+
+    def mark_down(self, token: str) -> bool:
+        """The bundle is out of the world, here and wherever it was pushed (once)."""
+        return self.c.execute("UPDATE shares SET down_at = ? WHERE token = ? AND down_at IS NULL", (now(), token)).rowcount > 0
 
     # ---- import of the old session.json files -----------------------------------------------------------------
 

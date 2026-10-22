@@ -8,6 +8,7 @@ import array
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -97,6 +98,12 @@ class PureTest(unittest.TestCase):
         self.assertEqual(share.window(4.0, 5.0, 2.0, 60.0), (2.0, 7.0))
         self.assertEqual(share.window(1.0, 5.0, 2.0, 6.0), (0.0, 6.0))          # clamped at both ends
         self.assertEqual(share.window(4.0, 4.0, 0.0, 60.0), (3.75, 4.25))        # a point: half a second around it
+        self.assertEqual(share.window(0.0, 0.0, 0.0, 60.0), (0.0, 0.5))           # a point at an edge: the half second grows inwards (#58 review)
+        self.assertEqual(share.window(60.0, 60.0, 0.0, 60.0), (59.5, 60.0))
+        for start, end, pad, dur in ((float("nan"), float("nan"), 0.0, 60.0), (float("-inf"), float("inf"), 0.0, 60.0),
+                                     (1.0, 2.0, float("nan"), 60.0), (1.0, 2.0, 0.0, float("inf"))):
+            with self.assertRaises(ValueError, msg=(start, end, pad, dur)):        # not the whole clip by a NaN slipping past the clamps
+                share.window(start, end, pad, dur)
         for start, end, pad, dur in ((4.0, 5.0, share.PAD_MAX + 0.1, 60.0), (4.0, 5.0, -1.0, 60.0),
                                      (4.0, 4.0 + share.MAX_SECONDS, 2.0, 600.0), (70.0, 80.0, 2.0, 60.0)):
             with self.assertRaises(ValueError, msg=(start, end, pad, dur)):
@@ -181,6 +188,38 @@ class DbTest(unittest.TestCase):
         self.assertEqual(self.db.share("a" * 24)["session"], "2026-10-04-renamed")
         self.db.move_clip("2026-10-04-renamed", CLIP, "2026-10-04-other")
         self.assertEqual((self.db.share("a" * 24)["session"], self.db.share("a" * 24)["video"]), ("2026-10-04-other", CLIP))
+
+    def test_a_share_follows_its_moment_through_a_renumbering_and_loses_it_when_it_goes(self):
+        """#58 review: a move renumbers a moment whose id the target session uses, and the share must point at the
+        moment it was made from, not at the target's other m01; a moment that is deleted (untag, purge, a clip
+        deleted) leaves the share without one, since the next moment may get that id again."""
+        A, B = SESSION, "2026-10-04-other"
+        self.db.upsert_video(A, CLIP)
+        self.db.upsert_video(B, "2026-10-04_009.mp4")
+        self.db.tag(B, "2026-10-04_009.mp4", 1, 2, "theirs", [])                              # B's m01
+        m = self.db.tag(A, CLIP, 3, 4, "ours", [])                                             # A's m01
+        other = self.db.tag(A, CLIP, 5, 6, "also ours", [])                                    # A's m02
+        self.db.add_share("a" * 24, A, CLIP, m["id"], 2.0, 5.0, "x", None)
+        self.db.add_share("b" * 24, A, CLIP, other["id"], 4.0, 7.0, "y", None)
+        self.db.add_share("c" * 24, A, CLIP, None, 0.0, 1.0, "no moment", None)
+        self.db.move_clip(A, CLIP, B)
+        moved = {x["title"]: x["id"] for x in self.db.load(B)["moments"]}
+        self.assertEqual(moved["theirs"], "m01")
+        self.assertNotEqual(moved["ours"], "m01")                                               # renumbered
+        self.assertEqual((self.db.share("a" * 24)["session"], self.db.share("a" * 24)["moment"]), (B, moved["ours"]))
+        self.assertEqual((self.db.share("b" * 24)["session"], self.db.share("b" * 24)["moment"]), (B, moved["also ours"]))
+        self.assertEqual((self.db.share("c" * 24)["session"], self.db.share("c" * 24)["moment"]), (B, None))
+        self.db.untag(B, moved["ours"])
+        self.assertIsNone(self.db.share("a" * 24)["moment"])
+        self.assertEqual(self.db.share("b" * 24)["moment"], moved["also ours"])
+        self.db.delete_clip(B, CLIP)
+        self.assertIsNone(self.db.share("b" * 24)["moment"])
+        self.assertEqual(self.db.share("b" * 24)["state"], "active")                            # the share itself stays: the record
+        self.db.upsert_video(A, "2026-10-04_002.mp4", missing_since="2026-10-01T00:00:00+00:00")
+        p = self.db.tag(A, "2026-10-04_002.mp4", 1, 2, "gone soon", [])
+        self.db.add_share("d" * 24, A, "2026-10-04_002.mp4", p["id"], 0.0, 3.0, "z", None)
+        self.db.purge(A, days=0)
+        self.assertIsNone(self.db.share("d" * 24)["moment"])
 
 
 class ShareTest(unittest.TestCase):
@@ -323,7 +362,7 @@ class ShareTest(unittest.TestCase):
         self.assertFalse((self.root / "shares" / s["token"]).exists())
         # a push that fails: nothing published, nothing kept, the error on one line
         before = self.names()
-        env_bad = dict(self.env, ACROSCOPE_SHARE_PUSH=f'{PY} -c "import sys; sys.stderr.write(\'no route\'); sys.exit(2)"')
+        env_bad = dict(env, ACROSCOPE_SHARE_PUSH=f'{PY} -c "import sys; sys.stderr.write(\'no route\'); sys.exit(2)"')   # a revoke command stays set: a push alone is refused (#58 review)
         err = self.share("m01", env=env_bad, ok=False)
         self.assertIn("no route", err)
         self.assertEqual(self.names(), before)
@@ -339,6 +378,84 @@ class ShareTest(unittest.TestCase):
         self.assertTrue((target / s["token"]).exists())
         self.assertIn(s["token"], [x["token"] for x in json.loads(cli(self.env, "shares", "--json").stdout)])   # still active
         self.assertEqual(cli(env, "unshare", s["token"]).returncode, 0)
+
+    def test_a_push_without_a_revoke_is_refused(self):
+        """#58 review: with ACROSCOPE_SHARE_PUSH set and no ACROSCOPE_SHARE_REVOKE, a share could be pushed but
+        never taken down, and the row would call it dead while the copy is up. Neither publishing nor a takedown
+        goes through in that state."""
+        env = dict(self.env, ACROSCOPE_SHARE_PUSH=f'{PY} -c "pass"')
+        before = self.names()
+        err = self.share("m01", env=env, ok=False)
+        self.assertIn("ACROSCOPE_SHARE_REVOKE", err)
+        self.assertEqual(self.names(), before)
+        s = self.share("m01")
+        r = cli(env, "unshare", s["token"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ACROSCOPE_SHARE_REVOKE", r.stderr)
+        self.assertEqual(json.loads(cli(self.env, "shares", "--json").stdout)[-1]["state"], "active")   # still up, truthfully
+        cli(self.env, "unshare", s["token"])
+
+    def test_the_revoke_hook_runs_whether_or_not_the_folder_is_here(self):
+        """#58 review: the local folder is not the marker that a copy is up somewhere (a moved shares dir, a
+        restore, a hand cleanup): the revoke hook runs for a share not yet taken down, once; a second unshare and
+        the daily housekeeping do nothing more. A push that fails partway (or a row that cannot be written after a
+        good push) leaves no copy behind either: the revoke hook runs best-effort before the local cleanup."""
+        pushes, revokes = self.root / "pushed.txt", self.root / "revoked.txt"
+        env = dict(self.env, ACROSCOPE_SHARE_PUSH=f'{PY} -c "import sys; open(sys.argv[1], \'a\').write(sys.argv[2] + chr(10))" {pushes} {{token}}',
+                   ACROSCOPE_SHARE_REVOKE=f'{PY} -c "import sys; open(sys.argv[1], \'a\').write(sys.argv[2] + chr(10))" {revokes} {{token}}')
+        s = self.share("m01", env=env)
+        shutil.rmtree(self.root / "shares" / s["token"])                                   # the folder gone by other means
+        r = cli(env, "unshare", s["token"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(revokes.read_text().split(), [s["token"]])                       # the copy taken down all the same
+        self.assertEqual(json.loads(r.stdout)["state"], "revoked")
+        self.assertTrue(json.loads(r.stdout)["down_at"])
+        cli(env, "unshare", s["token"])
+        cli(env, "housekeeping")
+        self.assertEqual(revokes.read_text().split(), [s["token"]])                       # once
+        # an expired share whose folder is gone: housekeeping takes the copy down, once
+        db = Db(self.root / "t.db")
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(microsecond=0).isoformat()
+        db.add_share("f" * 24, SESSION, CLIP, "m01", 2.0, 5.0, "old", past)
+        for _ in range(2):
+            r = cli(env, "housekeeping")
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(revokes.read_text().split(), [s["token"], "f" * 24])
+        self.assertTrue(db.share("f" * 24)["down_at"])
+        # a push that fails partway: the revoke hook runs for it, nothing is left anywhere
+        env_bad = dict(env, ACROSCOPE_SHARE_PUSH=f'{PY} -c "import sys; open(sys.argv[1], \'a\').write(sys.argv[2] + chr(10)); sys.exit(2)" {pushes} {{token}}')
+        before = self.names()
+        err = self.share("m01", env=env_bad, ok=False)
+        self.assertIn("exited 2", err)
+        pushed = pushes.read_text().split()
+        self.assertEqual(revokes.read_text().split()[-1], pushed[-1])                     # the half-pushed copy revoked
+        self.assertEqual(self.names(), before)
+
+    def test_housekeeping_goes_on_past_a_bundle_it_cannot_remove(self):
+        """#58 review: an OSError from one takedown (permissions, a busy NAS) must not abort the rest of
+        housekeeping; the takedown is tried again next time."""
+        db = Db(self.root / "t.db")
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(microsecond=0).isoformat()
+        stuck, free = self.root / "shares" / ("g" * 24), self.root / "shares" / ("h" * 24)
+        for d in (stuck, free):
+            d.mkdir(parents=True)
+            (d / "index.html").write_text("x")
+            db.add_share(d.name, SESSION, CLIP, "m01", 2.0, 5.0, "old", past)
+        stuck.chmod(0o500)                                                                 # its files cannot be unlinked
+        self.addCleanup(lambda: stuck.exists() and stuck.chmod(0o700))
+        try:
+            r = cli(self.env, "housekeeping")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("h" * 24, json.loads(r.stdout)["shares_taken_down"])
+            self.assertNotIn("g" * 24, json.loads(r.stdout)["shares_taken_down"])
+            self.assertIn("g" * 24, r.stderr)                                              # said, not raised
+            self.assertFalse(free.exists())
+            self.assertTrue(stuck.exists())
+            self.assertIsNone(db.share("g" * 24)["down_at"])                               # not taken down: next time
+        finally:
+            stuck.chmod(0o700)
+        r = cli(self.env, "housekeeping")
+        self.assertIn("g" * 24, json.loads(r.stdout)["shares_taken_down"])
 
     def test_expired_bundles_go_with_housekeeping(self):
         db = Db(self.root / "t.db")
