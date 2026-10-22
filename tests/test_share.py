@@ -285,6 +285,31 @@ class ShareTest(unittest.TestCase):
         self.assertEqual((s["start"], s["end"]), (0.0, 8.0))
         self.assertAlmostEqual(float(ffprobe(self.root / "shares" / s["token"] / "clip.mp4")["format"]["duration"]), 8.0, delta=0.15)
 
+    def test_audio_poster_and_an_explicit_window(self):
+        """--audio keeps the clip's sound (an AAC track), --poster <t> adds the frame at that video time as the
+        page's poster and preview image, --from/--to set the window themselves (no padding)."""
+        s = self.share("m01", "--audio", "--poster", "3.5", "--from", "2.5", "--to", "4.5")
+        self.assertEqual((s["start"], s["end"], s["audio"], s["poster"]), (2.5, 4.5, True, 3.5))
+        d = self.root / "shares" / s["token"]
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ["clip.mp4", "index.html", "poster.jpg"])
+        p = ffprobe(d / "clip.mp4")
+        self.assertEqual(sorted((st["codec_type"], st["codec_name"]) for st in p["streams"]), [("audio", "aac"), ("video", "h264")])
+        self.assertAlmostEqual(float(p["format"]["duration"]), 2.0, delta=0.15)
+        self.assertEqual((d / "poster.jpg").read_bytes()[:2], b"\xff\xd8")
+        html = (d / "index.html").read_text()
+        self.assertIn('<video id="v" src="clip.mp4" poster="poster.jpg"', html)
+        self.assertIn(f'<meta property="og:image" content="https://share.example/{s["token"]}/poster.jpg">', html)
+        self.assertIn("const AUDIO = true;", html)
+        self.assertEqual(set(re.findall(r'(?:src|href|content|poster)=["\']([^"\']+)', html)) - {"noindex, nofollow, noarchive", "no-referrer", "#14161a", "width=device-width, initial-scale=1, viewport-fit=cover", "half roll", "summary_large_image"},
+                         {"clip.mp4", "poster.jpg", f"https://share.example/{s['token']}/poster.jpg"})
+        err = self.share("m01", "--poster", "7", ok=False)                                # outside the window
+        self.assertIn("poster", err)
+        s = self.share("m01")                                                             # the defaults: no sound, no poster
+        html = (self.root / "shares" / s["token"] / "index.html").read_text()
+        self.assertIn("const AUDIO = false;", html)
+        self.assertNotIn("poster", html)
+        self.assertNotIn("og:", html)
+
     def test_revoke(self):
         s = self.share("m01")
         d = self.root / "shares" / s["token"]

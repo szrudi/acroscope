@@ -7,6 +7,7 @@
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#14161a">
 <title>__TITLE__</title>
+__OG__
 <style>
   :root { --bg:#14161a; --line:#2b3039; --fg:#e6e8ec; --dim:#9aa3b2; --acc:#f5a524; }
   * { box-sizing:border-box }
@@ -26,12 +27,13 @@
 </head>
 <body>
 <main>
-  <div class="vwrap" id="wrap"><video id="v" src="clip.mp4" autoplay muted loop playsinline preload="auto"></video><canvas id="sticks"></canvas></div>
+  <div class="vwrap" id="wrap"><video id="v" src="clip.mp4"__POSTER__ autoplay muted loop playsinline preload="auto"></video><canvas id="sticks"></canvas></div>
   <div class="bar" id="bar"><i id="pos"></i></div>
   <div class="row">
     <button id="play" title="play / pause">pause</button>
     <button data-rate="0.25">¼×</button><button data-rate="0.5">½×</button><button data-rate="1" class="on">1×</button>
     <button id="stk" class="on" title="the sticks from the flight log; a tap on the picture does the same">sticks</button>
+    <button id="snd" title="the sound (it starts muted: browsers allow no other autoplay)">sound</button>
   </div>
   <p class="text" id="text">__TEXT__</p>
   <footer>acroscope</footer>
@@ -41,6 +43,7 @@
 // below (Mode 2: throttle and yaw left, pitch and roll right; every axis + = stick right or up, in %; null where the
 // log does not cover the picture). The page talks to nothing: the clip beside it is the only other file.
 const STICKS = __STICKS__;
+const AUDIO = __AUDIO__;       // the clip carries a sound track (off by default: a DVR's track is motors and bystanders)
 const TRAIL = 0.8, $ = s => document.querySelector(s), v = $('#v'), sk = $('#sticks'), skx = sk.getContext('2d');
 let show = true, raf = 0;
 function sample(i) {           // the sticks at sample i as {lx, ly, rx, ry} in -100..100, or null off the log
@@ -95,6 +98,7 @@ v.addEventListener('loadedmetadata', label);
 new ResizeObserver(draw).observe(v);
 function toggleSticks() { show = !show; $('#stk').classList.toggle('on', show); drawSticks(); }
 if (STICKS) { $('#wrap').onclick = toggleSticks; $('#stk').onclick = toggleSticks; } else $('#stk').remove();
+if (AUDIO) { $('#snd').onclick = () => { v.muted = !v.muted; $('#snd').classList.toggle('on', !v.muted); }; } else $('#snd').remove();
 $('#play').onclick = () => { if (v.paused) v.play().catch(() => {}); else v.pause(); };
 for (const b of document.querySelectorAll('[data-rate]')) b.onclick = () => {
   v.playbackRate = +b.dataset.rate;

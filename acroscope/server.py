@@ -18,8 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import blackbox, ingest, metrics, sessions, tricks, video
-from .config import BLACKBOX_DIR, CACHE_DIR, VIDEOS_DIR
+from . import blackbox, ingest, metrics, sessions, share, tricks, video
+from .config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -381,6 +381,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file(p, "application/octet-stream", download=True)
             if parts[0] == "frame" and len(parts) == 4:
                 return self._file(video.frame(_under(VIDEOS_DIR, parts[1], parts[2]), float(parts[3])), "image/jpeg", "max-age=86400")
+            if parts[0] == "share-preview":                             # a bundle rendered for the player's look (#57): cache only, by id
+                name = parts[2] if len(parts) == 3 else "index.html"       # /share-preview/<id>/ is the page, its files beside it
+                if len(parts) not in (2, 3) or not share.preview_ok(parts[1]) or name not in ("index.html", "clip.mp4", "poster.jpg"):
+                    return self._json({"error": "not a preview"}, 404)
+                return self._file(share.PREVIEW_DIR / parts[1] / name, "text/html; charset=utf-8" if name == "index.html" else None)
+            if parts == ["api", "shares"]:
+                return self._json({"shares": share.list_shares(all=q.get("all") in ("1", "true"), session=q.get("session") or None),
+                                   "public": bool(SHARE_URL), "base": SHARE_URL or None, "push": bool(SHARE_PUSH)})
             if parts[:2] == ["api", "sessions"]:
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
             if parts == ["api", "inbox"]:
@@ -519,6 +527,23 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "tag-categories"]:
                 b = self._body()
                 return self._json(sessions.store().set_category(b["name"], b.get("color")))
+            if parts in (["api", "share"], ["api", "share", "preview"]):     # a share from the player (#57): a preview, or the share itself
+                b = self._body()
+                if not isinstance(b, dict) or not b.get("session"):
+                    return self._json({"error": "a share names a session and a moment (or a clip with start and end)"}, 400)
+                what = {k: b[k] for k in ("moment", "video", "start", "end", "pad", "text", "sticks", "audio", "poster") if b.get(k) is not None}
+                what["session"] = str(b["session"])
+                for k in ("start", "end", "pad", "poster"):
+                    if k in what:
+                        what[k] = float(what[k])
+                if what.get("sticks", True):                              # the log decoding: not in this request (30 s with the GIL held)
+                    s = sessions.load(what["session"])
+                    vid = next((m["video"] for m in s["moments"] if m["id"] == what.get("moment")), what.get("video"))
+                    if any(_log_state(m["bbl"]) == "decoding" for m in s["matches"] if m["video"] == vid):
+                        return self._json({"error": "log not decoded yet, try again shortly"}, 503)
+                if parts[-1] == "preview":
+                    return self._json(share.preview(**what))
+                return self._json(share.publish(expires=b.get("expires") or share.DEFAULT_EXPIRY, preview_id=b.get("preview"), **what))
             if parts[:2] != ["api", "session"] or len(parts) != 4:
                 return self._json({"error": "not found"}, 404)
             name, what, b = parts[2], parts[3], self._body()
@@ -581,6 +606,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})
             if parts == ["api", "tricks", "layer"]:
                 return self._json({"removed": sessions.store().delete_setting(tricks.LAYER_KEY)})
+            if parts[:3] == ["api", "share", "preview"] and len(parts) == 4:
+                return self._json({"removed": share.drop_preview(parts[3])})
+            if parts[:2] == ["api", "share"] and len(parts) == 3:              # a share taken down (#57)
+                return self._json(share.revoke(parts[2]))
             if parts[:2] == ["api", "tag-categories"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_category(parts[2])})
             return self._json({"error": "not found"}, 404)
