@@ -325,15 +325,30 @@ def drop_preview(pid: str) -> bool:
     return True
 
 
-def publish(expires: str = DEFAULT_EXPIRY, preview_id: str | None = None, log=lambda m: None, **what) -> dict:
+def publish(expires: str | None = DEFAULT_EXPIRY, preview_id: str | None = None, log=lambda m: None, token: str | None = None, **what) -> dict:
     """Publish: the window cut from its clip (or taken from a preview whose facts still match), the page written,
     the bundle pushed when a push is configured, the share recorded; in that order, and nothing is left when a step
-    fails. Returns the share's row with its url, dir and facts."""
-    expires_at = parse_expiry(expires)
+    fails. With `token`, an edit of a share that is up: the bundle is made again and swapped in whole under the same
+    token (the link stays; a visitor is never without a bundle), the row follows, and the expiry is kept unless
+    `expires` is given. Returns the share's row with its url, dir and facts."""
+    store = sessions.store()
+    if token is not None:
+        if not token_ok(token):
+            raise ValueError(f"{token!r}: not a share token")
+        row = store.share(token)
+        if row is None:
+            raise FileNotFoundError(f"{token}: no such share")
+        if row["state"] != "active":
+            raise ValueError(f"{token}: {row['state']}, not a share to edit; publish it again instead")
+        expires_at = row["expires_at"] if expires is None else parse_expiry(expires)
+    else:
+        expires_at = parse_expiry(expires or DEFAULT_EXPIRY)
     r = resolve(**what)
-    token = new_token()
+    token = token or new_token()
     final, staging = SHARES_DIR / token, SHARES_DIR / ".staging" / token
     staging.parent.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(staging, ignore_errors=True)
+    old = None
     try:
         taken = False
         if preview_id and preview_ok(preview_id) and (PREVIEW_DIR / preview_id / "preview.json").is_file():
@@ -350,28 +365,43 @@ def publish(expires: str = DEFAULT_EXPIRY, preview_id: str | None = None, log=la
             build(r, staging, log)
         _write_page(r, staging, token)
         _root_page()
+        if final.is_dir():                                 # an edit: the bundle that is up steps aside for the new one, two renames apart
+            old = SHARES_DIR / ".staging" / (token + ".old")
+            shutil.rmtree(old, ignore_errors=True)
+            final.rename(old)
         staging.rename(final)                              # whole or not there: a static server next to this dir sees no half bundle
+        if old:
+            shutil.rmtree(old, ignore_errors=True)
+            old = None
         if SHARE_PUSH:
             log(f"pushing {token}")
             run_hook(SHARE_PUSH, token, final)
-        row = sessions.store().add_share(token, r["session"], r["video"], r["moment"], r["start"], r["end"], r["text"], expires_at)
+        facts = {"sticks": r["sticks"], "audio": r["audio"], "poster": r["poster"]}
+        if store.share(token):
+            row = store.update_share(token, start=r["start"], end=r["end"], text=r["text"], expires_at=expires_at, **facts)
+        else:
+            row = store.add_share(token, r["session"], r["video"], r["moment"], r["start"], r["end"], r["text"], expires_at, **facts)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
-        shutil.rmtree(final, ignore_errors=True)
+        if old and old.is_dir():                           # the edit did not go through: the bundle that was up is back
+            shutil.rmtree(final, ignore_errors=True)
+            old.rename(final)
+        elif not old and not store.share(token):
+            shutil.rmtree(final, ignore_errors=True)
         raise
     finally:
         try:
             staging.parent.rmdir()                         # .staging/ only while something is being rendered
         except OSError:
             pass
-    return {**_row(row), "dir": str(final), "sticks": r["sticks"], "audio": r["audio"], "poster": r["poster"]}
+    return {**_row(row), "dir": str(final)}
 
 
-def render(session: str, moment_id: str, pad: float = 2.0, text: str | None = None, expires: str = DEFAULT_EXPIRY,
+def render(session: str, moment_id: str, pad: float = 2.0, text: str | None = None, expires: str | None = None,
            sticks: bool = True, audio: bool = False, poster: float | None = None, start: float | None = None,
-           end: float | None = None, log=lambda m: None) -> dict:
-    """The CLI's one-step publish of a moment."""
-    return publish(expires=expires, log=log, session=session, moment=moment_id, pad=pad, text=text, sticks=sticks,
+           end: float | None = None, token: str | None = None, log=lambda m: None) -> dict:
+    """The CLI's one-step publish of a moment, or with `token` the edit of a share that is up."""
+    return publish(expires=expires, log=log, token=token, session=session, moment=moment_id, pad=pad, text=text, sticks=sticks,
                    audio=audio, poster=poster, start=start, end=end)
 
 
@@ -417,7 +447,8 @@ def refresh_pages(log=lambda m: None) -> list[str]:
         old = pg.read_text()
         try:
             facts = resolve(session=r["session"], video=r["video"], start=r["start"], end=r["end"], text=r["text"],
-                            sticks="const STICKS = null;" not in old, audio="const AUDIO = true;" in old)
+                            sticks="const STICKS = null;" not in old if r["sticks"] is None else r["sticks"],   # the row knows; a row from before: the old page
+                            audio="const AUDIO = true;" in old if r["audio"] is None else r["audio"])
             _write_page(facts, d, r["token"])
             if SHARE_PUSH:
                 run_hook(SHARE_PUSH, r["token"], d)

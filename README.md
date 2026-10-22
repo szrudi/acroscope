@@ -148,7 +148,7 @@ acroscope sheet <session> <video> <t>... | --from --to --every   one JPEG tiling
 acroscope tag <session> <video> <from> <to> "<title>" [--tags flip,crash] [--note ...] [--metrics] [--id mNN]
 acroscope untag <session> <id>
 acroscope moments <session>
-acroscope share <session> <moment> [--pad 2 | --from T --to T] [--text "..."] [--expires 30d|never] [--no-sticks] [--audio] [--poster T]
+acroscope share <session> <moment> [--pad 2 | --from T --to T] [--text "..."] [--expires 30d|never] [--no-sticks] [--audio] [--poster T] [--update TOKEN]
                                                  publish one moment on a secret link: the clip around it with the sticks
                                                  drawn over it, as a static bundle (see below); prints the link
 acroscope unshare <token>                        take a share down     acroscope shares [--all]   the shares that are up
@@ -196,6 +196,8 @@ POST /api/share/preview                 {session, moment | video, start?, end?, 
                                         player's look before publishing)          DELETE /api/share/preview/<id>
 POST /api/share                         the same plus {expires?, preview?}: published (a preview whose facts still match
                                         is taken as it is), the share's row with its url
+POST /api/share/<token>                 the same, as an edit of a share that is up: the bundle made again and swapped in
+                                        under its token, the row updated, the expiry kept unless given
 POST /api/scan   POST /api/import       GET /api/store
 ```
 
@@ -328,8 +330,9 @@ In the player, ⤴ on a moment opens the share panel under the video: the window
 what you type, `now` for the playhead), the text, the sticks (off, and said why, when no match covers the moment),
 the sound, when it expires, and the preview image picked from frames across the window or `this frame` at the
 playhead. `preview` renders the bundle into the server's cache and shows the viewer itself in the panel; `publish`
-takes that preview as it is (nothing is cut twice) and shows the link to open or copy, and `take down`. A shared
-moment carries 🔗 in the moments list. The configuration page's **shares** tab lists every share that is up (the
+takes that preview as it is (nothing is cut twice) and shows the link to open or copy, and `take down`. With a
+share up, the panel opens on it, filled as it was made: `update` makes the bundle again under the same link (the
+expiry stays unless changed), `new link` publishes another. A shared moment carries 🔗 in the moments list. The configuration page's **shares** tab lists every share that is up (the
 moment, the clip, the window, until when), opens or copies the link, takes one down, and shows the expired and
 revoked ones on request.
 

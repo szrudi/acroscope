@@ -891,12 +891,32 @@ class PlayerTest(unittest.TestCase):
         self.assertIsNotNone(page.query_selector("#moments .m[data-id=m01] .shared"))
         self.assertIsNone(page.query_selector("#moments .m[data-id=m02] .shared"))
         self.assertEqual(page.evaluate("() => $('#shOut').innerHTML"), "")                 # the preview frame is gone with the publish
-        page.once("dialog", lambda d: d.accept())
-        page.click("#shState [data-down]")
-        page.wait_for_function("() => !document.querySelector('#shState [data-down]')", timeout=20000)
+        # with a share up the panel edits it (Rudi, 2026-10-22): `update` keeps the link, `new link` makes another
+        self.assertEqual((page.text_content("#shPublish"), page.input_value("#shExpires")), ("update", ""))
+        self.assertTrue(page.is_visible("#shNew"))
+        page.fill("#shText", "half roll, edited")
+        page.click("#shPublish")
+        page.wait_for_function("() => $('#status').textContent === 'updated'", timeout=60000)
+        rows = self.shares(self.SHARE)
+        self.assertEqual([(r["token"], r["text"], r["poster"]) for r in rows], [(tok, "half roll, edited", 4.1)])
+        self.assertIn(">half roll, edited<", (self.root / "shares" / tok / "index.html").read_text())
+        page.click("#moments .m[data-id=m01] [data-share]")                                 # opened again: prefilled from the share
+        page.wait_for_function("() => $('#shText').value === 'half roll, edited'")
+        self.assertEqual(page.eval_on_selector_all("#shThumbs img.on", "els => els.map(e => e.dataset.t)"), ["4.1"])
+        self.assertTrue(page.is_checked("#shSticks"))
+        self.assertFalse(page.is_checked("#shAudio"))
+        page.click("#shNew")
+        page.wait_for_function("() => document.querySelectorAll('#shState [data-down]').length === 2", timeout=60000)
+        self.assertEqual(len(self.shares(self.SHARE)), 2)
+        for _ in range(2):
+            page.once("dialog", lambda d: d.accept())
+            n = page.evaluate("() => document.querySelectorAll('#shState [data-down]').length")
+            page.click("#shState [data-down]")
+            page.wait_for_function("(n) => document.querySelectorAll('#shState [data-down]').length < n", arg=n, timeout=20000)
         self.assertEqual(self.shares(self.SHARE), [])
         self.assertFalse((self.root / "shares" / tok).exists())
         self.assertIsNone(page.query_selector("#moments .m[data-id=m01] .shared"))
+        self.assertEqual((page.text_content("#shPublish"), page.input_value("#shExpires")), ("publish", "30d"))   # nothing up: a new one again
 
     def test_moment_buttons_under_the_thumbnail(self):
         """Four buttons beside the title squeezed it into a four-line column (Rudi's screenshot, 2026-10-22), and

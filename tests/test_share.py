@@ -176,6 +176,29 @@ class DbTest(unittest.TestCase):
         with self.assertRaises(Exception):
             self.db.add_share("a" * 24, SESSION, CLIP, "m01", 3.0, 6.0, "again", future)          # a token is used once
 
+    def test_update_and_the_settings_remembered(self):
+        """The row keeps what the bundle was made with (sticks, sound, the poster time) and `update_share` changes
+        the window, the text, the expiry and those; a database from before the columns gets them."""
+        import sqlite3
+        other = Path(self.tmp.name) / "old.db"
+        c = sqlite3.connect(other)
+        c.executescript("""CREATE TABLE shares (token TEXT PRIMARY KEY, session TEXT NOT NULL, video TEXT NOT NULL, moment TEXT,
+                           start REAL NOT NULL, end REAL NOT NULL, text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT);
+                           INSERT INTO shares VALUES ('o' || substr('oooooooooooooooooooooooo', 1, 23), 's', 'v.mp4', 'm01', 1, 2, 'old', '2026-10-01T00:00:00+00:00', NULL, NULL)""")
+        c.commit(); c.close()
+        old = Db(other)
+        row = old.share("o" * 24)
+        self.assertEqual((row["sticks"], row["audio"], row["poster"]), (None, None, None))                 # from before: unknown
+        self.db.add_share("a" * 24, SESSION, CLIP, "m01", 3.0, 6.0, "half roll", None, sticks=True, audio=False, poster=4.5)
+        r = self.db.share("a" * 24)
+        self.assertEqual((r["sticks"], r["audio"], r["poster"]), (True, False, 4.5))
+        r = self.db.update_share("a" * 24, start=2.0, end=5.0, text="edited", expires_at="2026-12-01T00:00:00+00:00", sticks=False, audio=True, poster=None)
+        self.assertEqual((r["start"], r["end"], r["text"], r["expires_at"], r["sticks"], r["audio"], r["poster"], r["state"]),
+                         (2.0, 5.0, "edited", "2026-12-01T00:00:00+00:00", False, True, None, "active"))
+        self.assertEqual(self.db.update_share("a" * 24, text="again")["text"], "again")                  # the rest kept
+        self.assertEqual(self.db.share("a" * 24)["start"], 2.0)
+        self.assertIsNone(self.db.update_share("nope", text="x"))
+
     def test_rows_follow_a_rename_and_a_move(self):
         self.db.upsert_video(SESSION, CLIP)
         self.db.add_share("a" * 24, SESSION, CLIP, "m01", 3.0, 6.0, "x", None)
@@ -311,6 +334,15 @@ class ShareTest(unittest.TestCase):
         self.assertIn("const AUDIO = false;", html)
         self.assertNotIn("poster", html)
         self.assertNotIn("og:", html)
+
+    def test_update_from_the_cli(self):
+        s = self.share("m01", "--text", "first")
+        u = self.share("m01", "--update", s["token"], "--text", "second", "--pad", "1")
+        self.assertEqual((u["token"], u["text"], u["start"], u["end"], u["expires_at"]), (s["token"], "second", 2.0, 5.0, s["expires_at"]))
+        self.assertIn(">second<", (self.root / "shares" / s["token"] / "index.html").read_text())
+        err = self.share("m01", "--update", "z" * 24, ok=False)
+        self.assertIn("no such share", err)
+        cli(self.env, "unshare", s["token"])
 
     def test_revoke(self):
         s = self.share("m01")

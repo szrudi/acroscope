@@ -527,7 +527,8 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "tag-categories"]:
                 b = self._body()
                 return self._json(sessions.store().set_category(b["name"], b.get("color")))
-            if parts in (["api", "share"], ["api", "share", "preview"]):     # a share from the player (#57): a preview, or the share itself
+            if parts[:2] == ["api", "share"] and len(parts) <= 3 and (len(parts) == 2 or parts[2] == "preview" or share.token_ok(parts[2])):
+                # a share from the player (#57): a preview, the share itself, or an edit of one that is up (its token)
                 b = self._body()
                 if not isinstance(b, dict) or not b.get("session"):
                     return self._json({"error": "a share names a session and a moment (or a clip with start and end)"}, 400)
@@ -543,7 +544,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json({"error": "log not decoded yet, try again shortly"}, 503)
                 if parts[-1] == "preview":
                     return self._json(share.preview(**what))
-                return self._json(share.publish(expires=b.get("expires") or share.DEFAULT_EXPIRY, preview_id=b.get("preview"), **what))
+                token = parts[2] if len(parts) == 3 else None
+                return self._json(share.publish(expires=b.get("expires") or None, preview_id=b.get("preview"), token=token, **what))
             if parts[:2] != ["api", "session"] or len(parts) != 4:
                 return self._json({"error": "not found"}, 404)
             name, what, b = parts[2], parts[3], self._body()

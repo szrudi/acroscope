@@ -152,6 +152,46 @@ class ShareApiTest(unittest.TestCase):
         for tok in (s["token"], s2["token"]):
             self.call("DELETE", f"/api/share/{tok}")
 
+    def test_update_keeps_the_link(self):
+        """Editing a share that is up (Rudi, 2026-10-22: "I can only re-publish?"): the bundle is made again under
+        the same token and swapped in whole, the row follows, the link stays; the expiry is kept unless given;
+        a preview is taken as it is; a revoked share is not updated, an unknown token is a 404. The row remembers
+        the settings (sticks, sound, poster), so a panel can open prefilled."""
+        st, s = self.call("POST", "/api/share", {"session": SESSION, "moment": "m01", "pad": 1, "text": "a", "poster": 3.5, "expires": "7d"})
+        self.assertEqual(st, 200, s)
+        tok, until = s["token"], s["expires_at"]
+        d = self.root / "shares" / tok
+        self.assertEqual((s["sticks"], s["audio"], s["poster"]), (True, False, 3.5))
+        st, lst = self.call("GET", f"/api/shares?session={SESSION}")
+        self.assertEqual({k: lst["shares"][0][k] for k in ("sticks", "audio", "poster")}, {"sticks": True, "audio": False, "poster": 3.5})
+        st, u = self.call("POST", f"/api/share/{tok}", {"session": SESSION, "moment": "m01", "start": 2.5, "end": 4.5, "text": "b", "audio": True})
+        self.assertEqual(st, 200, u)
+        self.assertEqual((u["token"], u["start"], u["end"], u["text"], u["expires_at"], u["sticks"], u["audio"], u["poster"]), (tok, 2.5, 4.5, "b", until, True, True, None))
+        self.assertEqual(sorted(x.name for x in d.iterdir()), ["clip.mp4", "index.html"])                 # the poster went with the edit
+        pr = ffprobe(d / "clip.mp4")
+        self.assertAlmostEqual(float(pr["format"]["duration"]), 2.0, delta=0.15)
+        self.assertEqual(sorted(x["codec_type"] for x in pr["streams"]), ["audio", "video"])
+        html = (d / "index.html").read_text()
+        self.assertIn(">b<", html)
+        self.assertIn("const AUDIO = true;", html)
+        self.assertEqual(list((self.root / "shares").glob(".staging/*")), [])
+        st, lst = self.call("GET", f"/api/shares?session={SESSION}")
+        self.assertEqual([(x["token"], x["text"], x["start"], x["audio"], x["poster"]) for x in lst["shares"]], [(tok, "b", 2.5, True, None)])
+        # a preview of the edit, taken as it is; a new expiry when given
+        st, p = self.call("POST", "/api/share/preview", {"session": SESSION, "moment": "m01", "pad": 0.5, "text": "c", "poster": 3.2})
+        size = (self.root / "cache" / "share-preview" / p["preview"] / "clip.mp4").stat().st_size
+        st, u = self.call("POST", f"/api/share/{tok}", {"session": SESSION, "moment": "m01", "pad": 0.5, "text": "c", "poster": 3.2, "preview": p["preview"], "expires": "never"})
+        self.assertEqual((st, u["token"], u["expires_at"], u["poster"]), (200, tok, None, 3.2))
+        self.assertEqual((d / "clip.mp4").stat().st_size, size)
+        self.assertTrue((d / "poster.jpg").exists())
+        self.assertFalse((self.root / "cache" / "share-preview" / p["preview"]).exists())
+        st, r = self.call("POST", "/api/share/" + "z" * 24, {"session": SESSION, "moment": "m01"})
+        self.assertEqual(st, 404)
+        self.call("DELETE", f"/api/share/{tok}")
+        st, r = self.call("POST", f"/api/share/{tok}", {"session": SESSION, "moment": "m01"})
+        self.assertEqual(st, 400)
+        self.assertIn("revoked", r["error"])
+
     def test_refusals(self):
         bad = [({"session": SESSION, "moment": "m09"}, 404, "m09"),
                ({"session": "2026-01-01-nope", "moment": "m01"}, 404, "nope"),
