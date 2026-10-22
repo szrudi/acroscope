@@ -22,6 +22,7 @@ from acroscope import blackbox, share
 from acroscope.db import Db
 
 SESSION = "2026-10-04-motor-jitter-testing"
+REPO = "https://github.com/szrudi/acroscope"               # the footer's one link out
 CLIP = "2026-10-04_001.mp4"
 LOG = "BTFL_BLACKBOX_LOG_TEST_20261004_120000.bbl"
 PY = sys.executable
@@ -126,8 +127,8 @@ class PureTest(unittest.TestCase):
         self.assertNotIn("<b>hi", html)
         self.assertIn('<meta name="robots" content="noindex', html)
         self.assertIn('"roll": [null]', html)
-        self.assertEqual({r for r in re.findall(r'(?:src|href)=["\']([^"\']+)', html) if not r.startswith("data:")}, {"clip.mp4"})   # nothing else is fetched (the favicon is inline)
-        self.assertNotIn("http", html.lower())
+        self.assertEqual({r for r in re.findall(r'(?:src|href)=["\']([^"\']+)', html) if not r.startswith("data:")}, {"clip.mp4", REPO})   # nothing else is fetched (the favicon is inline); one link out
+        self.assertEqual(re.findall(r"https?://[^\"'<\s]+", html), [REPO])                            # the only address in the page
         self.assertIn('<link rel="icon" href="data:image/svg+xml;base64,', html)
         self.assertIn("<header>", html)
         self.assertIn("<title>&lt;b&gt;hi&lt;/b&gt; &amp; &quot;you&quot; &lt;/script&gt;</title>", html)
@@ -268,8 +269,8 @@ class ShareTest(unittest.TestCase):
         self.assertIn(">half roll<", html)
         for secret in (SESSION, CLIP, LOG, LOG[:-4], "m01", "2026-10-04", "2026", str(self.root)):
             self.assertNotIn(secret, html, secret)
-        self.assertEqual({r for r in re.findall(r'(?:src|href)=["\']([^"\']+)', html) if not r.startswith("data:")}, {"clip.mp4"})
-        self.assertNotIn("http", html.lower())
+        self.assertEqual({r for r in re.findall(r'(?:src|href)=["\']([^"\']+)', html) if not r.startswith("data:")}, {"clip.mp4", REPO})
+        self.assertEqual(re.findall(r"https?://[^\"'<\s]+", html), [REPO])
         self.assertIn('name="robots" content="noindex', html)
         # the root of the shares dir answers with a page of its own that lists nothing
         root_html = (self.root / "shares" / "index.html").read_text()
@@ -326,7 +327,7 @@ class ShareTest(unittest.TestCase):
         self.assertIn(f'<meta property="og:image" content="https://share.example/{s["token"]}/poster.jpg">', html)
         self.assertIn("const AUDIO = true;", html)
         self.assertEqual({r for r in re.findall(r'(?:src|href|content|poster)=["\']([^"\']+)', html) if not r.startswith("data:")} - {"noindex, nofollow, noarchive", "no-referrer", "#14161a", "width=device-width, initial-scale=1, viewport-fit=cover", "half roll", "summary_large_image"},
-                         {"clip.mp4", "poster.jpg", f"https://share.example/{s['token']}/poster.jpg"})
+                         {"clip.mp4", "poster.jpg", f"https://share.example/{s['token']}/poster.jpg", REPO})
         err = self.share("m01", "--poster", "7", ok=False)                                # outside the window
         self.assertIn("poster", err)
         s = self.share("m01")                                                             # the defaults: no sound, no poster
@@ -432,7 +433,7 @@ class ShareTest(unittest.TestCase):
         pages = {t: self.root / "shares" / t / "index.html" for t in (a["token"], b["token"])}
         old = time.time() - 7 * 86400
         for pg in pages.values():
-            pg.write_text(pg.read_text().replace("<footer>acroscope</footer>", "<footer>old viewer</footer>"))
+            pg.write_text(pg.read_text().replace(">acroscope</a></footer>", ">old viewer</a></footer>"))
             os.utime(pg, (old, old))                                                          # made before the template changed
         clips = {t: (self.root / "shares" / t / "clip.mp4").stat() for t in pages}
         # an expired share whose takedown fails (its revoke hook) keeps its bundle: not a page to refresh, nor to push
@@ -450,7 +451,7 @@ class ShareTest(unittest.TestCase):
         for t, pg in pages.items():
             html = pg.read_text()
             self.assertNotIn("old viewer", html)
-            self.assertIn("<footer>acroscope</footer>", html)
+            self.assertIn(">acroscope</a></footer>", html)
             self.assertEqual((self.root / "shares" / t / "clip.mp4").stat().st_mtime, clips[t].st_mtime)   # the clip untouched
         html_a, html_b = pages[a["token"]].read_text(), pages[b["token"]].read_text()
         self.assertIn('"throttle": [', html_a)

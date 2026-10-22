@@ -152,6 +152,8 @@ class SharePageTest(unittest.TestCase):
         self.assertEqual(page.inner_text("#text"), TEXT)
         self.assertIsNone(page.query_selector("#text b"))                                    # shown, not rendered
         self.assertEqual(page.inner_text("footer"), "acroscope")
+        self.assertEqual(page.get_attribute("footer a", "href"), "https://github.com/szrudi/acroscope")   # the one link out (Rudi, 2026-10-22); no referrer goes with it
+        self.assertEqual(page.get_attribute("footer a", "rel"), "noopener")
         self.assertIn("space", page.inner_text(".keys"))                                      # the keys, said at the bottom
         # the brand (Rudi, 2026-10-22): the mark and the name in a header, the favicon; both inline, nothing fetched
         self.assertEqual(page.inner_text("header"), "acroscope")
