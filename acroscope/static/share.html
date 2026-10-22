@@ -30,7 +30,7 @@ __OG__
   <div class="vwrap" id="wrap"><video id="v" src="clip.mp4"__POSTER__ autoplay muted loop playsinline preload="auto"></video><canvas id="sticks"></canvas></div>
   <div class="bar" id="bar"><i id="pos"></i></div>
   <div class="row">
-    <button id="play" title="play / pause">pause</button>
+    <button id="play" title="play / pause (space; , and . step a frame, the arrows 2 s)">pause</button>
     <button data-rate="0.25">¼×</button><button data-rate="0.5">½×</button><button data-rate="1" class="on">1×</button>
     <button id="stk" class="on" title="the sticks from the flight log; a tap on the picture does the same">sticks</button>
     <button id="snd" title="the sound (it starts muted: browsers allow no other autoplay)">sound</button>
@@ -105,6 +105,20 @@ for (const b of document.querySelectorAll('[data-rate]')) b.onclick = () => {
   for (const o of document.querySelectorAll('[data-rate]')) o.classList.toggle('on', o === b);
 };
 $('#bar').onclick = e => { if (v.duration) v.currentTime = e.offsetX / e.currentTarget.clientWidth * v.duration; };
+// the player's keys: space plays and pauses, , and . step a frame (the DVR's sixtieth) and pause, the arrows 2 s,
+// s the sticks. Capture phase, so a focused button does not take the space as its own click.
+const FRAME = 1 / 60, seek = t => { v.currentTime = Math.max(0, Math.min(v.duration || 0, t)); };
+document.addEventListener('keydown', e => {
+  const k = e.key; let h = true;
+  if (k === ' ') { if (v.paused) v.play().catch(() => {}); else v.pause(); }
+  else if (k === 'ArrowLeft') seek(v.currentTime - 2);
+  else if (k === 'ArrowRight') seek(v.currentTime + 2);
+  else if (k === ',') { v.pause(); seek(v.currentTime - FRAME); }
+  else if (k === '.') { v.pause(); seek(v.currentTime + FRAME); }
+  else if (k === 's' && STICKS) toggleSticks();
+  else h = false;
+  if (h) { e.preventDefault(); e.stopPropagation(); }
+}, true);
 label();
 </script>
 </body>
