@@ -5,8 +5,6 @@ from ..sources import blackbox
 from ..store import sessions
 
 
-# ---- writing ------------------------------------------------------------------------------------------------------
-
 def set_match(session: str, vid: str, bbl: str, arm: int, offset: float, note: str = "", boot: bool = False) -> list[dict]:
     """Record video <-> arm with `offset` (video = arm time + offset). With boot=True, also record every other arm
     of the same power cycle, their offsets derived from the FC uptime (video = uptime + boot offset). Returns the
