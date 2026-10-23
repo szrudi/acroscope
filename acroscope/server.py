@@ -172,7 +172,8 @@ def osd_probe(body: dict) -> dict:
     try:
         out = json.loads(r.stdout)
     except ValueError:
-        raise ValueError(f"the OSD look failed: {r.stderr.strip()[-300:] or 'no answer'}") from None
+        print(f"osd look ({op}) failed: {r.stderr.strip()[-2000:]}", file=sys.stderr, flush=True)   # the server's log, not the client
+        raise ValueError(f"the OSD look ({op}) failed; the server's log says why") from None
     if out.get("error"):
         raise ValueError(out["error"])
     return out

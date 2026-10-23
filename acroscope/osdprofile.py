@@ -60,8 +60,8 @@ def check_types(profile) -> None:
     if not isinstance(profile, dict):
         raise ValueError("a profile is {settings, font, grid}")
     if not isinstance(profile.get("settings", {}), dict) or \
-            any(not isinstance(k, str) or isinstance(v, bool) or not isinstance(v, (str, int, float)) for k, v in profile.get("settings", {}).items()):
-        raise ValueError("settings: the dump's `set name = value` lines, {name: value}")
+            any(not isinstance(k, str) or not isinstance(v, str) for k, v in profile.get("settings", {}).items()):
+        raise ValueError("settings: the dump's `set name = value` lines, {name: value}, the values as text as the dump has them")
     f = profile.get("font", {})
     if not isinstance(f, dict) or any(not isinstance(f.get(k, ""), str) for k in ("name", "data")):
         raise ValueError("font: {name, data}, both text")
@@ -223,11 +223,11 @@ def check_profiles(doc, stored=None) -> dict:
             check_types(p)
         except ValueError as e:
             raise ValueError(f"{name}: {e}") from None
-        if not (p.get("font") or {}).get("data"):
-            raise ValueError(f"{name}: a stored profile carries its font (font.data), so reading never fetches anything")
+        if not (p.get("font") or {}).get("data") or not (p.get("font") or {}).get("name"):
+            raise ValueError(f"{name}: a stored profile carries its font (font.name and font.data), so reading never fetches anything")
         try:
             derive(p, name)
-        except ValueError as e:
+        except Exception as e:  # noqa: BLE001  (whatever a client sent: a 400 naming the profile, never a 500)
             raise ValueError(f"{name}: {e}") from None
     return doc
 
@@ -476,8 +476,8 @@ def main() -> None:
         out = {"probe": lambda: {"layout": _public(lay), **probe(bufs[0], lay)},
                "fit": lambda: fit(bufs, req["profile"]),
                "fonts": lambda: {"fonts": rank_fonts(bufs, req["profile"])}}[req["op"]]()
-    except (ValueError, KeyError, OSError) as e:
-        out = {"error": str(e)}
+    except Exception as e:  # noqa: BLE001  (said as one line: the server passes it on, never a traceback with paths)
+        out = {"error": str(e) if isinstance(e, (ValueError, OSError)) else f"{type(e).__name__}: {e}"}
     json.dump(out, sys.stdout)
 
 
