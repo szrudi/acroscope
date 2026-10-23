@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 import inspect
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -201,16 +202,20 @@ class IngestTest(_Scratch):
                 r["top"] = r["bottom"] = r["top"] + 40
         self.assertAlmostEqual(ingest.clock_fit(rows), 1.0, delta=0.01)
 
-    def test_a_noisy_reading_is_no_rate(self):
-        """A fit worse than 1 s rms is no rate. Readings off by +-1.1 s two by two all stay inside the 1.5 s trim
-        and fit 1.0 at 1.04 s rms: None. (From about +-1.13 s the low ones fall to the trim and the rest fit
-        closely: the rms check only bites in that band.)"""
-        rows, _ = self.arm_rows()
-        for i, r in enumerate(rows):
-            if r["top"] > 3:
-                r["top"] = round(r["top"] + (1.1 if i % 4 < 2 else -1.1), 2)
-                r["bottom"] = int(r["top"])
-        self.assertIsNone(ingest.clock_fit(rows))
+    def test_a_reader_too_unsure_is_no_rate(self):
+        """Readings scattered with sd 3 s: when less than half of those that advanced are left after the trims, the
+        reader is not gone by (seed 0: 0.46 left); just over half, the fit stands (seed 2: 0.58). Real clips keep 0.66
+        to 1.0. The trims leave every reading within 1.5 s of the line, so an rms check never fired on such a reader."""
+        def scattered(seed):
+            rnd = random.Random(seed)
+            rows, _ = self.arm_rows()
+            for r in rows:
+                if r["top"] > 3:
+                    r["top"] = round(r["top"] + rnd.gauss(0, 3.0), 2)
+                    r["bottom"] = int(r["top"])
+            return rows
+        self.assertIsNone(ingest.clock_fit(scattered(0)))
+        self.assertAlmostEqual(ingest.clock_fit(scattered(2)), 1.0, delta=0.03)
 
     def test_readings_of_a_second_or_less_do_not_count(self):
         """A timer at 0 read as 0 and 1 in turn (two minutes on the ground before the arm) would put a flat line
@@ -445,8 +450,9 @@ class IngestTest(_Scratch):
     def test_cuts_inside_an_arm_do_not_bend_the_clock(self):
         """#51: the kept stretches reach the clock fit from the batch and from recut. A mis-stamped clip (the OSD at
         2.2x) whose signal breaks up all through an arm (4 s cut every 8 s): in the compressed clip's own time the
-        OSD runs about 4.4x, evenly; in the original's it is 2.2x, and the clip is re-timed by that, at the import
-        and at a recut. (An on-time clip with the same cuts fits no rate in the clip's own time, not a fast one.)"""
+        readings climb in steps, and fewer than half of them are left after the trims (before that check they fitted an
+        even 4.39x); in the original's time it is 2.2x, and the clip is re-timed by that, at the import and at a recut.
+        (An on-time clip with the same cuts fits no rate in the clip's own time either.)"""
         b = self.data / "inbox" / "breakup"
         b.mkdir(parents=True)
         make_breakup_clip(b / "VID0001.mov")
@@ -459,10 +465,11 @@ class IngestTest(_Scratch):
         v = db.load(S)["videos"][0]
         self.assertGreaterEqual(len(v["cuts"]), 7, v["cuts"])
         rows = osd_rows(v["cuts"], 2.2)
-        self.assertGreater(ingest.clock_fit(rows), 4.0)                   # what a fit without the stretches would re-time by
+        self.assertIsNone(ingest.clock_fit(rows))                         # without the stretches: no rate, left as it is
         self.assertEqual(v["timescale"], 2.2)
         self.assertAlmostEqual(v["duration"], 30.0 * 2.2, delta=3.0)
 
+        db.set_video_fields(S, v["file"], timescale=None)                  # as if the import had missed it: recut finds it
         res = self.run_recut(S, OSD_AT_2_2)
         self.assertEqual(res["timescale"], 2.2)
         v = db.load(S)["videos"][0]

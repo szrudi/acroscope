@@ -311,15 +311,19 @@ def _stretch(t: float, cuts: list) -> int:
 
 CLOCK_EVEN = 0.03          # clock_fit: each third's slope within this of the whole fit's (frames dropped evenly; 007's
                            # thirds are within 1.3 % of its 2.2001)
+CLOCK_KEPT = 0.5           # clock_fit: the share of the advancing readings left after the trims (36 real clips that got
+                           # that far, 2026-10-07 to 10-22: 0.66 to 1.0; readings scattered with sd 3 s: 0.38 to 0.58)
 
 
 def clock_fit(rows: list[dict], kept: list | None = None) -> float | None:
     """How fast the OSD arm clock runs against the clip's own time, from read_timers rows: only readings where both
     timers agree (a second arm's total and arm timers differ) and that advanced since the last one (a disarmed timer
     stands still), misreads trimmed. Fitted in the original's time (each reading back through the kept stretches): a
-    cut inside an arm is not a fast clock. None (cannot tell) on less than 20 readings over 15 s, a fit worse than
-    1 s rms, a third with too few readings, or a third whose rate is not the whole fit's: an off clock is only fixed when the
-    frames were dropped evenly (2026-10-14 007: 2.200 / 2.183 / 2.207), not for one DVR stall."""
+    cut inside an arm is not a fast clock. None (cannot tell) on less than 20 readings over 15 s, less than half the
+    readings left after the trims (a reader too unsure to go by: the trims leave every reading within 1.5 s of the line,
+    so how far off they are says little), a third with too few readings, or a third whose rate is not the whole fit's:
+    an off clock is only fixed when the frames were dropped evenly (2026-10-14 007: 2.200 / 2.183 / 2.207), not for one
+    DVR stall."""
     pts, prev = [], None
     for x in rows:
         top, bot = x.get("top"), x.get("bottom")
@@ -336,16 +340,16 @@ def clock_fit(rows: list[dict], kept: list | None = None) -> float | None:
         a = sum((t - mx) * (y - my) for t, y in p) / sxx if sxx else 0.0
         return a, my - a * mx
 
+    advanced = len(pts)
     for lim in (10.0, 4.0, 2.0, 1.5):
         if len(pts) < 20:
             return None
         a, b = fit(pts)
         pts = [(t, y) for t, y in pts if abs(y - a * t - b) < lim]
-    if len(pts) < 20 or pts[-1][0] - pts[0][0] < 15:
+    if len(pts) < 20 or pts[-1][0] - pts[0][0] < 15 or len(pts) < CLOCK_KEPT * advanced:
         return None
     a, b = fit(pts)
-    rms = (sum((y - a * t - b) ** 2 for t, y in pts) / len(pts)) ** 0.5
-    if not (rms < 1.0 and a > 0):
+    if a <= 0:
         return None
     t0, t1 = pts[0][0], pts[-1][0]
     thirds = [[p for p in pts if t0 + k * (t1 - t0) / 3 <= p[0] <= t0 + (k + 1) * (t1 - t0) / 3] for k in range(3)]
