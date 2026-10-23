@@ -13,7 +13,6 @@ A sequence trick (`phases`) chains windows of several segments: each phase's con
 phase starting after the one before and within so many seconds of its end; the detection spans them all and its
 texts see every phase's features as p1.*, p2.*.
 """
-import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ from pathlib import Path
 
 from . import expr, features, segments
 from ..sources.blackbox import Arm
+from ..store import db
 from .library import SHIPPED, Library, LibraryError, Trick
 
 __all__ = ["check", "describe", "detect", "evaluate", "explain", "export_toml", "import_table", "library", "merge_tables", "Library", "LibraryError", "SHIPPED"]
@@ -67,8 +67,8 @@ def library() -> Library:
 
 def layer_etag(table) -> str:
     """A short hash of a layer document: what a writer says it started from, so two writers do not lose each
-    other's changes (`updated_at` is whole seconds)."""
-    return hashlib.sha1(json.dumps(table or {}, sort_keys=True).encode()).hexdigest()[:12]
+    other's changes (`updated_at` is whole seconds). The store's settings etag (db.etag_of), which every write checks."""
+    return db.etag_of(table)
 
 
 def check_layer(table: dict) -> Library:

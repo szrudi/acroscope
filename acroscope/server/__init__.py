@@ -22,7 +22,7 @@ from ..analyse import events, lanes, metrics
 from ..match import manual
 from ..review import moments
 from ..sources import blackbox, osdprofile, video
-from ..store import edits, sessions
+from ..store import db, edits, sessions
 from ..config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
 
 
@@ -249,14 +249,14 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "tricks", "layer"]:
                 row = sessions.store().setting(tricks.LAYER_KEY)
                 return self._json({"layer": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None,
-                                   "etag": tricks.layer_etag(row["value"] if row else None)})
+                                   "etag": db.etag_of(row["value"] if row else None)})
             if parts == ["api", "osd"]:                               # the derived OSD profiles (#10), as the reader sees them
                 row = sessions.store().setting(osdprofile.PROFILES_KEY)
                 return self._json({**osdprofile.describe(row["value"] if row else None), "updated_at": row["updated_at"] if row else None})
             if parts == ["api", "osd", "doc"]:
                 row = sessions.store().setting(osdprofile.PROFILES_KEY)
                 return self._json({"doc": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None,
-                                   "etag": tricks.layer_etag(row["value"] if row else None)})
+                                   "etag": db.etag_of(row["value"] if row else None)})
             if parts == ["api", "tricks", "export"]:                   # the layer as a tricks file: what is shared
                 row = sessions.store().setting(tricks.LAYER_KEY)
                 return self._text(tricks.export_toml(row["value"] if row else None), "acroscope-tricks.toml")
@@ -358,19 +358,19 @@ class Handler(BaseHTTPRequestHandler):
                 tricks.check_layer(b)                             # a LibraryError is a ValueError: 400 with the place named
                 if q.get("etag"):                                 # what the writer started from: another writer's change in between is a 409
                     cur = sessions.store().setting(tricks.LAYER_KEY)
-                    if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
+                    if db.etag_of(cur["value"] if cur else None) != q["etag"]:
                         return self._json({"error": "the layer changed since you loaded it (someone else saved); it was loaded again, redo your change"}, 409)
                 row = sessions.store().set_setting(tricks.LAYER_KEY, b)
-                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": db.etag_of(row["value"])})
             if parts == ["api", "osd", "doc"]:                         # the OSD profiles, whole: every one must derive
                 b = self._body()
                 cur = sessions.store().setting(osdprofile.PROFILES_KEY)
                 osdprofile.check_profiles(b, cur["value"] if cur else None)   # what is kept as it was is not checked again
                 if q.get("etag") is not None:
-                    if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
+                    if db.etag_of(cur["value"] if cur else None) != q["etag"]:
                         return self._json({"error": "the OSD profiles changed since you loaded them (someone else saved); they were loaded again, redo your change"}, 409)
                 row = sessions.store().set_setting(osdprofile.PROFILES_KEY, b)
-                return self._json({"doc": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
+                return self._json({"doc": row["value"], "updated_at": row["updated_at"], "etag": db.etag_of(row["value"])})
             if parts == ["api", "osd", "derive"]:
                 return self._json(osd_derive(self._body()))
             if parts == ["api", "osd", "probe"]:
@@ -382,7 +382,7 @@ class Handler(BaseHTTPRequestHandler):
                 current = sessions.store().setting(tricks.LAYER_KEY)
                 table = tricks.import_table(b["text"], current["value"] if current else None, b.get("mode", "replace"))
                 row = sessions.store().set_setting(tricks.LAYER_KEY, table)
-                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": db.etag_of(row["value"])})
             if parts == ["api", "tag-categories"]:
                 b = self._body()
                 return self._json(sessions.store().set_category(b["name"], b.get("color")))

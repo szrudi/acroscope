@@ -5,9 +5,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from .. import tricks
 from ..sources import betaflight, blackbox, osd, osdprofile, video
-from ..store import sessions
+from ..store import db, sessions
 from ..config import CACHE_DIR
 from .common import _segment_count, _session, fmt_time, out, parse_time
 
@@ -195,7 +194,7 @@ def cmd_osd_profile(a):
     if what == "save":
         new = {**doc, "version": 1, "profiles": {**doc.get("profiles", {}), a.name: made()}}
         osdprofile.check_profiles(new, row["value"] if row else None)
-        store.set_setting(osdprofile.PROFILES_KEY, new, etag=tricks.layer_etag(row["value"] if row else None))
+        store.set_setting(osdprofile.PROFILES_KEY, new, etag=db.etag_of(row["value"] if row else None))
         return print(_profile_summary(a.name, osdprofile.derive(new["profiles"][a.name], a.name)))
     if a.name not in doc.get("profiles", {}):
         raise ValueError(f"{a.name}: no such OSD profile ({', '.join(doc.get('profiles', {})) or 'none stored'})")
@@ -206,7 +205,7 @@ def cmd_osd_profile(a):
             else print(_profile_summary(a.name, lay))
     if what == "rm":
         new = {**doc, "profiles": {k: v for k, v in doc["profiles"].items() if k != a.name}}
-        store.set_setting(osdprofile.PROFILES_KEY, new, etag=tricks.layer_etag(doc))
+        store.set_setting(osdprofile.PROFILES_KEY, new, etag=db.etag_of(doc))
         return print(f"{a.name}: removed")
     # read: on the frame at that time (here or, through the proxy, on the server where the clips are)
     path = sessions.clip_path(_session(a.session), a.clip)

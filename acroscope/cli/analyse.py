@@ -6,7 +6,7 @@ from pathlib import Path
 from .. import tricks
 from ..analyse import events, metrics
 from ..sources import blackbox
-from ..store import sessions
+from ..store import db, sessions
 from .common import _arm_for, _session, fmt_time, out, parse_time
 
 
@@ -241,7 +241,7 @@ def _edit_tricks(a):
     row = store.setting(tricks.LAYER_KEY)
     table = tricks.edit_layer(row["value"] if row else None, what, *args, craft=a.craft)
     tricks.check_layer(table)                          # a LibraryError names the place
-    store.set_setting(tricks.LAYER_KEY, table, etag=tricks.layer_etag(row["value"] if row else None))
+    store.set_setting(tricks.LAYER_KEY, table, etag=db.etag_of(row["value"] if row else None))
     base = tricks.library()
     lib = base.for_craft(a.craft)
     craft = base.craft_name(a.craft) if a.craft else None
