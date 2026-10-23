@@ -118,5 +118,38 @@ class TenTenTest(unittest.TestCase):
         self.assertAlmostEqual(fit["a"], 0.997, delta=0.001)
 
 
+
+@unittest.skipUnless(REMOTE, "the clips live on the server only")
+class DerivedProfileTest(unittest.TestCase):
+    """#10 step 1 on real frames: a profile derived from the dump of 2026-10-11 (tests/data/osd-dumps) and the
+    Configurator's Impact font, looked at through the server (POST /api/osd/probe), reads what is on the frame with
+    no template learned by hand. 10-11 Bea 005: arm 0:08.2 and total 0:27 at 0:40 with the flight counter at #9, #12
+    at 2:00 (the numbers #3 quotes). 10-10 001 (the layout before the swap: the arm timer with tenths on top, no dump
+    of its own) at exactly 0:10.0: 0:01.7 over 0:02, read off an ASCII dump of that frame (the labels file's 0:02.2 is
+    the frame its 1 fps sampling took, half a second on)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from pathlib import Path
+        from acroscope import osdprofile
+        try:
+            cls.v3 = osdprofile.make((Path(__file__).parent / "data" / "osd-dumps" / "2026-10-11-otto.txt").read_text(), font="impact")
+        except OSError as e:                                           # the font is fetched from the Configurator's repository
+            raise unittest.SkipTest(f"no Impact font: {e}")
+
+    def look(self, profile, session, clip, t):
+        return sessions.store()._call("POST", "/api/osd/probe", {"profile": profile, "session": session, "video": clip, "t": t})
+
+    def test_bea_005(self):
+        r = self.look(self.v3, "2026-10-11-together-at-home-with-Bea", "005", 40)
+        self.assertEqual(r["values"], {"arm": 8.2, "total": 27})
+        self.assertEqual(r["counter"], 9)
+        self.assertEqual(self.look(self.v3, "2026-10-11-together-at-home-with-Bea", "005", 120)["counter"], 12)
+
+    def test_10_10_001_before_the_swap(self):
+        p = {**self.v3, "settings": {**self.v3["settings"], "osd_tim_1_pos": "2422", "osd_tim_2_pos": "2454"}}
+        self.assertEqual(self.look(p, "2026-10-10", "001", 10)["values"], {"arm": 1.7, "total": 2})
+
+
 if __name__ == "__main__":
     unittest.main()

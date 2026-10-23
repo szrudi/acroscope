@@ -23,11 +23,19 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   is hostile ground (the push user owns everything in a batch): keep the regular-file/plain-name rules in
   `batch_entries`/`plain_name`/`_take`. A clip's file name is its id; its readable `<date>_NNN` name is a column;
   `sessions.resolve_clip`/`clip_path` take either, or the number. Never `video.resolve_video` in a command.
-- OSD reader (`acroscope/osd.py`): one profile per OSD layout Rudi has flown (`LAYOUTS`: cells, rows, formats, glyph
-  box, which row is the arm timer, which template set), templates per font in `acroscope/static/osd-templates.json`
-  learned from `scripts/osd-labels.json`. After any OSD change: survey one frame (column/row brightness runs on a
-  gray frame fetched through the server), add a layout; relabel only if the font changed (read cells from ASCII
-  dumps, never from sheet thumbnails: three wrong labels once poisoned the rare digits). The aligner: length and
+- OSD reader (`acroscope/osd.py`): every layout is a profile derived from Betaflight's own (#10, `acroscope/osdprofile.py`
+  over `acroscope/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm` font rendered into digit
+  templates, the DVR's grid at x 3, y -4, 24 x 36 px; STATS rows found by their labels). The six layouts Rudi has
+  flown ship in `acroscope/osd-profiles.json` (names kept: `air65f`, `air65f-b`, `otto`, `otto-bold`,
+  `otto-bold-swap`, `otto-bold-v3`); a pilot's own are in the database (settings row `osd`, `osd.PROFILE_SOURCE` set
+  by `cli.main` like the tricks layer); `osd.layouts()` is both, a tie keeps the shipped one. The hand-measured
+  `LAYOUTS`, the learned templates and `osd-learn` are gone (2026-10-23, #64; the labels file is in the history).
+  After an OSD change: a new dump and a profile on the config page's osd tab (fit the grid on a frame), not a
+  survey. The Configurator's fonts are GPL-3.0: fetched by name (`betaflight.FONT_COMMIT`) into
+  `~/.cache/acroscope-fonts` (`ACROSCOPE_FONTS` for a folder of them, offline), never committed; unit tests draw a
+  synthetic font (`tests/osd_synthetic.py`), the OSD test servers get an empty `ACROSCOPE_FONTS`. Read cells from
+  ASCII dumps, never from sheet thumbnails: a frame "at t" through the `fps` filter is about half a second after an
+  `-ss` seek to t. The aligner: length and
   total alignment, then the boot's uptime (offset can only go down along a boot; a line video = a·uptime + b per
   boot, the two clocks differ by ~0.3 %), then arms with no run derived along the line. `OSD_LAG` = 0.25 s.
 - Trick detection (`acroscope/tricks/`, #22): an engine (`segments.py` cuts an arm into windows, `features.py` measures
@@ -51,7 +59,7 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   explicitly): what `acroscope tricks set | unset | on | off | skill` and the player's configuration page (#45)
   write, checked by `tricks.check_layer` before it is stored. A tricks file is the exchange format, not storage
   (Rudi, 2026-10-17): `tricks export | import` and the page's share row, `toml_out.py` writes it. `GET /api/tricks` is `tricks.describe()`. The player's `/config` page
-  (`acroscope/static/config.html`, one file like the player, five tabs) edits that layer whole through
+  (`acroscope/static/config.html`, one file like the player, seven tabs) edits that layer whole through
   `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
   against what the server then holds.
 - Sharing (#57, `acroscope/share.py`): `acroscope share <session> <moment>` renders `shares/<token>/` (a cut of the
@@ -114,10 +122,11 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   hand in `video-blackbox-index.md`; the #4 truths on 10-10 001) through the server. A pin of new behaviour is red
   until the server runs it. Red/green: write the test first for store, API, aligner and player work.
 - Smoke checks with known answers through the server, seconds each: `tricks check` (the tricks file's examples, the
-  10-07 pins among them); `sessions 2026-10-07` (20 arms, 15 matches, 29
+  10-07 pins among them); `sessions 2026-10-07` (20 arms, 16 matches with arm 16 matched by hand in 008, 29
   moments); `events 2026-10-07 011` (motor 1 power loss at 1:23.4, hard landing at 1:24.4); `automatch 2026-10-07 008`
   without `--write` (arms 14/15/17 at about +4.75/+20.25/+64.25); `metrics 2026-10-07 007 1:20 1:25 --loop` (-385 deg
-  pitch); `automatch 2026-10-10 001` (15 arms, arm 1 at 8.0, arm 9 at 150.3, boot fit a = 0.9971).
+  pitch); `automatch 2026-10-10 001` (15 arms, arm 1 at 7.9, arm 9 at 150.3, boot fit a = 0.9965; 8.0 and 0.9971 with the hand
+  layouts).
 - `transcode --replace` rewrites clips in the data dir (a second lossy generation); Rudi's call, never run it unasked.
   Clips before 2026-10-09 are still HEVC; proxies in the cache are fine.
 - Pure-Python work that takes seconds (decoding, the OSD reader, detection over many arms) must run in a child

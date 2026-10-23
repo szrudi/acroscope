@@ -158,20 +158,26 @@ class Remote:
     def tricks(self, craft=None) -> dict:
         return self._call("GET", "/api/tricks", craft=craft)
 
+    # the settings the server keeps, and the endpoint each is behind (the tricks layer, the OSD profiles)
+    SETTINGS = {"tricks": ("/api/tricks/layer", "layer"), "osd": ("/api/osd/doc", "doc")}
+
+    def _setting_path(self, key: str) -> tuple[str, str]:
+        if key not in self.SETTINGS:
+            raise RemoteError(f"setting {key!r}: the server keeps only {', '.join(self.SETTINGS)}")
+        return self.SETTINGS[key]
+
     def setting(self, key: str) -> dict | None:
-        if key != "tricks":
-            raise RemoteError(f"setting {key!r}: the server keeps only the tricks layer")
-        r = self._call("GET", "/api/tricks/layer")
-        return {"value": r["layer"], "updated_at": r["updated_at"]} if r.get("updated_at") else None
+        path, field = self._setting_path(key)
+        r = self._call("GET", path)
+        return {"value": r[field], "updated_at": r["updated_at"]} if r.get("updated_at") else None
 
     def set_setting(self, key: str, value, etag: str | None = None) -> dict:
-        if key != "tricks":
-            raise RemoteError(f"setting {key!r}: the server keeps only the tricks layer")
-        r = self._call("POST", "/api/tricks/layer", value, etag=etag)
-        return {"value": r["layer"], "updated_at": r["updated_at"]}
+        path, field = self._setting_path(key)
+        r = self._call("POST", path, value, etag=etag)
+        return {"value": r[field], "updated_at": r["updated_at"]}
 
     def delete_setting(self, key: str) -> bool:
-        return self._call("DELETE", "/api/tricks/layer")["removed"]
+        return self._call("DELETE", self._setting_path(key)[0])["removed"]
 
     def tag_usage(self, session=None) -> dict:
         return self._call("GET", "/api/tag-usage", session=session)

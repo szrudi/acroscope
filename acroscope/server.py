@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import blackbox, ingest, metrics, sessions, share, tricks, video
+from . import blackbox, ingest, metrics, osdprofile, sessions, share, tricks, video
 from .config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
 
 STATIC = Path(__file__).parent / "static"
@@ -31,7 +31,7 @@ SCAN_EVERY = 300                 # seconds between background walks of the data 
 # CLI commands a client may run here (they need the clips, the logs or the cache, which only the server has);
 # each runs in a child process, so the reader's pure-Python work never holds this process's GIL
 PROXIED = {"arms", "decode", "metrics", "events", "tricks", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach", "tag", "recut",
-           "share", "unshare", "shares"}
+           "share", "unshare", "shares", "osd-profile"}        # osd-profile: `read` only (_check_proxied)
 INBOX_EVERY = 20                 # seconds between looks at inbox/ for a complete batch
 
 
@@ -85,6 +85,8 @@ def _check_proxied(args: list[str]) -> None:
                 raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
     if args[0] == "tricks" and len(args) > 1 and args[1] in ("export", "import"):
         raise ValueError("tricks export/import read and write a file on the client: not through the server")
+    if args[0] == "osd-profile" and getattr(ns, "what", None) != "read":
+        raise ValueError("osd-profile: only `read` runs here (a profile is made from a dump and a font on the client)")
 
 
 def run_cli(args: list[str], timeout: float = 1800) -> dict:
@@ -139,6 +141,76 @@ def job(jid: str) -> dict | None:
             return {"done": False, "seconds": round(time.time() - j["started"])}
         del _jobs[jid]
     return {"done": True, "stdout": j["stdout"], "stderr": j["stderr"], "code": j["code"]}
+
+
+OSD_PROBE_TIMEOUT = 180          # seconds an OSD tab look (a frame read, a grid fit, the fonts ranked) may take in its child
+
+
+def osd_probe(body: dict) -> dict:
+    """The configuration page's OSD look at one frame (#10): read it with a profile, fit the grid on it, or rank the
+    fonts. Pure Python for seconds, so in a child (osdprofile.main), never in this thread; the clip is resolved
+    here, by name, like everything a client names."""
+    if not isinstance(body, dict) or not isinstance(body.get("profile"), dict) or not isinstance(body.get("session"), str) \
+            or not isinstance(body.get("video", ""), (str, int)):
+        raise ValueError("a look takes {profile, session, video, t, op: probe|fit|fonts}")
+    op = body.get("op", "probe")
+    if op not in ("probe", "fit", "fonts"):
+        raise ValueError(f"op {op!r}: probe, fit or fonts")
+    t = body.get("t", 0)
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) or t < 0:
+        raise ValueError("t: a time in the clip, in seconds")
+    name = body["session"]
+    path = _under(VIDEOS_DIR, name, sessions.resolve_clip(name, str(body.get("video", ""))))
+    if not path.is_file():
+        raise FileNotFoundError(f"{name}/{path.name}: no such clip")
+    req = {"op": op, "profile": body["profile"], "path": str(path), "times": [float(t)]}
+    try:
+        r = subprocess.run([sys.executable, "-m", "acroscope.osdprofile"], input=json.dumps(req), capture_output=True, text=True,
+                           timeout=OSD_PROBE_TIMEOUT, env=dict(os.environ, ACROSCOPE_URL=""))
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"the OSD look ({op}) took longer than {OSD_PROBE_TIMEOUT} s: try one frame with fewer fonts, or upload the .mcm") from None
+    try:
+        out = json.loads(r.stdout)
+    except ValueError:
+        print(f"osd look ({op}) failed: {r.stderr.strip()[-2000:]}", file=sys.stderr, flush=True)   # the server's log, not the client
+        raise ValueError(f"the OSD look ({op}) failed; the server's log says why") from None
+    if out.get("error"):
+        raise ValueError(out["error"])
+    return out
+
+
+def osd_derive(body: dict) -> dict:
+    """A profile from what the page has: a dump's text, or the settings kept from one, with a font by name or the
+    .mcm of the pilot's own; or a profile as it is (a stored one, its font in it) with another grid. {profile,
+    layout (no templates), glyphs}."""
+    if not isinstance(body, dict):
+        raise ValueError("derive takes {dump | settings | profile, font | mcm, grid}")
+    for k in ("dump", "mcm", "font", "name", "note", "version"):
+        if body.get(k) is not None and not isinstance(body[k], str):
+            raise ValueError(f"{k}: text")
+    for k in ("settings", "profile", "grid"):
+        if body.get(k) is not None and not isinstance(body[k], dict):
+            raise ValueError(f"{k}: an object")
+    if body.get("profile") is not None:
+        osdprofile.check_types(body["profile"])
+    grid = body.get("grid") if isinstance(body.get("grid"), dict) else None
+    if isinstance(body.get("profile"), dict) and not body.get("font") and not body.get("mcm"):
+        prof = {**body["profile"], "grid": {**(body["profile"].get("grid") or {}), **(grid or {})}}
+    elif isinstance(body.get("dump"), str) and body["dump"].strip():
+        prof = osdprofile.make(body["dump"], font=body.get("font"), mcm=body.get("mcm"), grid=grid)
+    elif isinstance(body.get("settings"), dict) or isinstance(body.get("profile"), dict):
+        old = body.get("profile") or {}
+        settings = body.get("settings") or old.get("settings") or {}
+        text = "\n".join(f"set {k} = {v}" for k, v in settings.items())
+        prof = osdprofile.make(text, font=body.get("font"), mcm=body.get("mcm"), grid={**(old.get("grid") or {}), **(grid or {})},
+                               note=old.get("note") or "")
+        prof["version"] = body.get("version") or old.get("version")
+    else:
+        raise ValueError("paste the dump (`diff all` from the Betaflight CLI)")
+    if isinstance(body.get("note"), str) and body["note"]:
+        prof["note"] = body["note"]
+    lay = osdprofile.derive(prof, body.get("name") or "profile")
+    return {"profile": prof, "layout": osdprofile._public(lay), "glyphs": osdprofile.glyphs(prof)}
 
 
 def _decode_async(bbl: str):
@@ -415,6 +487,13 @@ class Handler(BaseHTTPRequestHandler):
                 row = sessions.store().setting(tricks.LAYER_KEY)
                 return self._json({"layer": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None,
                                    "etag": tricks.layer_etag(row["value"] if row else None)})
+            if parts == ["api", "osd"]:                               # the derived OSD profiles (#10), as the reader sees them
+                row = sessions.store().setting(osdprofile.PROFILES_KEY)
+                return self._json({**osdprofile.describe(row["value"] if row else None), "updated_at": row["updated_at"] if row else None})
+            if parts == ["api", "osd", "doc"]:
+                row = sessions.store().setting(osdprofile.PROFILES_KEY)
+                return self._json({"doc": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None,
+                                   "etag": tricks.layer_etag(row["value"] if row else None)})
             if parts == ["api", "tricks", "export"]:                   # the layer as a tricks file: what is shared
                 row = sessions.store().setting(tricks.LAYER_KEY)
                 return self._text(tricks.export_toml(row["value"] if row else None), "acroscope-tricks.toml")
@@ -491,7 +570,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
-        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}   # an empty etag= is a stale page, not none
         try:
             if parts == ["api", "scan"]:
                 return self._json(sessions.scan())
@@ -514,12 +593,26 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(b, dict):
                     return self._json({"error": "the layer is a table"}, 400)
                 tricks.check_layer(b)                             # a LibraryError is a ValueError: 400 with the place named
-                if q.get("etag"):                                 # what the writer started from: another writer's change in between is a 409
+                if "etag" in q:                                   # what the writer started from: another writer's change in between is a 409
+                    # (an empty one too: a page that never loaded the layer does not know what it would overwrite)
                     cur = sessions.store().setting(tricks.LAYER_KEY)
                     if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
                         return self._json({"error": "the layer changed since you loaded it (someone else saved); it was loaded again, redo your change"}, 409)
                 row = sessions.store().set_setting(tricks.LAYER_KEY, b)
                 return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
+            if parts == ["api", "osd", "doc"]:                         # the OSD profiles, whole: every one must derive
+                b = self._body()
+                cur = sessions.store().setting(osdprofile.PROFILES_KEY)
+                osdprofile.check_profiles(b, cur["value"] if cur else None)   # what is kept as it was is not checked again
+                if q.get("etag") is not None:
+                    if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
+                        return self._json({"error": "the OSD profiles changed since you loaded them (someone else saved); they were loaded again, redo your change"}, 409)
+                row = sessions.store().set_setting(osdprofile.PROFILES_KEY, b)
+                return self._json({"doc": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
+            if parts == ["api", "osd", "derive"]:
+                return self._json(osd_derive(self._body()))
+            if parts == ["api", "osd", "probe"]:
+                return self._json(osd_probe(self._body()))
             if parts == ["api", "tricks", "import"]:                   # a tricks file's text as the layer, whole or merged over it
                 b = self._body()
                 if not isinstance(b, dict) or not isinstance(b.get("text"), str):
@@ -623,6 +716,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})
             if parts == ["api", "tricks", "layer"]:
                 return self._json({"removed": sessions.store().delete_setting(tricks.LAYER_KEY)})
+            if parts == ["api", "osd", "doc"]:
+                return self._json({"removed": sessions.store().delete_setting(osdprofile.PROFILES_KEY)})
             if parts[:3] == ["api", "share", "preview"] and len(parts) == 4:
                 return self._json({"removed": share.drop_preview(parts[3])})
             if parts[:2] == ["api", "share"] and len(parts) == 3:              # a share taken down (#57)
@@ -647,7 +742,7 @@ def layer_from_store():
 def serve(host="0.0.0.0", port=8070, warm: bool = True):
     if sessions.remote():
         sys.exit("acroscope serve: unset ACROSCOPE_URL, the server owns the database itself")
-    tricks.LAYER_SOURCE = layer_from_store
+    tricks.LAYER_SOURCE = layer_from_store           # the OSD's profiles are read by the CLI children (cli.main), never here
     srv = ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
     print(f"acroscope player on http://{host}:{port}/  (data {VIDEOS_DIR.parent}, {sessions.store()})")
