@@ -105,13 +105,23 @@ def video_system(settings: dict) -> str:
     return v if v in ROWS else "NTSC"
 
 
+def osd_profile(settings: dict) -> int:
+    """The OSD profile in use (`osd_profile`, 1-3, Betaflight's default 1): which profile bit makes an element shown."""
+    n = _int(settings, "osd_profile", 1)
+    if not 1 <= n <= 3:
+        raise ValueError(f"osd_profile = {n}: 1 to 3")
+    return n
+
+
 def osd_elements(settings: dict) -> dict:
-    """What the OSD reader uses from a dump: the two timers (where and what), the flight counter, the grid."""
+    """What the OSD reader uses from a dump: the two timers (where and what), the flight counter, the grid, as the
+    OSD profile in use shows them."""
     vs = video_system(settings)
-    out = {"video_system": vs, "rows": ROWS[vs], "cols": COLS, "timers": [], "counter": element(settings, "total_flights"),
-           "displayport": settings.get("osd_displayport_device"), "craft": settings.get("craft_name")}
+    prof = osd_profile(settings)
+    out = {"video_system": vs, "rows": ROWS[vs], "cols": COLS, "timers": [], "counter": element(settings, "total_flights", prof),
+           "displayport": settings.get("osd_displayport_device"), "craft": settings.get("craft_name"), "osd_profile": prof}
     for n in (1, 2):
-        e = element(settings, f"tim_{n}")
+        e = element(settings, f"tim_{n}", prof)
         if e:
             out["timers"].append({"n": n, **e, **timer(settings, n)})
     out["timers"].sort(key=lambda t: (t["row"], t["col"]))
@@ -156,37 +166,59 @@ def unpack_font(data: str) -> list[list[str]]:
     return chars
 
 
+class FontUnavailable(ValueError):
+    """A Configurator font that could not be had (no way out to the internet, the repository down, not in
+    ACROSCOPE_FONTS): a ValueError, so a client is told to upload the .mcm instead."""
+
+
 # Where fetched fonts are kept: a folder of its own, not the cache (a test's or a scratch run's throwaway cache would
 # fetch them again). ACROSCOPE_FONTS names a folder of .mcm files to use as they are, never fetched into (a machine
 # without the internet: drop default.mcm, impact.mcm there).
 FONT_DIR = os.environ.get("ACROSCOPE_FONTS")
 FONT_CACHE = Path("~/.cache/acroscope-fonts").expanduser() / FONT_COMMIT[:12]
+FETCH_TIMEOUT = 10                # seconds per font: a server with no way out says so soon
 FETCH_RETRY = 600                 # seconds before a font that could not be fetched is tried again
 _failed: dict[str, tuple[float, str]] = {}
 
 
+def _font_path(name: str) -> Path:
+    return (Path(FONT_DIR).expanduser() if FONT_DIR is not None else FONT_CACHE) / f"{name}.mcm"
+
+
+def have_font(name: str) -> bool:
+    return name in FONTS and _font_path(name).is_file()
+
+
 def fetch_font(name: str) -> str:
     """The .mcm text of a Configurator font by name (FONTS): from ACROSCOPE_FONTS, else from the font cache, else
-    fetched once into it. A fetch that failed is not tried again for FETCH_RETRY s (OSError, said why)."""
+    fetched once into it. A cached file that does not parse (a write cut short) is fetched again; a fetch that fails
+    is FontUnavailable, and is not tried again for FETCH_RETRY s."""
     if name not in FONTS:
         raise ValueError(f"{name}: not a Configurator font ({', '.join(FONTS)}); upload the .mcm of your own font instead")
+    p = _font_path(name)
     if FONT_DIR is not None:
-        p = Path(FONT_DIR).expanduser() / f"{name}.mcm"
         if not p.is_file():
-            raise OSError(f"{name}.mcm is not in ACROSCOPE_FONTS ({FONT_DIR})")
+            raise FontUnavailable(f"{name}.mcm is not in ACROSCOPE_FONTS ({FONT_DIR}); upload its .mcm instead")
         return p.read_text()
-    p = FONT_CACHE / f"{name}.mcm"
     if p.is_file():
-        return p.read_text()
+        text = p.read_text(errors="replace")
+        try:
+            parse_mcm(text)
+            return text
+        except ValueError:
+            pass                                              # broken in the cache: fetched again below
     if name in _failed and time.time() - _failed[name][0] < FETCH_RETRY:
-        raise OSError(_failed[name][1])
+        raise FontUnavailable(_failed[name][1])
     try:
-        with urllib.request.urlopen(FONT_URL.format(commit=FONT_COMMIT, name=name), timeout=20) as r:
+        with urllib.request.urlopen(FONT_URL.format(commit=FONT_COMMIT, name=name), timeout=FETCH_TIMEOUT) as r:
             text = r.read().decode("ascii")
-        parse_mcm(text)                                       # a broken download is not kept
-    except (OSError, ValueError) as e:
-        _failed[name] = (time.time(), f"the font {name} could not be fetched from the Betaflight Configurator's repository: {e}")
-        raise OSError(_failed[name][1]) from None
+        parse_mcm(text)                                       # a captive page or a cut download is not a font
+    except (OSError, ValueError) as e:                        # URLError, HTTPError, a timeout; UnicodeDecodeError is a ValueError
+        _failed[name] = (time.time(), f"the font {name} could not be fetched from the Betaflight Configurator's repository ({e}); "
+                                      "upload its .mcm instead")
+        raise FontUnavailable(_failed[name][1]) from None
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text)
+    tmp = p.with_name(f".{p.name}.{os.getpid()}")              # whole or not at all: another reader never sees half a font
+    tmp.write_text(text)
+    os.replace(tmp, p)
     return text

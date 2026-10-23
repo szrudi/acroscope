@@ -470,6 +470,70 @@ class ConfigPageTest(unittest.TestCase):
         self.assertTrue(page.is_disabled("#oSave"))
         self.assertEqual(self.osd_doc(), {})
 
+    def osd_ready(self, page):
+        """The OSD tab on the synthetic clip at 10.3 s with the dump and the synthetic font: read once."""
+        page.wait_for_selector("#oDump")
+        page.select_option("#oSession", OS)
+        page.wait_for_function(f"() => OE.session === {OS!r} && OE.video === '2026-10-05_001.mp4'")
+        page.fill("#oT", "10.3")
+        page.dispatch_event("#oT", "change")
+        with page.expect_file_chooser() as fc:
+            page.select_option("#oFont", "")
+        fc.value.set_files(str(Path(self.tmp.name) / "synth.mcm"))
+        page.wait_for_function("() => OE.mcm")
+        page.fill("#oDump", osyn.DUMP)
+        self.assertEqual(self.read(page)["total"], "0:36")
+
+    def test_osd_review_on_the_page(self):
+        """#63 review on the page: another session clears the last clip's reading; a double click saves once; an
+        answer that is not acroscope's (a proxy's 502) is said and the buttons come back; a stored profile that no
+        longer derives can be deleted from its chip, the others kept."""
+        urllib.request.urlopen(urllib.request.Request(self.url + "/api/osd/doc", method="DELETE")).read()
+        page = self.open("/config#osd")
+        self.osd_ready(page)
+        # another session: the old clip's cells are not painted over the new frame
+        page.select_option("#oSession", S)
+        page.wait_for_function(f"() => OE.session === {S!r} && OE.probe === null")
+        page.wait_for_function("() => !/0:36/.test(document.querySelector('#oRead').textContent)")
+        page.select_option("#oSession", OS)
+        page.wait_for_function(f"() => OE.video === '2026-10-05_001.mp4'")
+        page.fill("#oT", "10.3")
+        page.dispatch_event("#oT", "change")
+        self.assertEqual(self.read(page)["total"], "0:36")
+        # a double click on save: one save, no false "changed since"
+        posts = []
+        page.on("request", lambda r: posts.append(r.url) if r.method == "POST" and "/api/osd/doc" in r.url else None)
+        page.fill("#oName", "twice")
+        page.dblclick("#oSave")
+        page.wait_for_function("() => /saved/.test(document.querySelector('#oSaved').textContent)")
+        self.assertEqual(len(posts), 1)
+        self.assertFalse(page.locator("#err").evaluate("e => e.classList.contains('on')"))
+        # a gateway's error page instead of an answer: said, and fit can be pressed again
+        page.route("**/api/osd/probe", lambda route: route.fulfill(status=502, body="<html>Bad Gateway</html>", content_type="text/html"))
+        page.click("#oFit")
+        page.wait_for_function("() => document.querySelector('#err').classList.contains('on')")
+        self.assertIn("502", page.text_content("#err"))
+        self.assertFalse(page.is_disabled("#oFit"))
+        page.unroute("**/api/osd/probe")
+        page.route("**/api/osd/probe", lambda route: route.abort())            # no answer at all (the server gone)
+        page.click("#oRankBtn")
+        page.wait_for_function("() => /no answer from the server/.test(document.querySelector('#err').textContent)")
+        self.assertFalse(page.is_disabled("#oRankBtn"))
+        page.unroute("**/api/osd/probe")
+        # a stored profile that no longer derives (a stricter check since): its chip deletes it, the others stay
+        from acroscope.db import Db
+        db = Db(Path(self.tmp.name) / "t.db")
+        doc = db.setting("osd")["value"]
+        doc["profiles"]["stale"] = {**doc["profiles"]["twice"], "grid": {**doc["profiles"]["twice"]["grid"], "cw": 7}}
+        db.set_setting("osd", doc)
+        page = self.open("/config#osd")
+        page.wait_for_selector("[data-obroken=stale]")
+        page.once("dialog", lambda d: d.accept())
+        page.click("[data-obroken=stale]")
+        page.wait_for_function("() => !document.querySelector('[data-obroken=stale]')")
+        self.assertEqual(sorted(self.osd_doc()["profiles"]), ["twice"])
+        urllib.request.urlopen(urllib.request.Request(self.url + "/api/osd/doc", method="DELETE")).read()
+
 
 if __name__ == "__main__":
     unittest.main()

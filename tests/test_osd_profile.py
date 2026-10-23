@@ -107,7 +107,7 @@ class FontTest(unittest.TestCase):
             (Path(tmp) / "impact.mcm").write_text(mcm)
             with mock.patch.object(betaflight, "FONT_DIR", tmp), refuse:          # ACROSCOPE_FONTS: that folder, nothing fetched
                 self.assertEqual(REAL_FETCH("impact"), mcm)
-                with self.assertRaisesRegex(OSError, "not in ACROSCOPE_FONTS"):
+                with self.assertRaisesRegex(betaflight.FontUnavailable, "not in ACROSCOPE_FONTS"):
                     REAL_FETCH("default")
 
         class Answer:                                                            # what urlopen hands back
@@ -118,11 +118,11 @@ class FontTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(betaflight, "FONT_DIR", None), \
                 mock.patch.object(betaflight, "FONT_CACHE", Path(tmp)), mock.patch.object(betaflight, "_failed", {}):
             with mock.patch("urllib.request.urlopen", return_value=Answer("<html>rate limited</html>")):
-                with self.assertRaisesRegex(OSError, "could not be fetched"):
+                with self.assertRaisesRegex(betaflight.FontUnavailable, "could not be fetched"):
                     REAL_FETCH("bold")
             self.assertFalse((Path(tmp) / "bold.mcm").exists())                 # a broken download is not kept
             with mock.patch("urllib.request.urlopen", side_effect=AssertionError("tried again at once")):
-                with self.assertRaises(OSError):
+                with self.assertRaises(betaflight.FontUnavailable):
                     REAL_FETCH("bold")                                           # nor fetched again straight away
             with mock.patch("urllib.request.urlopen", return_value=Answer(mcm)):
                 self.assertEqual(REAL_FETCH("clarity"), mcm)
@@ -324,7 +324,7 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(sorted(osd.layouts()), ["air65f", "air65f-b", "otto"])
             self.assertIn("could not be fetched", osd.derived_errors()["otto-bold-v3"])
             stamp = osd._templates_stamp()
-        with mock.patch.object(osd, "RETRY_DERIVE", 0):
+        with mock.patch.object(osd, "RETRY_DERIVE", 0), mock.patch.object(osd, "SOURCE_EVERY", 0):
             self.assertEqual(sorted(osd.layouts()), sorted(HAND))
             self.assertNotEqual(osd._templates_stamp(), stamp)                # the readings without it are not reused
         with mock.patch.object(betaflight, "fetch_font", lambda n: (_ for _ in ()).throw(OSError("offline"))):
@@ -352,6 +352,13 @@ class RegistryTest(unittest.TestCase):
         with mock.patch.object(osd, "layouts", lambda: two), mock.patch.object(osd, "_frames", frames), \
                 mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
                 mock.patch.object(osd, "read_frame", lambda buf, tpl, name: same[next(seq) % 30]):
+            self.assertEqual(osd.detect_layout(Path("clip.mp4")), "otto")
+        # and when nothing counts at 1 s/s (a clock off the clip's), the tie at the other rate goes the same way
+        fast = [(round(i * 4.4, 1), round(i * 4.4, 1), 1.0) for i in range(30)]
+        seq = iter(range(10 ** 6))
+        with mock.patch.object(osd, "layouts", lambda: two), mock.patch.object(osd, "_frames", frames), \
+                mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
+                mock.patch.object(osd, "read_frame", lambda buf, tpl, name: fast[next(seq) % 30]):
             self.assertEqual(osd.detect_layout(Path("clip.mp4")), "otto")
 
 
@@ -383,6 +390,203 @@ class ClipTest(unittest.TestCase):
                 small = syn.make_clip(Path(tmp) / "videos" / "s" / "small.mp4", chars, osdprofile.derive(p)["grid"], seconds=12, size="640:360")
                 runs = osd.video_arms(osd.read_timers(small, 2.0, layout="synth"))
                 self.assertEqual([round(r["length"]) for r in runs], [8])
+
+
+
+def profile_with(extra: str, **kw) -> dict:
+    """A profile from the 10-11 dump with some settings over it, in the synthetic font (or `chars`)."""
+    chars = kw.pop("chars", None) or syn.font_chars()
+    return osdprofile.make((DUMPS / "2026-10-11-otto.txt").read_text() + extra, mcm=syn.mcm_text(chars), font="synth", **kw)
+
+
+class ReviewTest(unittest.TestCase):
+    """The review of #63, finding by finding: each test is what the finding showed, and what holds now."""
+
+    def tearDown(self):
+        osd.PROFILE_SOURCE = None
+
+    def test_1_seconds_past_the_edge(self):
+        # timer 2 from column 24 (MM:SS in columns 25-29, a normal bottom-right place) on a grid 5 px right: its last
+        # seconds digit is outside the 720 px frame. That was 'dd:dx', and reading it an IndexError on every clip.
+        edge = "set osd_tim_2_pos = " + str(0x800 | (12 << 5) | 24) + "\n"
+        with self.assertRaisesRegex(ValueError, "timer 2: its digit at column 29 is outside the picture"):
+            osdprofile.derive(profile_with(edge, grid={"x": 8}))
+        self.assertEqual(osdprofile.derive(profile_with(edge))["formats"][1], "dd:dd")     # at x 3 it fits
+        self.assertIsNone(osd._value(["0", "1", "2"]))                                    # and short rows read as nothing
+        # fit searches grids around the profile's; the ones that cut the seconds score nothing instead of failing
+        lay = osdprofile.derive(profile_with(edge))
+        buf = bytes(syn.osd_frame(syn.font_chars(), lay["grid"], 10.35))
+        self.assertIn("x", osdprofile.fit([buf], profile_with(edge), reach=8))
+
+    def test_2_the_store_is_not_asked_per_cell(self):
+        calls = []
+        doc = {"version": 1, "profiles": {"synth": synth_profile()}}
+
+        def source():
+            calls.append(1)
+            return doc, "2026-10-23T10:00:00"
+        osd.PROFILE_SOURCE = source
+        lay = osd.layouts()["synth"]
+        full = syn.osd_frame(syn.font_chars(), lay["grid"], 10.35)
+        x, y, w, h = osd._crop("synth")
+        crop = bytes(full[(y + j) * 720 + x + i] for j in range(h) for i in range(w))
+        calls.clear()
+        for _ in range(20):                                                    # 20 frames, every cell asking for its layout
+            self.assertEqual(osd.read_frame(crop, lay["tpl"], "synth")[:2], (6.3, 36))
+        self.assertLessEqual(len(calls), 2)                                     # once a second, not 652 times a frame
+        # a change is seen at the next look, by its updated_at
+        doc2 = {"version": 1, "profiles": {"synth": {**synth_profile(), "grid": {**synth_profile()["grid"], "x": 5}}}}
+        osd.PROFILE_SOURCE = lambda: (doc2, "2026-10-23T10:05:00")
+        self.assertEqual(osd.layouts()["synth"]["grid"]["x"], 5)
+        same = osd.layouts()
+        with mock.patch.object(osd, "SOURCE_EVERY", 0):
+            self.assertIs(osd.layouts(), same)                                  # the same updated_at: nothing derived again
+
+    def test_3_stats_labels_that_only_begin_alike(self):
+        lay = osdprofile.derive(synth_profile())
+        chars, g = syn.font_chars(), lay["grid"]
+        frame = lambda st: bytes(syn.osd_frame(chars, g, 26.0, stats=st))
+        # the persistent stats on, TOTAL ARM off: TOTAL FLIGHTS / FLIGHT TIME / DISTANCE are not it
+        self.assertEqual(osdprofile.stats_rows(frame([(4, "TOTAL FLIGHTS", "25"), (5, "TOTAL FLIGHT TIME", "07:32"),
+                                                      (6, "TOTAL DISTANCE", "0"), (8, "BLACKBOX", "42%")]), lay), {"blackbox": -4 + 36 * 8})
+        # one longer label alone (no runner-up to lose to): its letters in the two cells after TOTAL ARM's end keep it out
+        self.assertEqual(osdprofile.stats_rows(frame([(5, "TOTAL FLIGHT TIME", "07:32"), (8, "BLACKBOX", "42%")]), lay), {"blackbox": -4 + 36 * 8})
+        # the arm timer's row (LAST ARM) is not the total's
+        self.assertEqual(osdprofile.stats_rows(frame([(5, "LAST ARM", "00:20.4"), (8, "BLACKBOX", "42%")]), lay), {"blackbox": -4 + 36 * 8})
+        # two rows that read alike (both timers' stats on the total armed time): which one is not guessed
+        self.assertEqual(osdprofile.stats_rows(frame([(4, "TOTAL ARM", "00:50"), (5, "TOTAL ARM", "00:50"), (8, "BLACKBOX", "42%")]), lay), {"blackbox": -4 + 36 * 8})
+        # with TOTAL ARM on as well, its own row
+        self.assertEqual(osdprofile.stats_rows(frame([(4, "TOTAL ARM", "00:50"), (5, "TOTAL FLIGHTS", "25"), (6, "TOTAL FLIGHT TIME", "07:32"),
+                                                      (8, "BLACKBOX", "42%")]), lay), {"total_arm": -4 + 36 * 4, "blackbox": -4 + 36 * 8})
+        # one label found and not the other: no STATS reading (not a KeyError)
+        self.assertEqual(osd.read_stats_frame(frame([(5, "TOTAL ARM", "00:50")]), lay, lay["tpl"]), {"total_arm": None, "blackbox": None})
+
+    def test_4_a_timer_on_row_0(self):
+        # timer 2 on row 0, timer 1 on row 1: the cells' tops are above the picture (y -4); the reader's strip and
+        # the page's look read the same digits
+        s = "set osd_tim_2_pos = " + str(0x800 | (0 << 5) | 22) + "\nset osd_tim_1_pos = " + str(0x800 | (1 << 5) | 20) + "\nset osd_total_flights_pos = 0\n"
+        doc = {"version": 1, "profiles": {"top": profile_with(s)}}
+        osd.PROFILE_SOURCE = lambda: (doc, "t0")
+        lay = osd.layouts()["top"]
+        self.assertGreaterEqual(lay["rows"][0] + lay["glyph"][2], 0)          # the boxes start inside the picture
+        chars = syn.font_chars()
+        full = syn.background()
+        syn.draw(full, chars, lay["grid"], 22, 0, "\x9c00:36")
+        syn.draw(full, chars, lay["grid"], 20, 1, "\x9c00:06.3")
+        x, y, w, h = osd._crop("top")
+        self.assertEqual(y, 0)
+        crop = bytes(full[(y + j) * 720 + x + i] for j in range(h) for i in range(w))
+        self.assertEqual(osd.read_frame(crop, lay["tpl"], "top")[:2], (6.3, 36))
+        self.assertEqual(osdprofile.probe(bytes(full), lay)["values"], {"arm": 6.3, "total": 36})
+        checker = bytes(255 * ((i + i // 720) % 2) for i in range(720 * 480))          # contrast everywhere, the bottom rows too
+        self.assertTrue(osd._glyph(checker, 720, 0, 0, (0, 4, 0, 4)))
+        self.assertEqual(osd._glyph(checker, 720, 0, -2, (0, 4, 0, 4)), [])          # above the picture: no cell, not the bottom rows
+
+    def test_5_the_osd_profile_in_use(self):
+        p2 = lambda v: str(0x1000 | (v & 0x3FF))                              # shown in OSD profile 2 only
+        s = (f"set osd_tim_1_pos = {p2((12 << 5) | 20)}\nset osd_tim_2_pos = {p2((11 << 5) | 22)}\nset osd_total_flights_pos = 0\n")
+        with self.assertRaisesRegex(ValueError, "no timer to read"):
+            osdprofile.derive(profile_with(s))                                  # profile 1 in use: none of them shows
+        lay = osdprofile.derive(profile_with(s + "set osd_profile = 2\n"))
+        self.assertEqual(lay["x0"], [3 + 24 * 23, 3 + 24 * 21])
+        with self.assertRaises(ValueError):
+            osdprofile.derive(profile_with("set osd_profile = 4\n"))
+
+    def test_6_stats_cells_at_the_layout_pitch(self):
+        p = profile_with("", grid={"x": -40, "cw": 26, "ch": 36})          # wider cells, the grid moved left to fit them
+        lay = osdprofile.derive(p)
+        buf = bytes(syn.osd_frame(syn.font_chars(), lay["grid"], 26.0))
+        self.assertEqual(osd.read_stats_frame(buf, lay, lay["tpl"]), {"total_arm": 50, "blackbox": 42})
+
+    def test_7_shapes_and_numbers(self):
+        good = synth_profile()
+        for bad in ([1], {**good, "settings": ["a"]}, {**good, "font": {"data": 5}}, {**good, "font": "impact"},
+                    {**good, "grid": [3, -4]}, {**good, "version": 2}, {**good, "settings": {"osd_tim1": True}}):
+            with self.assertRaises(ValueError, msg=str(bad)[:60]):
+                osdprofile.derive(bad)
+        for v in (float("inf"), float("nan"), True):
+            with self.assertRaises(ValueError):
+                osdprofile.check_grid({**osdprofile.GRID_NTSC, "x": v})
+        # a stored profile that breaks in any way is named, and the others still read
+        doc = {"version": 1, "profiles": {"ok": good, "odd": good}}
+        osd.PROFILE_SOURCE = lambda: (doc, "t7")
+        real = osdprofile.derive
+        with mock.patch.object(osdprofile, "derive", lambda p, name="profile": (_ for _ in ()).throw(TypeError("odd")) if name == "odd" else real(p, name)):
+            self.assertIn("ok", osd.layouts())
+            self.assertEqual(osd.derived_errors(), {"odd": "odd"})
+            self.assertEqual(osdprofile.describe(doc)["errors"], {"odd": "odd"})
+
+    def test_8_fonts_fetched_safely(self):
+        mcm = syn.mcm_text(syn.font_chars())
+
+        class Answer:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return self.body
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(betaflight, "FONT_CACHE", Path(tmp)), \
+                mock.patch.object(betaflight, "FONT_DIR", None), mock.patch.object(betaflight, "_failed", {}):
+            import urllib.error
+            with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no route to host")):
+                with self.assertRaises(betaflight.FontUnavailable) as e:
+                    REAL_FETCH("impact")
+            self.assertIsInstance(e.exception, ValueError)                    # a 400 with what to do, not a 500
+            self.assertIn("upload its .mcm instead", str(e.exception))
+            betaflight._failed.clear()                                          # each step its own fetch (no retry wait)
+            with mock.patch("urllib.request.urlopen", return_value=Answer("<html>Wi-Fi login ✓</html>".encode())):
+                with self.assertRaises(betaflight.FontUnavailable):
+                    REAL_FETCH("impact")                                     # a captive page: not a font, not kept
+            self.assertFalse(betaflight.have_font("impact"))
+            betaflight._failed.clear()
+            with mock.patch("urllib.request.urlopen", return_value=Answer(mcm.encode())):
+                self.assertEqual(REAL_FETCH("impact"), mcm)
+            self.assertTrue(betaflight.have_font("impact"))
+            self.assertEqual(sorted(x.name for x in betaflight._font_path("impact").parent.iterdir()), ["impact.mcm"])   # no temp left
+            betaflight._font_path("impact").write_text(mcm[:5000])            # a write cut short in the cache
+            with mock.patch("urllib.request.urlopen", return_value=Answer(mcm.encode())) as u:
+                self.assertEqual(REAL_FETCH("impact"), mcm)                   # fetched again, not returned broken
+                self.assertEqual(u.call_count, 1)
+            with mock.patch("urllib.request.urlopen", side_effect=AssertionError("cached: not fetched")):
+                self.assertEqual(REAL_FETCH("impact"), mcm)
+            # ranking with no way out: one wait for the network, then the rest are said to be unavailable
+            lay = osdprofile.derive(synth_profile())
+            buf = bytes(syn.osd_frame(syn.font_chars(), lay["grid"], 10.35))
+            with mock.patch.object(betaflight, "fetch_font", REAL_FETCH), \
+                    mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no route to host")) as u:
+                r = osdprofile.rank_fonts([buf], synth_profile(), ["bold", "vision", "impact", "default"])
+            self.assertEqual(u.call_count, 1)
+            self.assertEqual([x["font"] for x in r if x["score"] is not None], ["impact"])   # the one in the cache
+            self.assertTrue(all("could not be fetched" in x["error"] for x in r if x["font"] != "impact"))
+
+    def test_14_a_font_that_does_not_fill_its_cell(self):
+        # the real fonts' digits sit in columns 2-9 of 12; the glyph box and the templates follow
+        chars = syn.font_chars(narrow=True)
+        p = osdprofile.make(syn.DUMP, mcm=syn.mcm_text(chars), font="narrow")
+        lay = osdprofile.derive(p)
+        self.assertEqual(lay["glyph"][:2], (4, 14))
+        self.assertEqual(osdprofile.probe(bytes(syn.osd_frame(chars, lay["grid"], 10.35)), lay)["values"], {"arm": 6.3, "total": 36})
+        # read with the wide box instead, the same digits score lower: the box is not just any box
+        wide = {**lay, "glyph": (0, 24, lay["glyph"][2], lay["glyph"][3]), "tpl": {d: osdprofile.render(chars, d, lay["grid"], (0, 24, lay["glyph"][2], lay["glyph"][3])) for d in "0123456789"}}
+        buf = bytes(syn.osd_frame(chars, lay["grid"], 10.35))
+        narrow_score = min(c["score"] for c in osdprofile.probe(buf, lay)["cells"] if c.get("digit"))
+        wide_score = min(c["score"] for c in osdprofile.probe(buf, wide)["cells"] if c.get("digit"))
+        self.assertGreater(narrow_score, wide_score)
+
+    def test_14_guards(self):
+        with self.assertRaisesRegex(ValueError, "two timers count the same thing"):
+            osdprofile.derive(profile_with("set osd_tim2 = 2594\n"))          # both timers the arm timer
+        # a stored profile named like a built-in layout (an old document) is not the reader's
+        doc = {"version": 1, "profiles": {"otto": synth_profile()}}
+        osd.PROFILE_SOURCE = lambda: (doc, "t14")
+        self.assertEqual(osd.layouts()["otto"]["origin"], "shipped")
+        with self.assertRaises(ValueError):                                     # True is not a pixel (it is 1)
+            osdprofile.check_profiles({"profiles": {"mine": {**synth_profile(), "grid": {**synth_profile()["grid"], "x": True}}}})
+        # a profile kept as it was is not checked again: one broken since does not block saving the others
+        broken = {**synth_profile(), "grid": {**synth_profile()["grid"], "cw": 7}}
+        stored = {"version": 1, "profiles": {"old": broken}}
+        self.assertIn("new", osdprofile.check_profiles({"version": 1, "profiles": {"old": broken, "new": synth_profile()}}, stored)["profiles"])
+        with self.assertRaises(ValueError):
+            osdprofile.check_profiles({"version": 1, "profiles": {"old": broken}})              # nor taken in new
 
 
 if __name__ == "__main__":

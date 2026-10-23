@@ -28,7 +28,11 @@ GLYPHS = {
     "A": ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
     "B": ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
     "C": ["01110", "10001", "10000", "10000", "10000", "10001", "01110"],
+    "D": ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
     "E": ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+    "F": ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+    "G": ["01110", "10001", "10000", "10111", "10001", "10001", "01111"],
+    "H": ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
     "I": ["01110", "00100", "00100", "00100", "00100", "00100", "01110"],
     "K": ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
     "L": ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
@@ -44,8 +48,10 @@ GLYPHS = {
 }
 
 
-def font_chars(wide: bool = False) -> list[list[str]]:
-    """256 characters of 18 rows x 12 pixel codes, like betaflight.parse_mcm returns."""
+def font_chars(wide: bool = False, narrow: bool = False) -> list[list[str]]:
+    """256 characters of 18 rows x 12 pixel codes, like betaflight.parse_mcm returns. `narrow`: one font pixel per
+    bitmap column from column 3, ink in columns 2-8 with the outline, as the real fonts sit in their cells (the
+    default fills the cell, so the glyph box starts at 0)."""
     chars = []
     for code in range(256):
         g = GLYPHS.get(chr(code))
@@ -56,6 +62,9 @@ def font_chars(wide: bool = False) -> list[list[str]]:
                 for c, b in enumerate(row):
                     if b == "1":
                         for dy in (0, 1):
+                            if narrow:
+                                ink.add((2 + 2 * r + dy, 3 + c))
+                                continue
                             for dx in ((0, 1, 2) if wide else (0, 1)):
                                 ink.add((2 + 2 * r + dy, 1 + 2 * c + dx - (1 if wide else 0)))
             ink = {(y, x) for y, x in ink if 0 <= x < 12 and 0 <= y < 18}
@@ -140,21 +149,18 @@ set osd_tim_1_pos = 1
 
 
 def osd_frame(chars, grid: dict, t: float, arm_start: float = 4.0, arm_end: float = 24.0, total0: float = 30.0,
-              flights: int = 7, stats_from: float | None = 25.0, seed: int = 1, after_counter: str = "") -> bytearray:
+              flights: int = 7, stats_from: float | None = 25.0, seed: int = 1, after_counter: str = "", stats=None) -> bytearray:
     """The frame at video time t: disarmed before arm_start (the arm timer at 0, the total at total0), armed until
-    arm_end (both count), then the STATS screen from stats_from (TOTAL ARM and BLACKBOX on rows 5 and 8)."""
+    arm_end (both count), then the STATS screen from stats_from: `stats` [(row, label, value)] as Betaflight writes
+    them (label at column 2, ':' at 20, value at 22), by default TOTAL ARM on row 5, MIN BATTERY on 6, BLACKBOX on 8."""
     buf = background(seed=seed)
     armed = min(max(t - arm_start, 0.0), arm_end - arm_start)
     if stats_from is not None and t >= stats_from:
         draw(buf, chars, grid, 15 - 6, 3, "--- STATS ---")
-        draw(buf, chars, grid, 2, 5, "TOTAL ARM")
-        draw(buf, chars, grid, 20, 5, ":")
-        draw(buf, chars, grid, 22, 5, mmss(total0 + armed))
-        draw(buf, chars, grid, 2, 6, "MIN BATTERY")
-        draw(buf, chars, grid, 22, 6, "3.41")
-        draw(buf, chars, grid, 2, 8, "BLACKBOX")
-        draw(buf, chars, grid, 20, 8, ":")
-        draw(buf, chars, grid, 22, 8, "42%")
+        for row, label, value in stats or [(5, "TOTAL ARM", mmss(total0 + armed)), (6, "MIN BATTERY", "3.41"), (8, "BLACKBOX", "42%")]:
+            draw(buf, chars, grid, 2, row, label)
+            draw(buf, chars, grid, 20, row, ":")
+            draw(buf, chars, grid, 22, row, value)
         return buf
     draw(buf, chars, grid, 22, 11, "\x9c" + mmss(total0 + armed))
     draw(buf, chars, grid, 20, 12, "\x9c" + mmss(armed, "dd:dd.d"))

@@ -50,8 +50,9 @@ STATS_SCORE = 0.6     # a STATS digit correlates 0.73-0.97 with its template; th
 # The pilot's own profiles: () -> (the stored profiles document, updated_at), set by the local CLI (cli.main) like
 # tricks.LAYER_SOURCE, so this module never opens a database itself; tests set it explicitly.
 PROFILE_SOURCE = None
-_derived: dict = {"key": None, "at": 0.0, "layouts": {}, "errors": {}}
+SOURCE_EVERY = 1.0         # seconds between looks at PROFILE_SOURCE: every cell of a frame asks for its layout
 RETRY_DERIVE = 60          # seconds before profiles that did not derive (a font not fetched yet) are tried again
+_derived: dict = {"source": None, "checked": 0.0, "key": None, "at": 0.0, "layouts": {}, "errors": {}}
 
 
 def _profiles_doc():
@@ -68,16 +69,22 @@ def builtin_names() -> list[str]:
 
 
 def layouts() -> dict:
-    """Every layout the reader knows, {name: layout} (not to be changed: it is the cache): the shipped profiles,
+    """Every layout the reader knows, {name: layout} (the cache itself: not to be changed): the shipped profiles,
     then the pilot's (a name the shipped ones have is theirs). A profile that does not derive (its font could not be
-    fetched, a stored one that is broken) is left out and named in derived_errors(), and tried again after
-    RETRY_DERIVE s."""
+    fetched, a stored one that is broken) is left out, named in derived_errors(), and tried again after RETRY_DERIVE
+    s. The stored profiles are looked at once per SOURCE_EVERY s and derived again only when their `updated_at` says
+    they changed: a frame's hundreds of cells do not each read the database."""
     import time
     from . import betaflight, osdprofile
-    doc = _profiles_doc()
+    src, now = PROFILE_SOURCE, time.monotonic()
+    if _derived["source"] is src and _derived["key"] is not None and now - _derived["checked"] < SOURCE_EVERY:
+        return _derived["layouts"]
+    doc, updated = src() if src else (None, None)
     st = SHIPPED.stat() if SHIPPED.exists() else None
-    key = (osdprofile.fingerprint(doc), st and (st.st_size, st.st_mtime_ns), betaflight.FONT_DIR)
-    if _derived["key"] != key or (_derived["errors"] and time.time() - _derived["at"] > RETRY_DERIVE):
+    key = (src, updated, osdprofile.fingerprint(doc) if updated is None else None,      # the source itself: a new one is new
+           st and (st.st_size, st.st_mtime_ns), betaflight.FONT_DIR)
+    _derived.update(source=src, checked=now)
+    if _derived["key"] != key or (_derived["errors"] and now - _derived["at"] > RETRY_DERIVE):
         out, errors = {}, {}
         for origin, profiles in (("shipped", shipped()), ("yours", (doc or {}).get("profiles") or {})):
             for name, p in profiles.items():
@@ -85,9 +92,9 @@ def layouts() -> dict:
                     continue
                 try:
                     out[name] = {**osdprofile.derive(p, name), "origin": origin}
-                except (ValueError, KeyError, OSError) as e:
-                    errors[name] = str(e)
-        _derived.update(key=key, at=time.time(), layouts=out, errors=errors)
+                except Exception as e:  # noqa: BLE001  (one broken profile is named, the others still read)
+                    errors[name] = str(e) or type(e).__name__
+        _derived.update(key=key, at=now, layouts=out, errors=errors)
     return _derived["layouts"]
 
 
@@ -114,14 +121,17 @@ def _x0(layout: str, row: int) -> int:
 
 
 def _crop(layout: str) -> tuple[int, int, int, int]:
-    """x, y, w, h of the strip holding every timer row of a layout (even height: ffmpeg pads odd crops)."""
+    """x, y, w, h of the strip holding every timer row of a layout (even height: ffmpeg pads odd crops), inside the
+    frame: a timer on row 0 has its cell's top above the picture (the grid at y -4), and ffmpeg would move a crop
+    there down to 0 without saying so; _cell measures from the strip's real top."""
     L = _layout(layout)
     gx, gw, gy, gh = L["glyph"]
-    left = min(_x0(layout, r) for r in range(len(L["formats"])))
+    left = max(0, min(_x0(layout, r) for r in range(len(L["formats"]))))
+    top = max(0, L["rows"][0])
     right = max(_x0(layout, r) + len(f) * L["pitch"] + 2 for r, f in enumerate(L["formats"]))
-    h = L["rows"][-1] + gy + gh + 2 - L["rows"][0]
+    h = L["rows"][-1] + gy + gh + 2 - top
     w = min(right, _frame_w(layout)) - left
-    return left, L["rows"][0], w + w % 2, h + h % 2
+    return left, top, w + w % 2, h + h % 2
 
 
 def digit_cols(layout: str, row: int) -> list[int]:
@@ -154,15 +164,15 @@ def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None 
 def _cell(buf: bytes, col: int, row: int, layout: str = "otto-bold-v3", dx: int = 0, dy: int = 0) -> list[float]:
     """Normalised pixel vector of one digit glyph (the layout's glyph box), shifted by (dx, dy); [] when blank."""
     L = _layout(layout)
-    left, _, w, _ = _crop(layout)
-    return _glyph(buf, w, (_x0(layout, row) - left) + col * L["pitch"] + dx, (L["rows"][row] - L["rows"][0]) + dy, L["glyph"])
+    left, top, w, _ = _crop(layout)
+    return _glyph(buf, w, (_x0(layout, row) - left) + col * L["pitch"] + dx, (L["rows"][row] - top) + dy, L["glyph"])
 
 
 def _glyph(buf: bytes, w: int, x: int, y: int, glyph: tuple) -> list[float]:
     """Normalised pixel vector of the glyph box of the cell at (x, y) in a gray image `w` wide; [] when blank."""
     gx, gw, gy, gh = glyph
     cx, cy = x + gx, y + gy
-    if cx < 0 or cx + gw > w or (cy + gh) * w > len(buf):
+    if cx < 0 or cy < 0 or cx + gw > w or (cy + gh) * w > len(buf):      # a negative row would wrap to the bottom
         return []
     v = [float(buf[(cy + j) * w + cx + i]) for j in range(gh) for i in range(gw)]
     m = sum(v) / len(v)
@@ -244,9 +254,10 @@ def read_stats_frame(buf: bytes, layout, templates: dict, w: int = 720) -> dict:
     L = layout if isinstance(layout, dict) else _layout(layout)
     g = L["glyph"]
     rows = osdprofile.stats_rows(buf, L)
+    pitch = L.get("pitch", 24)
     for S in ([{"x0": L["stats_scan"]["x0"], **rows}] if len(rows) == 2 else []):
-        ta = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["total_arm"], g, templates) for c in (0, 1, 3, 4)], "mmss")
-        bb = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["blackbox"], g, templates) for c in (0, 1, 2)], "pct") if ta is not None else None
+        ta = stats_value([_score_at(buf, w, S["x0"] + pitch * c, S["total_arm"], g, templates) for c in (0, 1, 3, 4)], "mmss")
+        bb = stats_value([_score_at(buf, w, S["x0"] + pitch * c, S["blackbox"], g, templates) for c in (0, 1, 2)], "pct") if ta is not None else None
         if ta is not None and bb is not None:
             return {"total_arm": ta, "blackbox": bb}
     return {"total_arm": None, "blackbox": None}
@@ -284,8 +295,9 @@ def read_stats(path: Path, runs: list[dict], layout: str) -> list[dict]:
 
 
 def _value(digits: list) -> float | None:
-    """Seconds from the digits of a "dd:dd" or "dd:dd.d" row; None when a digit is unreadable or impossible."""
-    if any(d is None for d in digits):
+    """Seconds from the digits of a "dd:dd" or "dd:dd.d" row; None when a digit is unreadable or impossible, or when
+    there are not the four of MM:SS."""
+    if len(digits) < 4 or any(d is None for d in digits):
         return None
     m, sec = digits[0] + digits[1], digits[2] + digits[3]
     if int(sec[0]) > 5:                   # MM:SS, so the tens of seconds is 0-5

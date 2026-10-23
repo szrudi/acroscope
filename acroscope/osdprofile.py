@@ -29,7 +29,11 @@ GRID_NTSC = {"x": 3, "y": -4, "cw": 24, "ch": 36, "w": 720, "h": 480}
 GRID_PAL = {**GRID_NTSC, "h": 576}
 TRANSPARENT = 128         # a template's transparent pixel: the camera picture behind it, mid grey on average
 STATS_LABELS = {"total_arm": "TOTAL ARM", "blackbox": "BLACKBOX"}
-STATS_LABEL_MIN = 0.5     # a STATS row's label correlates 0.7-0.9 with its rendering; other rows and pictures below 0.4
+STATS_LABEL_MIN = 0.4     # a STATS row's label: 0.50-0.54 on its row in the stock font's thin strokes (10-07 007), 0.87 in
+                          # Impact (10-14 005); other rows 0.22-0.45
+STATS_LABEL_MARGIN = 0.15 # the row that wins must win by this much over the next best row (0.25-0.5 on the real frames)
+STATS_INK = 0.6           # and the two cells after the label must not read as a letter: TOTAL FLIGHTS, TOTAL FLIGHT TIME and
+                          # TOTAL DISTANCE begin like TOTAL ARM (0.73 in a crisp font) and go on where it stops
 EDGE_KEEP = 0.75          # a digit cell partly outside the picture is read on what is left when this much of its box is in
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
 
@@ -45,9 +49,27 @@ def check_grid(g: dict) -> dict:
     """A grid of whole pixels in sensible ranges (GRID_RANGE): a frame of 100000 x 100000 is nobody's DVR."""
     for k, (lo, hi) in GRID_RANGE.items():
         v = g.get(k)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != int(v) or not lo <= v <= hi:
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v != int(v) or not lo <= v <= hi:
             raise ValueError(f"grid {k} = {v!r}: whole pixels from {lo} to {hi}")
     return {k: int(g[k]) for k in GRID_RANGE}
+
+
+def check_types(profile) -> None:
+    """A profile's shape, before anything reads it (a request's or a stored one): ValueError naming what is wrong, so
+    a client's bad input is a 400 and a broken stored profile is one named error, never a crash."""
+    if not isinstance(profile, dict):
+        raise ValueError("a profile is {settings, font, grid}")
+    if not isinstance(profile.get("settings", {}), dict) or \
+            any(not isinstance(k, str) or isinstance(v, bool) or not isinstance(v, (str, int, float)) for k, v in profile.get("settings", {}).items()):
+        raise ValueError("settings: the dump's `set name = value` lines, {name: value}")
+    f = profile.get("font", {})
+    if not isinstance(f, dict) or any(not isinstance(f.get(k, ""), str) for k in ("name", "data")):
+        raise ValueError("font: {name, data}, both text")
+    if not isinstance(profile.get("grid", {}), dict):
+        raise ValueError("grid: {x, y, cw, ch, w, h}")
+    for k in ("version", "note"):
+        if profile.get(k) is not None and not isinstance(profile[k], str):
+            raise ValueError(f"{k}: text")
 
 
 def _norm(v: list[float]) -> list[float]:
@@ -96,7 +118,8 @@ def _font(profile: dict):
 def derive(profile: dict, name: str = "profile") -> dict:
     """A layout for the OSD reader from a profile {settings, font, grid}: cells, formats, which row is the arm timer,
     its digit templates (`tpl`), the STATS labels to find the STATS rows by (`stats_scan`), the flight counter's cells
-    (`counter`) and what it was derived from (`derived`, `warnings`)."""
+    (`counter`) and what it was derived from (`derived`, `warnings`). ValueError when it cannot be read with."""
+    check_types(profile)
     el = betaflight.osd_elements(profile.get("settings") or {})
     grid = check_grid({**default_grid(el["video_system"]), **(profile.get("grid") or {})})
     chars = _font(profile)
@@ -118,12 +141,28 @@ def derive(profile: dict, name: str = "profile") -> dict:
         for k, ch in enumerate(f):                   # a cell past the picture's right edge: read on what is left, or skipped
             left = grid["w"] - (X(t["col"] + 1 + k) + gx)
             if ch == "d" and left < gw * EDGE_KEEP:
-                f[k] = "x"
+                if k < 5:                            # MM:SS itself: a timer without its seconds says nothing
+                    raise ValueError(f"timer {t['n']}: its digit at column {t['col'] + 1 + k} is outside the picture (x {X(t['col'] + 1 + k)} "
+                                     f"on a {grid['w']} px frame): the grid is off, or the timer sits past the edge the DVR records")
+                f[k] = "x"                           # a tenth or a hundredth: read without it
                 warnings.append(f"timer {t['n']}: the cell at column {t['col'] + 1 + k} is outside the picture; read without it")
         formats.append("".join(f))
     right = max(X(t["col"] + 1 + k) + gx + gw for t, f in zip(timers, formats) for k, ch in enumerate(f) if ch == "d")
     if right > grid["w"]:
         gw -= right - grid["w"]                       # every cell's box narrowed alike: the templates stay one set
+    # the top edge likewise: a cell on row 0 starts above the picture (the grid at y -4); the rows the DVR did not
+    # record are left out of every box, or, when too much is gone, the counter is not read and a timer is refused
+    counter = el["counter"]
+    tops = [Y(t["row"]) + gy for t in timers] + ([Y(counter["row"]) + gy] if counter else [])
+    if min(tops) < 0:
+        cut = -min(tops)
+        if cut > gh * (1 - EDGE_KEEP):
+            if min(Y(t["row"]) + gy for t in timers) < 0:
+                raise ValueError(f"a timer's digits start {cut} px above the picture: the grid is off (y {grid['y']})")
+            warnings.append(f"the flight counter's digits start {cut} px above the picture: not read")
+            counter = None
+        else:
+            gy, gh = gy + cut, gh - cut
     box = (gx, gw, gy, gh)
     arm = [i for i, t in enumerate(timers) if t["source"] == "last"]
     if len([t for t in timers if t["source"] == "total"]) > 1 or len(arm) > 1:
@@ -139,12 +178,14 @@ def derive(profile: dict, name: str = "profile") -> dict:
     # the STATS screen: value column at midCol + 7, a row found by its label at midCol - 13 (STATS_LABELS)
     mid = el["cols"] // 2
     lbox = glyph_box(chars, grid, "TOTALRMBCKX")
+    cell = (0, grid["cw"], lbox[2], lbox[3])
+    letters = [c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if any(p in ("00", "10") for row in chars[ord(c)] for p in row)]
     layout["stats_scan"] = {"x0": X(mid + betaflight.STATS_VALUE_COL), "label_x": X(mid + betaflight.STATS_LABEL_COL),
                             "rows": [Y(r) for r in range(el["rows"])], "label_box": [lbox[2], lbox[3]],
-                            "labels": {k: render(chars, s, grid, (0, grid["cw"], lbox[2], lbox[3])) for k, s in STATS_LABELS.items()}}
-    if el["counter"]:
-        c = el["counter"]
-        layout["counter"] = {"x0": X(c["col"] + 1), "y": Y(c["row"]), "cells": min(5, el["cols"] - c["col"] - 1)}
+                            "labels": {k: render(chars, s, grid, cell) for k, s in STATS_LABELS.items()},
+                            "letters": [render(chars, c, grid, cell) for c in letters]}
+    if counter:
+        layout["counter"] = {"x0": X(counter["col"] + 1), "y": Y(counter["row"]), "cells": min(5, el["cols"] - counter["col"] - 1)}
     if el["displayport"] and el["displayport"].upper() not in ("MAX7456", "AUTO"):
         warnings.append(f"osd_displayport_device = {el['displayport']}: an analog grid assumed (digital goggles record the OSD as a file of its own)")
     layout["warnings"] = warnings
@@ -158,17 +199,26 @@ def osd_settings(dump: dict) -> dict:
     return {k: v for k, v in dump["settings"].items() if keep.fullmatch(k)}
 
 
-def check_profiles(doc) -> dict:
-    """The stored document, checked as it is stored: every profile derives (a font that parses, a dump with a
-    timer). Raises ValueError naming the profile."""
+def check_profiles(doc, stored=None) -> dict:
+    """The document as it is to be stored, checked: every profile derives (a font that parses, a dump with a timer).
+    A profile exactly as in `stored` (the document kept now) is not checked again: one that stopped deriving (a
+    stricter check since) does not block saving the others, and stays listed among the errors until it is removed.
+    Raises ValueError naming the profile."""
     if not isinstance(doc, dict) or not isinstance(doc.get("profiles", {}), dict):
         raise ValueError("the OSD profiles are {version: 1, profiles: {name: {settings, font, grid}}}")
     from . import osd
+    kept = (stored or {}).get("profiles") or {} if isinstance(stored, dict) else {}
     for name, p in doc.get("profiles", {}).items():
+        if name in kept and kept[name] == p:
+            continue
         if not NAME_RE.fullmatch(name) or name in osd.builtin_names():
             raise ValueError(f"{name!r}: a profile name is lower case letters, digits, '.', '_' and '-' (40 at most), and not a built-in layout's")
         if not isinstance(p, dict) or not isinstance(p.get("settings"), dict):
             raise ValueError(f"{name}: a profile has the dump's settings")
+        try:
+            check_types(p)
+        except ValueError as e:
+            raise ValueError(f"{name}: {e}") from None
         if not (p.get("font") or {}).get("data"):
             raise ValueError(f"{name}: a stored profile carries its font (font.data), so reading never fetches anything")
         try:
@@ -207,8 +257,8 @@ def describe(doc) -> dict:
     for name, p in ((doc or {}).get("profiles") or {}).items():
         try:
             lay = derive(p, name)
-        except (ValueError, KeyError) as e:
-            errors[name] = str(e)
+        except Exception as e:  # noqa: BLE001  (a broken stored profile is listed, never the page's 500)
+            errors[name] = str(e) or type(e).__name__
             continue
         out[name] = {"font": (p.get("font") or {}).get("name"), "version": p.get("version"), "note": p.get("note", ""),
                      "grid": lay["grid"], "layout": _public(lay)}
@@ -229,6 +279,14 @@ def _gray(path, t: float, frame: list) -> bytes:
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{max(t, 0):.3f}", "-i", str(path), "-frames:v", "1",
            "-vf", f"scale={frame[0]}:{frame[1]}", "-pix_fmt", "gray", "-f", "rawvideo", "-"]
     return subprocess.run(cmd, capture_output=True).stdout
+
+
+def frame(path, t: float, layout: dict) -> bytes:
+    """The gray frame at t, scaled to the layout's frame size; ValueError when the clip has none there."""
+    buf = _gray(path, t, layout["frame"])
+    if len(buf) != layout["frame"][0] * layout["frame"][1]:
+        raise ValueError(f"no frame at {t:g} s (past the clip's end?)")
+    return buf
 
 
 def probe(buf: bytes, layout: dict) -> dict:
@@ -309,14 +367,30 @@ def stats_rows(buf: bytes, layout: dict) -> dict:
             return -1.0
         v = _norm([float(buf[(y0 + j) * w + x0 + i]) for j in range(gh) for i in range(n)])
         return sum(a * b for a, b in zip(v, t)) / len(v)
+    cw = layout["grid"]["cw"]
+
+    def ink(x, y0):
+        """How much the cell at (x, y0) reads as a capital of the font (the best correlation)."""
+        if x + cw > w or not S.get("letters"):
+            return 0.0
+        v = [float(buf[(y0 + j) * w + x + i]) for j in range(gh) for i in range(cw)] if y0 >= 0 and (y0 + gh) * w <= len(buf) else []
+        if not v or max(v) - min(v) < 1:
+            return 0.0
+        v = _norm(v)
+        return max(sum(a * b for a, b in zip(v, t)) / len(v) for t in S["letters"])
     out = {}
     for key, t in S["labels"].items():
         n = len(t) // gh
-        # every row at the grid's place, then the analog jitter (osd.SHIFTS) around the best one only
-        s, y = max((corr(t, n, S["label_x"], y + gy), y) for y in S["rows"])
-        s = max([s] + [corr(t, n, S["label_x"] + dx, y + gy + dy) for dx, dy in osd.SHIFTS])
-        if s >= STATS_LABEL_MIN:
-            out[key] = y
+        # every row at the grid's place with the analog jitter (osd.SHIFTS); the best row must also beat the next
+        per = sorted(max((corr(t, n, S["label_x"] + dx, y + gy + dy), dx, dy) for dx, dy in osd.SHIFTS) + (y,) for y in S["rows"])[::-1]
+        (s, dx, dy, y), runner = per[0], (per[1][0] if len(per) > 1 else -1.0)
+        if s < STATS_LABEL_MIN or s - runner < STATS_LABEL_MARGIN:
+            continue
+        # a longer label that begins the same goes on in the next two cells; this one leaves them blank
+        after = S["label_x"] + dx + len(STATS_LABELS[key]) * cw
+        if max(ink(after + k * cw, y + gy + dy) for k in (0, 1)) >= STATS_INK:
+            continue
+        out[key] = y
     return out
 
 
@@ -328,7 +402,10 @@ def fit(bufs: list[bytes], profile: dict, reach: int = 12) -> dict:
     g0 = derive(profile)["grid"]
 
     def score(x, y):
-        lay = derive({**profile, "grid": {**g0, "x": x, "y": y}})
+        try:
+            lay = derive({**profile, "grid": {**g0, "x": x, "y": y}})
+        except ValueError:                             # a grid that puts a timer's seconds past the edge reads nothing
+            return -1.0
         w, g, tpl = lay["frame"][0], lay["glyph"], lay["tpl"]
         tot, n = 0.0, 0
         for buf in bufs:
@@ -359,12 +436,20 @@ def fit(bufs: list[bytes], profile: dict, reach: int = 12) -> dict:
 def rank_fonts(bufs: list[bytes], profile: dict, fonts: list[str] | None = None) -> list[dict]:
     """The Configurator fonts by how well their digits read the timers on these frames, best first:
     [{font, score, values}] (the mean of each digit cell's best correlation; the values read on the first frame)."""
-    out = []
+    out, unreachable = [], None
     for f in fonts or betaflight.FONTS:
+        if unreachable and not betaflight.have_font(f):    # no way out: one wait for the network, not one per font
+            out.append({"font": f, "score": None, "error": unreachable})
+            continue
         try:
-            p = {**profile, "font": {"name": f, "data": betaflight.pack_font(betaflight.parse_mcm(betaflight.fetch_font(f)))}}
-            lay = derive(p)
-        except (ValueError, OSError) as e:
+            text = betaflight.fetch_font(f)
+        except betaflight.FontUnavailable as e:
+            unreachable = str(e)
+            out.append({"font": f, "score": None, "error": str(e)})
+            continue
+        try:
+            lay = derive({**profile, "font": {"name": f, "data": betaflight.pack_font(betaflight.parse_mcm(text))}})
+        except ValueError as e:
             out.append({"font": f, "score": None, "error": str(e)})
             continue
         scores, values = [], None
@@ -379,21 +464,14 @@ def rank_fonts(bufs: list[bytes], profile: dict, fonts: list[str] | None = None)
 def main() -> None:
     """A child process for the server (pure Python for seconds: never in a request thread). Reads {op, profile,
     path, times} as JSON on stdin, writes the answer as JSON ({error} when it cannot): op probe (one frame), fit (the
-    grid), fonts (the ranking)."""
+    grid), fonts (the ranking); the server has checked the op."""
     try:
         req = json.load(sys.stdin)
         lay = derive(req["profile"])
-        bufs = [_gray(req["path"], t, lay["frame"]) for t in req.get("times", [0.0])]
-        if any(len(b) != lay["frame"][0] * lay["frame"][1] for b in bufs):
-            raise ValueError("no frame at that time (past the clip's end?)")
-        if req["op"] == "probe":
-            out = {"layout": _public(lay), **probe(bufs[0], lay)}
-        elif req["op"] == "fit":
-            out = fit(bufs, req["profile"])
-        elif req["op"] == "fonts":
-            out = {"fonts": rank_fonts(bufs, req["profile"])}
-        else:
-            raise ValueError(f"no op {req['op']!r}")
+        bufs = [frame(req["path"], t, lay) for t in req.get("times", [0.0])]
+        out = {"probe": lambda: {"layout": _public(lay), **probe(bufs[0], lay)},
+               "fit": lambda: fit(bufs, req["profile"]),
+               "fonts": lambda: {"fonts": rank_fonts(bufs, req["profile"])}}[req["op"]]()
     except (ValueError, KeyError, OSError) as e:
         out = {"error": str(e)}
     json.dump(out, sys.stdout)

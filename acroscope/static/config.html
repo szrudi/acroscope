@@ -95,7 +95,9 @@
 // the tricks file's tables; the server checks it as it checks a file and refuses a bad one with the place named.
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
-const api = (p, o) => fetch(p, o).then(r => r.json());
+// every answer is {error} when it is not acroscope's JSON (a proxy's 502 page, the network gone), so no caller hangs
+const api = (p, o) => fetch(p, o).then(async r => { try { return await r.json(); } catch { return {error: `${r.status} ${r.statusText || ''}: not an answer from acroscope`.trim()}; } },
+                                      e => ({error: 'no answer from the server: ' + e.message}));
 const SKILLS = ['none', 'beginner', 'advanced'];
 let D = null, DC = null, L = {version: 1}, ETAG = null, TAGS = {categories: [], tags: []}, SESS = [], craft = null, tab = null, openTricks = new Set();
 // D: the library in force for any quad (profile, tricks); DC: for the craft chosen on the drones tab
@@ -485,7 +487,7 @@ async function renderOsd() {
   const t = L?.derived?.timers || [];
   box.innerHTML = `<h2>OSD profiles</h2><p class="hint">How the timers are read off your DVR footage, from what Betaflight says: the CLI's <code>diff all</code> (where the timers are and what they count), the font on the OSD chip, and where your goggles put Betaflight's grid in the picture. Yours are tried next to the ones that ship with acroscope (${OSD.builtin.map(esc).join(', ')}: the OSDs flown on Rudi's quads); a clip takes whichever reads it best.</p>` +
     `<div class="row" id="oProfiles">${names.map(n => `<span class="chip ${n === OE.name && p ? 'on' : ''}" data-oname="${esc(n)}">${esc(n)}</span>`).join('')}` +
-    Object.entries(OSD.errors).map(([n, e]) => `<span class="chip bad" title="${esc(e)}">${esc(n)} ⚠</span>`).join('') +
+    Object.entries(OSD.errors).map(([n, e]) => `<span class="chip bad" data-obroken="${esc(n)}" title="does not derive: ${esc(e)} (click to delete it)">${esc(n)} ⚠</span>`).join('') +
     `<span class="chip ${!names.includes(OE.name) ? 'on' : ''}" id="oNew">＋ new</span></div>` +
     `<div class="kv osd-kv" style="margin-top:10px">` +
     `<b>name</b><span class="row" style="margin:0"><input id="oName" value="${esc(OE.name)}" placeholder="e.g. otto-impact" style="width:180px"><span class="dim">lower case, digits, . _ -</span></span>` +
@@ -507,6 +509,15 @@ async function renderOsd() {
     `<div id="oRank"></div>` +
     `<div class="row"><button class="primary" id="oSave" ${p ? '' : 'disabled'}>save</button>${names.includes(OE.name) ? '<button id="oDelete">delete</button>' : ''}<span id="oSaved" class="dim"></span></div>`;
   box.querySelectorAll('[data-oname]').forEach(el => el.onclick = () => osdOpen(el.dataset.oname));
+  // a stored profile that no longer derives cannot be opened: its chip deletes it (the others are kept as they are)
+  box.querySelectorAll('[data-obroken]').forEach(el => el.onclick = async () => {
+    const n = el.dataset.obroken;
+    if (!confirm(`The OSD profile ${n} no longer derives:\n${OSD.errors[n]}\n\nDelete it?`)) return;
+    const doc = clone(ODOC.doc); delete doc.profiles[n];
+    const r = await api('/api/osd/doc?etag=' + encodeURIComponent(ODOC.etag || ''), {method: 'POST', body: JSON.stringify(doc)});
+    if (r.error) { err(r.error); return; }
+    err(''); await loadOsd(); await renderOsd();
+  });
   $('#oNew').onclick = () => { osdNew(); renderOsd(); };
   $('#oName').oninput = e => { OE.name = e.target.value.trim(); };
   const font = () => { const f = $('#oFont').value; return f ? {font: f} : OE.mcm ? {font: OE.mcmName, mcm: OE.mcm} : null; };
@@ -527,7 +538,7 @@ async function renderOsd() {
   };
   const grid = () => ({x: +$('#oX').value, y: +$('#oY').value, cw: +$('#oCw').value, ch: +$('#oCh').value});
   ['#oX', '#oY', '#oCw', '#oCh'].forEach(id => $(id).onchange = () => OE.profile && osdDerive({profile: OE.profile, grid: grid()}));
-  $('#oSession').onchange = async e => { OE.session = e.target.value; OE.video = null; await renderOsd(); };
+  $('#oSession').onchange = async e => { OE.session = e.target.value; OE.video = null; OE.probe = null; await renderOsd(); osdProbe(); };
   $('#oClip').onchange = e => { OE.video = e.target.value; osdProbe(); };
   $('#oT').onchange = e => { OE.t = Math.max(0, +e.target.value || 0); osdProbe(); };
   box.querySelectorAll('[data-dt]').forEach(b => b.onclick = () => { OE.t = Math.max(0, +OE.t + +b.dataset.dt); $('#oT').value = OE.t; osdProbe(); });
@@ -551,15 +562,17 @@ async function renderOsd() {
     err('');
     if (!OE.name) { err('name the profile first'); $('#oName').focus(); return; }
     const doc = clone(ODOC.doc); doc.version ??= 1; (doc.profiles ||= {})[OE.name] = OE.profile;
+    $('#oSave').disabled = true;                      // one save at a time: a second click would carry the same etag and be refused
     const r = await api('/api/osd/doc?etag=' + encodeURIComponent(ODOC.etag || ''), {method: 'POST', body: JSON.stringify(doc)});
-    if (r.error) { err(r.error); if (/changed since/.test(r.error)) { await loadOsd(); renderOsd(); } return; }
+    if (r.error) { err(r.error); $('#oSave').disabled = false; if (/changed since/.test(r.error)) { await loadOsd(); renderOsd(); } return; }
     await loadOsd(); await renderOsd(); $('#oSaved').textContent = `saved: the reader tries ${OE.name} on every clip it reads from now on`;
   };
   if ($('#oDelete')) $('#oDelete').onclick = async () => {
     if (!confirm(`Delete the OSD profile ${OE.name}? Clips read with it are read again with what is left.`)) return;
     const doc = clone(ODOC.doc); delete doc.profiles[OE.name];
+    $('#oDelete').disabled = true;
     const r = await api('/api/osd/doc?etag=' + encodeURIComponent(ODOC.etag || ''), {method: 'POST', body: JSON.stringify(doc)});
-    if (r.error) { err(r.error); return; }
+    if (r.error) { err(r.error); $('#oDelete').disabled = false; return; }
     osdNew(); await loadOsd(); await renderOsd();
   };
   $('#oImg').onload = drawOverlay;
