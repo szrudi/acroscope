@@ -812,78 +812,69 @@ def cmd_osd_profile(a):
     store = sessions.store()
     row = store.setting(osdprofile.PROFILES_KEY)
     doc = row["value"] if row else {"version": 1, "profiles": {}}
-    grid = None
-    if a.grid:
-        try:
-            x, y = (int(v) for v in a.grid.split(","))
-        except ValueError:
-            raise ValueError(f"--grid {a.grid}: x,y of column 0, row 0 in pixels (3,-4)") from None
-        grid = {"x": x, "y": y}
 
-    def made(dump):
+    def made():
+        grid = None
+        if a.grid:
+            try:
+                x, y = (int(v) for v in a.grid.split(","))
+            except ValueError:
+                raise ValueError(f"--grid {a.grid}: x,y of column 0, row 0 in pixels (3,-4)") from None
+            grid = {"x": x, "y": y}
+        if not a.font and not a.mcm:
+            raise ValueError(f"osd-profile {a.what}: --font <{'|'.join(betaflight.FONTS)}> or --mcm <the .mcm of your own>")
         mcm = Path(a.mcm).read_text() if a.mcm else None
-        return osdprofile.make(Path(dump).read_text(errors="replace"), font=a.font, mcm=mcm, grid=grid, note=a.note or "")
-    if a.what == "list":
+        font = a.font or (Path(a.mcm).stem.lower() if a.mcm else None)     # your own font: named after its file, as on the page
+        return osdprofile.make(Path(a.dump).read_text(errors="replace"), font=font, mcm=mcm, grid=grid, note=a.note or "")
+    what = a.what or "list"
+    if what == "list":
         d = osdprofile.describe(doc)
         if a.json:
             return out(d)
-        for name, p in d["profiles"].items():
+        for name in d["profiles"]:
             print(_profile_summary(name, osdprofile.derive(doc["profiles"][name], name)))
         for name, e in d["errors"].items():
             print(f"{name}: does not derive: {e}")
         if not d["profiles"] and not d["errors"]:
             print(f"no OSD profiles; the built-in layouts: {', '.join(d['builtin'])}")
         return
-    if a.what == "derive":
-        if len(a.args) != 1:
-            raise ValueError("osd-profile derive <dump file> --font <name> | --mcm <file>")
-        p = made(a.args[0])
-        lay = osdprofile.derive(p, "derived")
+    if what == "derive":
+        lay = osdprofile.derive(made(), "derived")
         return out(osdprofile._public(lay)) if a.json else print(_profile_summary("derived", lay))
-    if a.what == "save":
-        if len(a.args) != 2:
-            raise ValueError("osd-profile save <name> <dump file> --font <name> | --mcm <file>")
-        name, dump = a.args
-        new = {**doc, "version": 1, "profiles": {**doc.get("profiles", {}), name: made(dump)}}
-        osdprofile.check_profiles(new)
+    if what == "save":
+        new = {**doc, "version": 1, "profiles": {**doc.get("profiles", {}), a.name: made()}}
+        osdprofile.check_profiles(new, row["value"] if row else None)
         store.set_setting(osdprofile.PROFILES_KEY, new, etag=tricks.layer_etag(row["value"] if row else None))
-        return print(_profile_summary(name, osdprofile.derive(new["profiles"][name], name)))
-    if not a.args:
-        raise ValueError(f"osd-profile {a.what} <name> ...")
-    name = a.args[0]
-    if name not in doc.get("profiles", {}):
-        raise ValueError(f"{name}: no such OSD profile ({', '.join(doc.get('profiles', {})) or 'none stored'})")
-    p = doc["profiles"][name]
-    if a.what == "show":
-        lay = osdprofile.derive(p, name)
-        return out({"profile": {k: v for k, v in p.items() if k != "font"} | {"font": p["font"]["name"]}, "layout": osdprofile._public(lay)}) if a.json else print(_profile_summary(name, lay))
-    if a.what == "rm":
-        new = {**doc, "profiles": {k: v for k, v in doc["profiles"].items() if k != name}}
+        return print(_profile_summary(a.name, osdprofile.derive(new["profiles"][a.name], a.name)))
+    if a.name not in doc.get("profiles", {}):
+        raise ValueError(f"{a.name}: no such OSD profile ({', '.join(doc.get('profiles', {})) or 'none stored'})")
+    p = doc["profiles"][a.name]
+    if what == "show":
+        lay = osdprofile.derive(p, a.name)
+        return out({"profile": {k: v for k, v in p.items() if k != "font"} | {"font": p["font"]["name"]}, "layout": osdprofile._public(lay)}) if a.json \
+            else print(_profile_summary(a.name, lay))
+    if what == "rm":
+        new = {**doc, "profiles": {k: v for k, v in doc["profiles"].items() if k != a.name}}
         store.set_setting(osdprofile.PROFILES_KEY, new, etag=tricks.layer_etag(doc))
-        return print(f"{name}: removed")
-    if a.what == "read":
-        if len(a.args) != 4:
-            raise ValueError("osd-profile read <name> <session> <clip> <time>")
-        s = _session(a.args[1])
-        path = sessions.clip_path(s, a.args[2])
-        lay = osdprofile.derive(p, name)
-        buf = osdprofile._gray(path, parse_time(a.args[3]), lay["frame"])
-        if a.fit:
-            return out(osdprofile.fit([buf], p))
-        if a.fonts:
-            return out(osdprofile.rank_fonts([buf], p))
-        r = osdprofile.probe(buf, lay)
-        if a.json:
-            return out(r)
-        v = r["values"]
-        print(f"{name} on {path.name} at {a.args[3]}: arm {fmt_time(v['arm']) if v['arm'] is not None else '-'}, total {fmt_time(v['total']) if v['total'] is not None else '-'}"
-              f"{', flight #' + str(r['counter']) if r['counter'] is not None else ''}"
-              f"{', STATS total arm ' + fmt_time(r['stats']['total_arm']) + ', blackbox ' + str(r['stats']['blackbox']) + ' %' if r['stats'] and r['stats'].get('total_arm') is not None else ''}")
-        for c in r["cells"]:
-            if c["fmt"] == "d":
-                print(f"  {c['kind']:7} {'row ' + str(c['row']) if c['row'] is not None else '':6} x {c['x']:3} y {c['y']:3}: {c['digit'] or '?'}  score {c['score']:.2f}  margin {c['margin']:.2f}")
-        return
-    raise ValueError(f"osd-profile {a.what}: list, show, derive, save, rm or read")
+        return print(f"{a.name}: removed")
+    # read: on the frame at that time (here or, through the proxy, on the server where the clips are)
+    path = sessions.clip_path(_session(a.session), a.clip)
+    lay = osdprofile.derive(p, a.name)
+    buf = osdprofile.frame(path, parse_time(a.time), lay)
+    if a.fit:
+        return out(osdprofile.fit([buf], p))
+    if a.fonts:
+        return out(osdprofile.rank_fonts([buf], p))
+    r = osdprofile.probe(buf, lay)
+    if a.json:
+        return out(r)
+    v = r["values"]
+    print(f"{a.name} on {path.name} at {a.time}: arm {fmt_time(v['arm']) if v['arm'] is not None else '-'}, total {fmt_time(v['total']) if v['total'] is not None else '-'}"
+          f"{', flight #' + str(r['counter']) if r['counter'] is not None else ''}"
+          f"{', STATS total arm ' + fmt_time(r['stats']['total_arm']) + ', blackbox ' + str(r['stats']['blackbox']) + ' %' if r['stats'] and r['stats'].get('total_arm') is not None else ''}")
+    for c in r["cells"]:
+        if c["fmt"] == "d":
+            print(f"  {c['kind']:7} {'row ' + str(c['row']) if c['row'] is not None else '':6} x {c['x']:3} y {c['y']:3}: {c['digit'] or '?'}  score {c['score']:.2f}  margin {c['margin']:.2f}")
 
 
 def cmd_osd_learn(a):
@@ -1033,11 +1024,22 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=float, default=2.0); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_automatch)
     p = sp.add_parser("osd-profile", help="OSD profiles derived from a Betaflight dump and font: list | show <name> | derive <dump> | save <name> <dump> | rm <name> | "
                                           "read <name> <session> <clip> <t> (what the profile reads on that frame; --fit: the grid that reads best; --fonts: the fonts ranked)")
-    p.add_argument("what", nargs="?", default="list", choices=["list", "show", "derive", "save", "rm", "read"]); p.add_argument("args", nargs="*")
-    p.add_argument("--font", help=f"a Configurator font: {', '.join(betaflight.FONTS)}"); p.add_argument("--mcm", help="the .mcm file of your own font")
-    p.add_argument("--grid", help="x,y of column 0, row 0 on the 720 x 480 frame (default 3,-4: the DVR flown here)")
-    p.add_argument("--note"); p.add_argument("--fit", action="store_true"); p.add_argument("--fonts", action="store_true")
-    p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_osd_profile)
+    p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_osd_profile, what=None)
+    op = p.add_subparsers(dest="what")              # --json before or after the subcommand (SUPPRESS: the sub's does not reset it)
+
+    def making(q):                                      # what makes a profile: a dump and a font
+        q.add_argument("--font", help=f"a Configurator font: {', '.join(betaflight.FONTS)}"); q.add_argument("--mcm", help="the .mcm file of your own font")
+        q.add_argument("--grid", help="x,y of column 0, row 0 on the 720 x 480 frame (default 3,-4: the DVR flown here)")
+        q.add_argument("--note")
+    q = op.add_parser("list", help="the stored profiles"); q.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    q = op.add_parser("show", help="one stored profile, derived"); q.add_argument("name"); q.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    q = op.add_parser("derive", help="a profile from a dump file, not stored"); q.add_argument("dump"); making(q); q.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    q = op.add_parser("save", help="a profile from a dump file, stored under a name"); q.add_argument("name"); q.add_argument("dump"); making(q)
+    q = op.add_parser("rm", help="remove a stored profile"); q.add_argument("name")
+    q = op.add_parser("read", help="what a stored profile reads on one frame (on the server, where the clips are)")
+    q.add_argument("name"); q.add_argument("session"); q.add_argument("clip"); q.add_argument("time")
+    q.add_argument("--fit", action="store_true", help="the grid that reads that frame best"); q.add_argument("--fonts", action="store_true", help="the Configurator fonts ranked on it")
+    q.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     p = sp.add_parser("osd-learn", help="rebuild the OSD digit templates from a labels file")
     p.add_argument("labels", nargs="?", default="scripts/osd-labels.json"); p.set_defaults(f=cmd_osd_learn)
     p = sp.add_parser("serve", help="run the player (http)"); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8070)

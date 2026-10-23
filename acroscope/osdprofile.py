@@ -275,6 +275,14 @@ def _gray(path, t: float, frame: list) -> bytes:
     return subprocess.run(cmd, capture_output=True).stdout
 
 
+def frame(path, t: float, layout: dict) -> bytes:
+    """The gray frame at t, scaled to the layout's frame size; ValueError when the clip has none there."""
+    buf = _gray(path, t, layout["frame"])
+    if len(buf) != layout["frame"][0] * layout["frame"][1]:
+        raise ValueError(f"no frame at {t:g} s (past the clip's end?)")
+    return buf
+
+
 def probe(buf: bytes, layout: dict) -> dict:
     """Every cell the layout reads on one full frame, with what it reads: {cells, values, stats, counter}. A cell is
     {kind, row, k, x, y, fmt, digit, score, margin}."""
@@ -450,21 +458,14 @@ def rank_fonts(bufs: list[bytes], profile: dict, fonts: list[str] | None = None)
 def main() -> None:
     """A child process for the server (pure Python for seconds: never in a request thread). Reads {op, profile,
     path, times} as JSON on stdin, writes the answer as JSON ({error} when it cannot): op probe (one frame), fit (the
-    grid), fonts (the ranking)."""
+    grid), fonts (the ranking); the server has checked the op."""
     try:
         req = json.load(sys.stdin)
         lay = derive(req["profile"])
-        bufs = [_gray(req["path"], t, lay["frame"]) for t in req.get("times", [0.0])]
-        if any(len(b) != lay["frame"][0] * lay["frame"][1] for b in bufs):
-            raise ValueError("no frame at that time (past the clip's end?)")
-        if req["op"] == "probe":
-            out = {"layout": _public(lay), **probe(bufs[0], lay)}
-        elif req["op"] == "fit":
-            out = fit(bufs, req["profile"])
-        elif req["op"] == "fonts":
-            out = {"fonts": rank_fonts(bufs, req["profile"])}
-        else:
-            raise ValueError(f"no op {req['op']!r}")
+        bufs = [frame(req["path"], t, lay) for t in req.get("times", [0.0])]
+        out = {"probe": lambda: {"layout": _public(lay), **probe(bufs[0], lay)},
+               "fit": lambda: fit(bufs, req["profile"]),
+               "fonts": lambda: {"fonts": rank_fonts(bufs, req["profile"])}}[req["op"]]()
     except (ValueError, KeyError, OSError) as e:
         out = {"error": str(e)}
     json.dump(out, sys.stdout)

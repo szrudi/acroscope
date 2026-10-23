@@ -85,7 +85,7 @@ def _check_proxied(args: list[str]) -> None:
                 raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
     if args[0] == "tricks" and len(args) > 1 and args[1] in ("export", "import"):
         raise ValueError("tricks export/import read and write a file on the client: not through the server")
-    if args[0] == "osd-profile" and (len(args) < 2 or args[1] != "read"):
+    if args[0] == "osd-profile" and getattr(ns, "what", None) != "read":
         raise ValueError("osd-profile: only `read` runs here (a profile is made from a dump and a font on the client)")
 
 
@@ -201,7 +201,8 @@ def osd_derive(body: dict) -> dict:
         old = body.get("profile") or {}
         settings = body.get("settings") or old.get("settings") or {}
         text = "\n".join(f"set {k} = {v}" for k, v in settings.items())
-        prof = osdprofile.make(text, font=body.get("font"), mcm=body.get("mcm"), grid={**(old.get("grid") or {}), **(grid or {})})
+        prof = osdprofile.make(text, font=body.get("font"), mcm=body.get("mcm"), grid={**(old.get("grid") or {}), **(grid or {})},
+                               note=old.get("note") or "")
         prof["version"] = body.get("version") or old.get("version")
     else:
         raise ValueError("paste the dump (`diff all` from the Betaflight CLI)")
