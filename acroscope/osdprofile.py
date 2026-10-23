@@ -448,7 +448,8 @@ def rank_fonts(bufs: list[bytes], profile: dict, fonts: list[str] | None = None)
         try:
             text = betaflight.fetch_font(f)
         except betaflight.FontUnavailable as e:
-            unreachable = str(e)
+            if betaflight.FONT_DIR is None:            # the network: one failure stands for the rest; a folder names each
+                unreachable = str(e)
             out.append({"font": f, "score": None, "error": str(e)})
             continue
         try:

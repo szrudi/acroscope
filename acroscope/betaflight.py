@@ -218,7 +218,9 @@ def fetch_font(name: str) -> str:
                                       "upload its .mcm instead")
         raise FontUnavailable(_failed[name][1]) from None
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(f".{p.name}.{os.getpid()}")              # whole or not at all: another reader never sees half a font
-    tmp.write_text(text)
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.")   # whole or not at all, one file per writer (two request
+    with os.fdopen(fd, "w") as f:                                    # threads fetching the same font each write their own)
+        f.write(text)
     os.replace(tmp, p)
     return text
