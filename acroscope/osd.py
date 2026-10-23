@@ -1,14 +1,16 @@
 """Read the OSD timers off the footage and match clips to arms automatically.
 
-The layouts flown here were measured by hand (LAYOUTS); a pilot's own are derived from Betaflight's dump and font
-(osdprofile, #10), stored in the database and added to these (layouts()). The current one puts two timers bottom right: the top one is the time
-since arming (resets every arm), the bottom one the total armed time on the pack. The older one (AIR65 F until
-2026-10-04) has a single timer on the bottom row: the total on the pack. The font is fixed and so are the cell
-positions per layout (measured on the 720x480 DVR frames), so each digit cell is classified against templates
-learned from a few frames labelled by eye (`scripts/osd-labels.json`, built with `acroscope osd-learn`), one
-template set per layout. No general OCR needed. A clip's layout is picked by which one reads more digits.
+A layout says where the timers are on the frame, what they count, and what their digits look like. Every layout is
+derived from what Betaflight says (osdprofile, #10): a dump's OSD settings, the font on the OSD chip, and where the
+DVR puts Betaflight's grid. The layouts flown on Rudi's quads ship with acroscope (osd-profiles.json, from each day's
+dump; until 2026-10-23 they were measured by hand, with templates learned from labelled frames); a pilot's own are
+stored in the database (PROFILE_SOURCE). layouts() is both, and a clip's layout is the one whose timers count on.
 
-Reading the timers at 2 fps gives every arm start in video time: with two timers an arm is a run where the top
+The flown ones: two timers bottom right, the arm timer (resets every arm) and the total armed time on the pack; the
+oldest (AIR65 F until 2026-10-04) has the total alone, on the bottom row. Each digit cell is classified against
+templates rendered from the font. No general OCR needed.
+
+Reading the timers at 2 fps gives every arm start in video time: with two timers an arm is a run where the arm
 timer counts up from 0; with the cumulative timer alone an arm is a stretch where the total counts (it stands
 still while disarmed). Those runs are aligned to the log's arm lengths (and the total against the boot's
 cumulative length), and each aligned pair yields a match with its own offset, which also carries across the
@@ -23,44 +25,11 @@ from pathlib import Path
 from . import blackbox, sessions, video
 from .config import VIDEOS_DIR
 
-# cell geometry on a 720x480 frame: digit cells d1 d2 : d3 d4 per timer row, 24 px pitch from x 559 in both layouts
-# (glyph surveys of 2026-10-09 and 2026-10-10). `rows` are the y of each timer row top to bottom, `names` what the
-# labels file calls them.
-# A layout: x0 (one value, or one per row) and pitch of the character cells, the y of each timer row, what the
-# labels file calls the rows, the format of each row ("dd:dd" = MM:SS, "dd:dd.d" = with tenths, "dd:dd.dd" = with
-# hundredths; any other character is a cell to skip), the glyph box inside a cell (x, w, y, h) for the font,
-# whether the one timer is the cumulative total, which row is the arm timer when there are two (arm_row, default
-# the first), and which template set the font uses (a layout with the same font as another shares its templates).
-GLYPH_SMALL = (4, 10, 3, 18)      # the stock font: 8 px wide at x+5..x+13, 16 tall at y+4..y+20
-GLYPH_BOLD = (1, 18, 1, 22)       # the bold font flown since 2026-10-10: 14 px wide at x+3..x+16, 19 tall at y+2..y+20
-# The STATS screen Betaflight shows after a disarm, on the same 24 x 36 px grid: the value column starts at x 535,
-# TOTAL ARM (the armed time on the pack since boot, MM:SS) on the row at y 146, BLACKBOX (how full the flash is, in
-# %) on the row at y 326 (survey of 2026-10-11 on 10-02 007/010 and 10-07 007/011, the stock font; #9). Betaflight
-# centres the list, so the rows move with the number of stats on: from 10-02 011 MAX CURRENT and USED MAH are off
-# and the two rows sit at y 182 and 290. A layout carries every geometry seen; the one that reads wins. The
-# bold-font layouts have not been surveyed.
-STATS_SMALL = [{"x0": 535, "total_arm": 146, "blackbox": 326}, {"x0": 535, "total_arm": 182, "blackbox": 290}]
-LAYOUTS = {
-    "otto": {"x0": 559, "pitch": 24, "rows": [362, 398], "names": ["top", "bottom"], "formats": ["dd:dd", "dd:dd"],
-             "glyph": GLYPH_SMALL, "cumulative": False, "stats": STATS_SMALL},
-    "air65f": {"x0": 559, "pitch": 24, "rows": [434], "names": ["total"], "formats": ["dd:dd"], "glyph": GLYPH_SMALL,
-               "cumulative": True, "stats": STATS_SMALL},
-    # same OSD one column further right (10-04 clips 005/006, after a settings change); same font, same templates
-    "air65f-b": {"x0": 583, "pitch": 24, "rows": [434], "names": ["total"], "formats": ["dd:dd"], "glyph": GLYPH_SMALL,
-                 "cumulative": True, "templates": "air65f", "stats": STATS_SMALL},
-    # 2026-10-10 clip 001: bold font, the arm timer with tenths (MM:SS.T) above the total
-    "otto-bold": {"x0": 558, "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd.d", "dd:dd"],
-                  "glyph": GLYPH_BOLD, "cumulative": False},
-    # 2026-10-10 from clip 004: the two swapped, the total on top where it was, the arm timer below it further left
-    # with hundredths (MM:SS.hh); same font
-    "otto-bold-swap": {"x0": [558, 486], "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd", "dd:dd.dd"],
-                       "glyph": GLYPH_BOLD, "cumulative": False, "arm_row": 1, "templates": "otto-bold"},
-    # 2026-10-10 evening (first inbox session): the arm timer back to tenths (MM:SS.T) on the bottom row from x 510,
-    # the total on top as before, a flight counter "#N" top right (not read yet: it shows 0 until Betaflight's
-    # stats are on, szrudi/acroscope#3)
-    "otto-bold-v3": {"x0": [558, 510], "pitch": 24, "rows": [401, 437], "names": ["top", "bottom"], "formats": ["dd:dd", "dd:dd.d"],
-                     "glyph": GLYPH_BOLD, "cumulative": False, "arm_row": 1, "templates": "otto-bold"},
-}
+# A layout (osdprofile.derive): x0 per timer row and the pitch of the character cells, the y of each row, the format
+# of each row ("dd:dd" = MM:SS, "dd:dd.d" = with tenths, "dd:dd.dd" = with hundredths; any other character is a cell
+# to skip), the glyph box inside a cell (x, w, y, h), whether the one timer is the cumulative total, which row is the
+# arm timer when there are two (arm_row), the digit templates (tpl), the STATS rows' labels (stats_scan), the frame
+# size the grid is on.
 SHIFTS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]   # the analog picture jitters a pixel or so
 # The OSD shows a timer value about this long after the log reached it (OSD refresh, the analog link, the DVR):
 # measured on 10-10 001 frame by frame against a yaw snap and a roll (#4, automatch 0.17-0.27 s late with the
@@ -70,38 +39,56 @@ OSD_LAG = 0.25
 # The two clocks (DVR and FC) differ by a few tenths of a percent (#4: 0.3 %). A boot's line beyond this is pairs
 # that are not one boot in one clip (duration-only matches on the cumulative timer, #9), not a clock.
 MAX_CLOCK = 0.01
-OSD_VERSION = 8     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache
-TEMPLATES = Path(__file__).parent / "static" / "osd-templates.json"
+OSD_VERSION = 9     # bump when a layout's geometry or the reading format changes: it keys the per-clip cache (9: the
+                    # hand-measured layouts and the learned templates gone, every layout derived)
+SHIPPED = Path(__file__).parent / "osd-profiles.json"
 BLANK_STD = 25.0                                   # glyph-box contrast below this = no digit
 STATS_SCORE = 0.6     # a STATS digit correlates 0.73-0.97 with its template; the % glyph and a frame without the
                       # STATS screen 0.25-0.5
 
 
-# The derived layouts (osdprofile): () -> (the stored profiles document, updated_at), set by the server and the local
-# CLI like tricks.LAYER_SOURCE, so this module never opens a database itself; tests set it explicitly.
+# The pilot's own profiles: () -> (the stored profiles document, updated_at), set by the local CLI (cli.main) like
+# tricks.LAYER_SOURCE, so this module never opens a database itself; tests set it explicitly.
 PROFILE_SOURCE = None
-_derived: dict = {"key": None, "layouts": {}, "errors": {}}
+_derived: dict = {"key": None, "at": 0.0, "layouts": {}, "errors": {}}
+RETRY_DERIVE = 60          # seconds before profiles that did not derive (a font not fetched yet) are tried again
 
 
 def _profiles_doc():
     return PROFILE_SOURCE()[0] if PROFILE_SOURCE else None
 
 
+def shipped() -> dict:
+    """The profiles that ship with acroscope (osd-profiles.json): {name: profile}, fonts by name."""
+    return json.loads(SHIPPED.read_text())["profiles"] if SHIPPED.exists() else {}
+
+
+def builtin_names() -> list[str]:
+    return sorted(shipped())
+
+
 def layouts() -> dict:
-    """Every layout the reader knows: the hand-measured LAYOUTS, then the derived profiles (a profile that does not
-    derive any more is left out and named in derived_errors())."""
-    from . import osdprofile
+    """Every layout the reader knows, {name: layout} (not to be changed: it is the cache): the shipped profiles,
+    then the pilot's (a name the shipped ones have is theirs). A profile that does not derive (its font could not be
+    fetched, a stored one that is broken) is left out and named in derived_errors(), and tried again after
+    RETRY_DERIVE s."""
+    import time
+    from . import betaflight, osdprofile
     doc = _profiles_doc()
-    key = osdprofile.fingerprint(doc)
-    if _derived["key"] != key:
+    st = SHIPPED.stat() if SHIPPED.exists() else None
+    key = (osdprofile.fingerprint(doc), st and (st.st_size, st.st_mtime_ns), betaflight.FONT_DIR)
+    if _derived["key"] != key or (_derived["errors"] and time.time() - _derived["at"] > RETRY_DERIVE):
         out, errors = {}, {}
-        for name, p in ((doc or {}).get("profiles") or {}).items():
-            try:
-                out[name] = osdprofile.derive(p, name)
-            except (ValueError, KeyError) as e:
-                errors[name] = str(e)
-        _derived.update(key=key, layouts=out, errors=errors)
-    return {**LAYOUTS, **{k: v for k, v in _derived["layouts"].items() if k not in LAYOUTS}}
+        for origin, profiles in (("shipped", shipped()), ("yours", (doc or {}).get("profiles") or {})):
+            for name, p in profiles.items():
+                if name in out:
+                    continue
+                try:
+                    out[name] = {**osdprofile.derive(p, name), "origin": origin}
+                except (ValueError, KeyError, OSError) as e:
+                    errors[name] = str(e)
+        _derived.update(key=key, at=time.time(), layouts=out, errors=errors)
+    return _derived["layouts"]
 
 
 def derived_errors() -> dict:
@@ -109,10 +96,11 @@ def derived_errors() -> dict:
     return dict(_derived["errors"])
 
 
-def _layout(name: str) -> dict:
-    L = LAYOUTS.get(name) or layouts().get(name)
+def _layout(name) -> dict:
+    L = layouts().get(name) if isinstance(name, str) else None
     if L is None:
-        raise ValueError(f"{name}: no such OSD layout (a profile removed since this clip was read?)")
+        raise ValueError(f"{name}: no such OSD layout (a profile removed since this clip was read, or its font not to be had: "
+                         f"{derived_errors().get(name, 'not a profile')})")
     return L
 
 
@@ -140,7 +128,7 @@ def digit_cols(layout: str, row: int) -> list[int]:
     return [i for i, ch in enumerate(_layout(layout)["formats"][row]) if ch == "d"]
 
 
-def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None = None, layout: str = "otto"):
+def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None = None, layout: str = "otto-bold-v3"):
     """Yield (t, bytes) gray crops of the timer area at `fps`."""
     x, y, w, h = _crop(layout)
     cmd = ["ffmpeg", "-v", "error", "-nostdin"]
@@ -149,7 +137,7 @@ def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None 
     cmd += ["-i", str(path)]
     if end is not None:
         cmd += ["-t", f"{end - start:.3f}"]
-    fr = _layout(layout).get("frame")          # a derived layout is on the frame scaled to its grid's size (the hand ones on 720 x 480 as recorded)
+    fr = _layout(layout).get("frame")          # the frame scaled to the size its grid is on (a DVR that records smaller)
     cmd += ["-vf", (f"scale={fr[0]}:{fr[1]}," if fr else "") + f"fps={fps},crop={w}:{h}:{x}:{y}", "-pix_fmt", "gray", "-f", "rawvideo", "-"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     n = w * h
@@ -163,7 +151,7 @@ def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None 
     p.wait()
 
 
-def _cell(buf: bytes, col: int, row: int, layout: str = "otto", dx: int = 0, dy: int = 0) -> list[float]:
+def _cell(buf: bytes, col: int, row: int, layout: str = "otto-bold-v3", dx: int = 0, dy: int = 0) -> list[float]:
     """Normalised pixel vector of one digit glyph (the layout's glyph box), shifted by (dx, dy); [] when blank."""
     L = _layout(layout)
     left, _, w, _ = _crop(layout)
@@ -185,24 +173,18 @@ def _glyph(buf: bytes, w: int, x: int, y: int, glyph: tuple) -> list[float]:
 
 
 def _templates_stamp() -> str:
-    """Size and mtime of the templates file, and the derived profiles' fingerprint: new templates (osd-learn) or a
-    profile changed mean new readings, in every cache keyed on it."""
+    """What the readings depend on besides the clip: the shipped profiles, the pilot's, and which of them derive
+    (a font fetched since): any change means new readings, in every cache keyed on it."""
+    import hashlib
     from . import osdprofile
-    tst = TEMPLATES.stat() if TEMPLATES.exists() else None
-    learned = f"{tst.st_size}-{int(tst.st_mtime)}" if tst else "none"
-    doc = _profiles_doc()
-    return learned if not doc or not doc.get("profiles") else f"{learned}-p{osdprofile.fingerprint(doc)}"
+    st = SHIPPED.stat() if SHIPPED.exists() else None
+    names = ",".join(sorted(layouts()))
+    return hashlib.sha1(f"{st and (st.st_size, int(st.st_mtime))}|{osdprofile.fingerprint(_profiles_doc())}|{names}".encode()).hexdigest()[:12]
 
 
-def _template_key(layout: str) -> str:
-    return _layout(layout).get("templates", layout)
-
-
-def _load_templates(layout: str = "otto") -> dict[str, list[float]]:
-    if "tpl" in _layout(layout):                       # a derived layout renders its own from the font
-        return _layout(layout)["tpl"]
-    all_ = json.loads(TEMPLATES.read_text()) if TEMPLATES.exists() else {}
-    return all_.get(_template_key(layout), {})
+def _load_templates(layout: str) -> dict[str, list[float]]:
+    """A layout's digit templates, rendered from its font when it was derived."""
+    return _layout(layout)["tpl"]
 
 
 def _classify(buf: bytes, col: int, row: int, layout: str, templates: dict) -> tuple[str | None, float]:
@@ -255,17 +237,14 @@ def stats_value(cells: list[tuple[str | None, float]], kind: str) -> float | Non
 
 
 def read_stats_frame(buf: bytes, layout, templates: dict, w: int = 720) -> dict:
-    """{total_arm, blackbox} off a full 720x480 gray frame, from the first of the layout's STATS geometries that
-    reads both; both None when the frame shows no STATS screen. A derived layout finds its rows by their labels
-    (osdprofile.stats_rows): which stats are on, and so where Betaflight centres them, is not counted."""
+    """{total_arm, blackbox} off a full gray frame (the layout's frame size); both None when the frame shows no STATS
+    screen. Its rows are found by their labels (osdprofile.stats_rows): which stats are on, and so where Betaflight
+    centres them, is not counted."""
+    from . import osdprofile
     L = layout if isinstance(layout, dict) else _layout(layout)
     g = L["glyph"]
-    geometries = L.get("stats", [])
-    if L.get("stats_scan"):
-        from . import osdprofile
-        rows = osdprofile.stats_rows(buf, L)
-        geometries = [{"x0": L["stats_scan"]["x0"], **rows}] if len(rows) == 2 else []
-    for S in geometries:
+    rows = osdprofile.stats_rows(buf, L)
+    for S in ([{"x0": L["stats_scan"]["x0"], **rows}] if len(rows) == 2 else []):
         ta = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["total_arm"], g, templates) for c in (0, 1, 3, 4)], "mmss")
         bb = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["blackbox"], g, templates) for c in (0, 1, 2)], "pct") if ta is not None else None
         if ta is not None and bb is not None:
@@ -284,7 +263,7 @@ def read_stats(path: Path, runs: list[dict], layout: str) -> list[dict]:
     1-4 s after the run's last reading (the screen stays up until the sticks move); the most common full reading
     wins. Cached per clip and run end."""
     L = _layout(layout)
-    if not L.get("stats") and not L.get("stats_scan"):
+    if not L.get("stats_scan"):
         return [{} for _ in runs]
     st = path.stat()
     cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.stats.v{OSD_VERSION}-{_templates_stamp()}.json")
@@ -319,7 +298,7 @@ def _value(digits: list) -> float | None:
     return v
 
 
-def read_frame(buf: bytes, templates: dict, layout: str = "otto") -> tuple[float | None, float | None, float]:
+def read_frame(buf: bytes, templates: dict, layout: str = "otto-bold-v3") -> tuple[float | None, float | None, float]:
     """(arm timer seconds, total seconds, min confidence) from one crop; None when a timer is not readable. With
     the single cumulative timer the arm timer is always None. Which row is which is the layout's `arm_row`."""
     L = _layout(layout)
@@ -355,23 +334,26 @@ def detect_layout(path: Path, fps: float = 0.5) -> str:
     def counting(vals, rate=1.0):
         s, tol = step * rate, 0.6 * max(1.0, rate)
         return sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and s - tol <= b - a <= s + tol)
+    if not layouts():
+        raise ValueError("no OSD layout to read with: " + ("; ".join(f"{n}: {e}" for n, e in derived_errors().items()) or "no profiles"))
     reads = {}
     for name in layouts():
-        tpl = _load_templates(name)   # layouts sharing templates are told apart by where the digits are
+        tpl = _load_templates(name)
         if tpl:
             reads[name] = [read_frame(buf, tpl, name) for _, buf in _frames(path, fps, layout=name)]
 
     def score(name, rate):
         return counting([r[1] for r in reads[name]], rate) + counting([r[0] for r in reads[name]], rate)
-    # a tie goes to the hand-measured layout (then by name): a derived profile that reads a clip as well as the
-    # layout it was read with so far changes nothing about that clip
-    rank = lambda n: (n in LAYOUTS, n)
-    best = max(((score(n, 1.0), rank(n), n) for n in reads), default=(0, (True, "otto"), "otto"))[::2]
+    # a tie goes to the shipped layout (then by name): a pilot's profile that reads a clip as well as the one it
+    # was read with so far changes nothing about that clip
+    rank = lambda n: (layouts()[n].get("origin") == "shipped", n)
+    best = max(((score(n, 1.0), rank(n), n) for n in reads))[::2]
     if best[0] < MIN_COUNTING:
         # nothing counts on at 1 s/s: a clip whose clock runs off the OSD's (2026-10-14 007, a 2.2x mis-stamped frame
         # rate, where the right layout won 2 to 0 by chance); the layout counting at its own steady rate wins
-        best = max(((max(score(n, r) for r in RATES), rank(n), n) for n in reads), default=(0, (True, "otto"), "otto"))[::2]
-    return best[1] if best[0] > 0 else "otto"
+        best = max(((max(score(n, r) for r in RATES), rank(n), n) for n in reads))[::2]
+    # nothing counts at all (no OSD in the clip): the oldest two-timer layout, as before, if it is there
+    return best[1] if best[0] > 0 or "otto" not in reads else "otto"
 
 
 def _timers_cache(path: Path, fps: float, st=None) -> Path:
@@ -1007,39 +989,3 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
             "bbl": bbl, "arm_window": bounds.get(bbl, (None, None)), "flash_full": full,
             "readable": sum(1 for r in rows if (r["top"] if not _layout(rt["layout"])["cumulative"] else r["bottom"]) is not None),
             "video_arms": varms, "matches": matches, "unmatched_video_arms": unmatched}
-
-
-# ---- template learning --------------------------------------------------------------------------------------------
-
-def learn(labels: list[dict]) -> dict:
-    """labels: [{session, clip, t, layout, <row name>: 'MM:SS', ...}] (row names per LAYOUTS; layout defaults to
-    otto; a '?' in a value skips that cell; `fps` (default 1) is the sampling the frame was read at, so the
-    learner sees the very same frame). Takes the median cell features per digit, per layout, and writes every
-    layout's templates."""
-    acc: dict[str, dict[str, list[list[float]]]] = {}
-    for lb in labels:
-        layout = lb.get("layout", "otto")
-        fps = lb.get("fps", 1)
-        path = sessions.clip_path(sessions.resolve_session(lb["session"]), lb["clip"])
-        t, buf = next(_frames(path, fps=fps, start=lb["t"], end=lb["t"] + 1 / fps, layout=layout))
-        for row, key in enumerate(LAYOUTS[layout]["names"]):
-            txt = lb.get(key)
-            if not txt:
-                continue
-            digits = txt.replace(":", "").replace(".", "")
-            for col, d in zip(digit_cols(layout, row), digits):
-                if d == "?":
-                    continue
-                f = _cell(buf, col, row, layout)
-                if f:
-                    acc.setdefault(_template_key(layout), {}).setdefault(d, []).append(f)
-                else:
-                    print(f"  {lb['clip']}@{lb['t']} {key} digit {d}: blank cell, skipped")
-    out = {}
-    for layout, by in acc.items():
-        out[layout] = {}
-        for d, fs in by.items():
-            n = len(fs)
-            out[layout][d] = [sorted(f[i] for f in fs)[n // 2] for i in range(len(fs[0]))]   # median: a mislabelled frame or two does no harm
-    TEMPLATES.write_text(json.dumps(out))
-    return {layout: {d: len(fs) for d, fs in by.items()} for layout, by in acc.items()}

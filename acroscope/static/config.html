@@ -483,7 +483,7 @@ async function renderOsd() {
   if (OE.session && (!OE.video || !clips.some(c => c.file === OE.video))) OE.video = clips[0]?.file || null;
   const L = OE.layout, p = OE.profile, g = p?.grid || OSD.grid.NTSC;
   const t = L?.derived?.timers || [];
-  box.innerHTML = `<h2>OSD profiles</h2><p class="hint">How the timers are read off your DVR footage, from what Betaflight says: the CLI's <code>diff all</code> (where the timers are and what they count), the font on the OSD chip, and where your goggles put Betaflight's grid in the picture. A profile is tried next to the layouts measured by hand (${OSD.builtin.map(esc).join(', ')}); a clip takes whichever reads it best.</p>` +
+  box.innerHTML = `<h2>OSD profiles</h2><p class="hint">How the timers are read off your DVR footage, from what Betaflight says: the CLI's <code>diff all</code> (where the timers are and what they count), the font on the OSD chip, and where your goggles put Betaflight's grid in the picture. Yours are tried next to the ones that ship with acroscope (${OSD.builtin.map(esc).join(', ')}: the OSDs flown on Rudi's quads); a clip takes whichever reads it best.</p>` +
     `<div class="row" id="oProfiles">${names.map(n => `<span class="chip ${n === OE.name && p ? 'on' : ''}" data-oname="${esc(n)}">${esc(n)}</span>`).join('')}` +
     Object.entries(OSD.errors).map(([n, e]) => `<span class="chip bad" title="${esc(e)}">${esc(n)} ⚠</span>`).join('') +
     `<span class="chip ${!names.includes(OE.name) ? 'on' : ''}" id="oNew">＋ new</span></div>` +

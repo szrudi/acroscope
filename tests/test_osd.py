@@ -104,7 +104,7 @@ class DetectLayoutRateTest(unittest.TestCase):
         from acroscope import osd
         frames = lambda path, fps, layout=None: ((i * 2.0, layout) for i in range(len(readings["A"])))
         seq = {n: iter(r) for n, r in readings.items()}
-        with mock.patch.object(osd, "LAYOUTS", {"A": {}, "B": {}}), mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
+        with mock.patch.object(osd, "layouts", lambda: {"A": {}, "B": {}}), mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
                 mock.patch.object(osd, "_frames", frames), mock.patch.object(osd, "read_frame", lambda buf, tpl, name: next(seq[name])):
             return osd.detect_layout(Path("clip.mp4"))
 

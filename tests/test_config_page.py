@@ -77,7 +77,9 @@ class ConfigPageTest(unittest.TestCase):
         osyn.make_clip(root / "data" / "videos" / OS / "2026-10-05_001.mp4", osyn.font_chars(), {"x": 3, "y": -4, "cw": 24, "ch": 36})
         (root / "synth.mcm").write_text(osyn.mcm_text(osyn.font_chars()))
         cls.port = free_port()
-        env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"), ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="")
+        (root / "fonts").mkdir()                    # no Configurator font: the shipped profiles stay out of the OSD tab's clip
+        env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"), ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="",
+                   ACROSCOPE_FONTS=str(root / "fonts"))
         cls.proc = subprocess.Popen([sys.executable, "-m", "acroscope.cli", "serve", "--host", "127.0.0.1", "--port", str(cls.port), "--no-warm"],
                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.url = f"http://127.0.0.1:{cls.port}"
@@ -396,7 +398,7 @@ class ConfigPageTest(unittest.TestCase):
         urllib.request.urlopen(urllib.request.Request(self.url + "/api/osd/doc", method="DELETE")).read()
         page = self.open("/config#osd")
         page.wait_for_selector("#oDump")
-        self.assertIn("otto-bold-v3", page.text_content("#osdPanel .hint"))        # the hand-measured layouts are named
+        self.assertIn("otto-bold-v3", page.text_content("#osdPanel .hint"))        # the shipped profiles are named
         self.assertTrue(page.locator("#oNew").evaluate("e => e.classList.contains('on')"))
         page.select_option("#oSession", OS)
         page.wait_for_function(f"() => OE.session === {OS!r} && OE.video === '2026-10-05_001.mp4'")

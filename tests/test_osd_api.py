@@ -34,7 +34,9 @@ class OsdApiTest(unittest.TestCase):
         syn.make_clip(root / "data" / "videos" / S / "2026-10-04_001.mp4", cls.chars, {"x": 3, "y": -4, "cw": 24, "ch": 36})
         (root / "data" / "blackbox").mkdir(parents=True)
         cls.port = free_port()
-        cls.env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"), ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="")
+        (root / "fonts").mkdir()                    # no Configurator font: the shipped profiles stay out, nothing is fetched
+        cls.env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"), ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="",
+                       ACROSCOPE_FONTS=str(root / "fonts"))
         cls.proc = subprocess.Popen([sys.executable, "-m", "acroscope.cli", "serve", "--host", "127.0.0.1", "--port", str(cls.port), "--no-warm"],
                                     env=cls.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.url = f"http://127.0.0.1:{cls.port}"

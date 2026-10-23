@@ -21,10 +21,11 @@ A font is 256 characters of 12 x 18 pixels, two bits each: 00 black (the outline
 transparent (the camera picture shows through). Betaflight's fonts map ASCII to itself for digits and capitals.
 """
 import base64
+import os
 import re
+import time
 import urllib.request
-
-from .config import cache
+from pathlib import Path
 
 COLS = 30
 ROWS = {"NTSC": 13, "PAL": 16}
@@ -155,14 +156,37 @@ def unpack_font(data: str) -> list[list[str]]:
     return chars
 
 
+# Where fetched fonts are kept: a folder of its own, not the cache (a test's or a scratch run's throwaway cache would
+# fetch them again). ACROSCOPE_FONTS names a folder of .mcm files to use as they are, never fetched into (a machine
+# without the internet: drop default.mcm, impact.mcm there).
+FONT_DIR = os.environ.get("ACROSCOPE_FONTS")
+FONT_CACHE = Path("~/.cache/acroscope-fonts").expanduser() / FONT_COMMIT[:12]
+FETCH_RETRY = 600                 # seconds before a font that could not be fetched is tried again
+_failed: dict[str, tuple[float, str]] = {}
+
+
 def fetch_font(name: str) -> str:
-    """The .mcm text of a Configurator font by name (FONTS), from the cache or fetched once."""
+    """The .mcm text of a Configurator font by name (FONTS): from ACROSCOPE_FONTS, else from the font cache, else
+    fetched once into it. A fetch that failed is not tried again for FETCH_RETRY s (OSError, said why)."""
     if name not in FONTS:
         raise ValueError(f"{name}: not a Configurator font ({', '.join(FONTS)}); upload the .mcm of your own font instead")
-    p = cache("fonts", FONT_COMMIT[:12], f"{name}.mcm")
-    if not p.exists():
-        with urllib.request.urlopen(FONT_URL.format(commit=FONT_COMMIT, name=name), timeout=30) as r:
+    if FONT_DIR is not None:
+        p = Path(FONT_DIR).expanduser() / f"{name}.mcm"
+        if not p.is_file():
+            raise OSError(f"{name}.mcm is not in ACROSCOPE_FONTS ({FONT_DIR})")
+        return p.read_text()
+    p = FONT_CACHE / f"{name}.mcm"
+    if p.is_file():
+        return p.read_text()
+    if name in _failed and time.time() - _failed[name][0] < FETCH_RETRY:
+        raise OSError(_failed[name][1])
+    try:
+        with urllib.request.urlopen(FONT_URL.format(commit=FONT_COMMIT, name=name), timeout=20) as r:
             text = r.read().decode("ascii")
-        parse_mcm(text)                                       # a broken download is not cached
-        p.write_text(text)
-    return p.read_text()
+        parse_mcm(text)                                       # a broken download is not kept
+    except (OSError, ValueError) as e:
+        _failed[name] = (time.time(), f"the font {name} could not be fetched from the Betaflight Configurator's repository: {e}")
+        raise OSError(_failed[name][1]) from None
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+    return text

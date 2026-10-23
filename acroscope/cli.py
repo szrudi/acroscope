@@ -886,11 +886,6 @@ def cmd_osd_profile(a):
     raise ValueError(f"osd-profile {a.what}: list, show, derive, save, rm or read")
 
 
-def cmd_osd_learn(a):
-    labels = json.load(open(a.labels))
-    out(osd.learn(labels))
-
-
 def cmd_serve(a):
     from .server import serve
     serve(a.host, a.port, warm=not a.no_warm)
@@ -1038,8 +1033,6 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--grid", help="x,y of column 0, row 0 on the 720 x 480 frame (default 3,-4: the DVR flown here)")
     p.add_argument("--note"); p.add_argument("--fit", action="store_true"); p.add_argument("--fonts", action="store_true")
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_osd_profile)
-    p = sp.add_parser("osd-learn", help="rebuild the OSD digit templates from a labels file")
-    p.add_argument("labels", nargs="?", default="scripts/osd-labels.json"); p.set_defaults(f=cmd_osd_learn)
     p = sp.add_parser("serve", help="run the player (http)"); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8070)
     p.add_argument("--no-warm", action="store_true", help="don't decode/probe everything in the background at start"); p.set_defaults(f=cmd_serve)
     return ap

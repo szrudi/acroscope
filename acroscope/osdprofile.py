@@ -4,7 +4,7 @@ A profile is a pilot's OSD as Betaflight has it: the OSD settings of a CLI dump 
 count, at what precision, where the flight counter is), the font uploaded to the OSD chip, and where the DVR puts
 Betaflight's character grid in the recorded picture (`grid`: the top-left of column 0, row 0, and the cell size, on
 the frame scaled to 720 x 480 for NTSC, 720 x 576 for PAL). From those, `derive` builds a layout in the shape of
-`osd.LAYOUTS` (cells, formats, the glyph box, which row is the arm timer) with digit templates rendered from the
+the OSD reader's (cells, formats, the glyph box, which row is the arm timer) with digit templates rendered from the
 font, and the STATS screen's rows are found by their labels rendered from the same font. Nobody surveys a frame or
 labels digits: a new pilot pastes a dump, names a font, and checks the grid on one frame (the configuration page's
 OSD tab, or `acroscope osd-profile`).
@@ -12,8 +12,9 @@ OSD tab, or `acroscope osd-profile`).
 The grid is the one thing that is the DVR's, not Betaflight's. On the goggles flown here (720 x 480 analog DVR,
 2026-10) column c starts at x = 3 + 24 c and row r at y = -4 + 36 r: fitted (`fit`) on the 10-09 and 10-11 timers (x = 4 on
 the 09-23 dump's footage: the reader's one-pixel shifts take either).
-Profiles live in the database (settings row `osd`, PROFILES_KEY), one document {version, profiles: {name: ...}};
-osd.layouts() adds them to the hand-measured layouts, and detect_layout picks among all of them by which counts.
+The layouts flown here ship as profiles (acroscope/osd-profiles.json, fonts by name); a pilot's own live in the
+database (settings row `osd`, PROFILES_KEY), one document {version, profiles: {name: ...}}. osd.layouts() is both,
+and detect_layout picks among them by which counts.
 """
 import hashlib
 import json
@@ -93,8 +94,8 @@ def _font(profile: dict):
 
 
 def derive(profile: dict, name: str = "profile") -> dict:
-    """A layout for the OSD reader from a profile {settings, font, grid}: the shape of osd.LAYOUTS, with its own
-    digit templates (`tpl`), the STATS labels to find the STATS rows by (`stats_scan`), the flight counter's cells
+    """A layout for the OSD reader from a profile {settings, font, grid}: cells, formats, which row is the arm timer,
+    its digit templates (`tpl`), the STATS labels to find the STATS rows by (`stats_scan`), the flight counter's cells
     (`counter`) and what it was derived from (`derived`, `warnings`)."""
     el = betaflight.osd_elements(profile.get("settings") or {})
     grid = check_grid({**default_grid(el["video_system"]), **(profile.get("grid") or {})})
@@ -164,7 +165,7 @@ def check_profiles(doc) -> dict:
         raise ValueError("the OSD profiles are {version: 1, profiles: {name: {settings, font, grid}}}")
     from . import osd
     for name, p in doc.get("profiles", {}).items():
-        if not NAME_RE.fullmatch(name) or name in osd.LAYOUTS:
+        if not NAME_RE.fullmatch(name) or name in osd.builtin_names():
             raise ValueError(f"{name!r}: a profile name is lower case letters, digits, '.', '_' and '-' (40 at most), and not a built-in layout's")
         if not isinstance(p, dict) or not isinstance(p.get("settings"), dict):
             raise ValueError(f"{name}: a profile has the dump's settings")
@@ -211,7 +212,7 @@ def describe(doc) -> dict:
             continue
         out[name] = {"font": (p.get("font") or {}).get("name"), "version": p.get("version"), "note": p.get("note", ""),
                      "grid": lay["grid"], "layout": _public(lay)}
-    return {"profiles": out, "errors": errors, "fonts": betaflight.FONTS, "builtin": sorted(osd.LAYOUTS),
+    return {"profiles": out, "errors": errors, "fonts": betaflight.FONTS, "builtin": osd.builtin_names(),
             "grid": {"NTSC": GRID_NTSC, "PAL": GRID_PAL}}
 
 
