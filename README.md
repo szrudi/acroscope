@@ -216,8 +216,8 @@ POST /api/scan   POST /api/import       GET /api/store
 ### Matching clips to arms
 
 `acroscope automatch <session> [clips] --write` does it from the footage: it reads the two OSD timers (time since
-arming, total armed time) at 2 fps with digit templates (learned from labelled frames for the layouts measured here,
-rendered from the font for an OSD profile, below), turns the timer runs into arm
+arming, total armed time) at 2 fps with digit templates rendered from the OSD's font (an OSD profile, below), turns
+the timer runs into arm
 starts in video time, and aligns them to the log's arms by length and by the total counter against the boot's
 cumulative length. Offsets come out within about half a second, and the method carries across the static stretches
 `cobra-compress.py` cuts out. Arms shorter than about 2 s and arms whose timer never shows up readable stay
@@ -240,9 +240,8 @@ A log that ended with the flash full (its last arm is cut off, `truncated` in `a
 says so: after each run the reader looks at the STATS screen Betaflight shows on disarm (TOTAL ARM, the armed time
 on the pack, and BLACKBOX, how full the flash is). From the first run whose STATS shows BLACKBOX 100 %, in this clip
 or an earlier one of the session after the log's last matched clip, nothing is in that log, and that run itself can
-only be the cut-off last arm. `acroscope osd` lists the STATS reading after each run. The STATS geometry is per
-layout (the rows move with the number of stats on); the bold-font layouts measured by hand have none, and an OSD
-profile finds the rows by their labels instead.
+only be the cut-off last arm. `acroscope osd` lists the STATS reading after each run. Betaflight centres the STATS
+list, so its rows move with the number of stats on: the reader finds TOTAL ARM and BLACKBOX by their labels.
 
 By hand, when needed: `acroscope arms <bbl>` lists the arms and the **boots** (power cycles; the log's time field is
 the FC uptime, so one offset covers every arm of a boot). Read one frame per boot with `acroscope frame ... --osd`,
@@ -250,14 +249,10 @@ record `acroscope match <session> <clip> <bbl> <arm> <offset> --boot`, and refin
 `acroscope events`, or the STATS screen the OSD shows right after a disarm (its TOTAL ARM equals the arm length).
 `acroscope unmatch` removes matches. The OSD seconds are floor values, so a single frame gives ±1 s.
 
-The digit templates live in `acroscope/static/osd-templates.json`; `acroscope osd-learn scripts/osd-labels.json`
-rebuilds them when the OSD font or layout changes (label a few frames by eye first, and label the exact frame the
-reader sees: `acroscope osd` and the ASCII dumps in the labels workflow, not a JPEG from another extraction).
-
 ### OSD profiles
 
-The layouts above were measured by hand on Rudi's footage. An **OSD profile** is the same thing derived from what
-Betaflight says (szrudi/acroscope#10, step 1), so a pilot with another OSD needs no survey and no labels:
+The reader's layouts are **OSD profiles**, derived from what Betaflight says (szrudi/acroscope#10, step 1), so a
+pilot with another OSD needs no survey and no labels:
 
 - **the dump** (`diff all` from the Betaflight CLI): where the timers are (`osd_tim_1_pos`, `osd_tim_2_pos`), what
   they count and at what precision (`osd_tim1`, `osd_tim2`), the flight counter (`osd_total_flights_pos`), NTSC or
@@ -269,18 +264,23 @@ Betaflight says (szrudi/acroscope#10, step 1), so a pilot with another OSD needs
   cell size, on the frame scaled to 720 x 480). The goggles flown here put it at x 3, y -4, 24 x 36 px cells; other
   goggles can differ by a few pixels, and `fit` finds it on a frame.
 
-A profile is tried next to the built-in layouts on every clip (a tie keeps the built-in), and the STATS screen's
-rows are found by their labels rendered from the same font, whichever stats are on. The configuration page's **osd**
+The OSDs flown on Rudi's quads ship as profiles (`acroscope/osd-profiles.json`: `air65f`, `air65f-b`, `otto` on the
+stock font until 2026-10-09; `otto-bold`, `otto-bold-swap`, `otto-bold-v3` on Impact since 10-10), each from the
+dump of its day. Their fonts are fetched once into `~/.cache/acroscope-fonts`; `ACROSCOPE_FONTS` names a folder of
+`.mcm` files to use instead, for a machine without the internet. A pilot's own profiles are tried next to them on
+every clip (a tie keeps the shipped one), and the STATS screen's rows are found by their labels rendered from the
+same font, whichever stats are on. The configuration page's **osd**
 tab does it with a real frame: paste the dump, pick the font (or ask which one fits the frame), step to a frame
 with the timers, see every cell boxed with what it reads (green, amber, red by how well), fit the grid, save. From
 the CLI: `acroscope osd-profile save otto-impact diff-all.txt --font impact`, then `osd-profile read otto-impact
 <session> <clip> 0:40` (on the server, where the clips are).
 
-How it compares with the hand layouts on the same clips (the proof on the PR): on the bold font (Impact, since
-2026-10-10) the derived profile reads more frames and more arms than the learned templates, which miss digits never
-labelled (4 and 6) and carried two mislabelled cells (10-10 001 at 1:10 and 1:20, a 3 labelled 9); on the stock font
-(until 2026-10-09) it finds the same arm runs with fewer readings per run, its 6/8 and 3/5/9 differing by two font
-pixels the analog picture blurs.
+Until 2026-10-23 those six were measured by hand, with digit templates learned from labelled frames (`osd-learn`,
+gone with them; the labels are in the history). On the same clips (the proofs on PRs #63 and #64): on Impact the
+profiles read more frames and more arms than the learned templates, which missed digits never labelled (4 and 6) and
+carried two mislabelled cells (10-10 001 at 1:10 and 1:20, a 3 labelled 9); 10-14 007's arm clock now fits (the hand
+reading had a 4 read as 1 and one reading 6000 s off); on the stock font the same arm runs come out, with fewer
+readings per run (its 6/8 and 3/5/9 differ by two font pixels the analog picture blurs).
 
 ## Tricks
 

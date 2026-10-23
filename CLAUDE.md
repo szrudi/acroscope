@@ -23,18 +23,19 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   is hostile ground (the push user owns everything in a batch): keep the regular-file/plain-name rules in
   `batch_entries`/`plain_name`/`_take`. A clip's file name is its id; its readable `<date>_NNN` name is a column;
   `sessions.resolve_clip`/`clip_path` take either, or the number. Never `video.resolve_video` in a command.
-- OSD reader (`acroscope/osd.py`): one profile per OSD layout Rudi has flown (`LAYOUTS`: cells, rows, formats, glyph
-  box, which row is the arm timer, which template set), templates per font in `acroscope/static/osd-templates.json`
-  learned from `scripts/osd-labels.json`. Since #10 step 1 a layout can be derived instead (`acroscope/osdprofile.py`
-  over `acroscope/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm` font rendered into
-  templates, the DVR's grid at x 3, y -4, 24 x 36 px); stored profiles (settings row `osd`, `osd.PROFILE_SOURCE` set
-  by `cli.main` like the tricks layer) join `osd.layouts()`, a tie with a built-in keeps the built-in. After an OSD
-  change: a new dump and a profile on the config page's osd tab (fit the grid on a frame), not a survey. The
-  Configurator's fonts are GPL-3.0: fetched by name (`betaflight.FONT_COMMIT`), never committed; tests draw a
-  synthetic font (`tests/osd_synthetic.py`). The hand path stays for the clips read with it: relabel only if the
-  font changed (read cells from ASCII dumps, never from sheet thumbnails: three wrong labels once poisoned the rare
-  digits, and 10-10 001's labels at 1:10 and 1:20 still say 9 where the frame shows 3). A labelled time is the frame
-  the 1 fps `fps` filter took, about half a second after an `-ss` seek to the same time. The aligner: length and
+- OSD reader (`acroscope/osd.py`): every layout is a profile derived from Betaflight's own (#10, `acroscope/osdprofile.py`
+  over `acroscope/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm` font rendered into digit
+  templates, the DVR's grid at x 3, y -4, 24 x 36 px; STATS rows found by their labels). The six layouts Rudi has
+  flown ship in `acroscope/osd-profiles.json` (names kept: `air65f`, `air65f-b`, `otto`, `otto-bold`,
+  `otto-bold-swap`, `otto-bold-v3`); a pilot's own are in the database (settings row `osd`, `osd.PROFILE_SOURCE` set
+  by `cli.main` like the tricks layer); `osd.layouts()` is both, a tie keeps the shipped one. The hand-measured
+  `LAYOUTS`, the learned templates and `osd-learn` are gone (2026-10-23, #64; the labels file is in the history).
+  After an OSD change: a new dump and a profile on the config page's osd tab (fit the grid on a frame), not a
+  survey. The Configurator's fonts are GPL-3.0: fetched by name (`betaflight.FONT_COMMIT`) into
+  `~/.cache/acroscope-fonts` (`ACROSCOPE_FONTS` for a folder of them, offline), never committed; unit tests draw a
+  synthetic font (`tests/osd_synthetic.py`), the OSD test servers get an empty `ACROSCOPE_FONTS`. Read cells from
+  ASCII dumps, never from sheet thumbnails: a frame "at t" through the `fps` filter is about half a second after an
+  `-ss` seek to t. The aligner: length and
   total alignment, then the boot's uptime (offset can only go down along a boot; a line video = a·uptime + b per
   boot, the two clocks differ by ~0.3 %), then arms with no run derived along the line. `OSD_LAG` = 0.25 s.
 - Trick detection (`acroscope/tricks/`, #22): an engine (`segments.py` cuts an arm into windows, `features.py` measures
