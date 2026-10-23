@@ -279,8 +279,9 @@ def read_stats_frame(buf: bytes, layout, templates: dict, w: int = 720) -> dict:
         rows = osdprofile.stats_rows(buf, L)
         geometries = [{"x0": L["stats_scan"]["x0"], **rows}] if len(rows) == 2 else []
     for S in geometries:
-        ta = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["total_arm"], g, templates) for c in (0, 1, 3, 4)], "mmss")
-        bb = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["blackbox"], g, templates) for c in (0, 1, 2)], "pct") if ta is not None else None
+        pitch = L.get("pitch", 24)
+        ta = stats_value([_score_at(buf, w, S["x0"] + pitch * c, S["total_arm"], g, templates) for c in (0, 1, 3, 4)], "mmss")
+        bb = stats_value([_score_at(buf, w, S["x0"] + pitch * c, S["blackbox"], g, templates) for c in (0, 1, 2)], "pct") if ta is not None else None
         if ta is not None and bb is not None:
             return {"total_arm": ta, "blackbox": bb}
     return {"total_arm": None, "blackbox": None}

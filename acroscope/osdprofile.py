@@ -28,7 +28,11 @@ GRID_NTSC = {"x": 3, "y": -4, "cw": 24, "ch": 36, "w": 720, "h": 480}
 GRID_PAL = {**GRID_NTSC, "h": 576}
 TRANSPARENT = 128         # a template's transparent pixel: the camera picture behind it, mid grey on average
 STATS_LABELS = {"total_arm": "TOTAL ARM", "blackbox": "BLACKBOX"}
-STATS_LABEL_MIN = 0.5     # a STATS row's label correlates 0.7-0.9 with its rendering; other rows and pictures below 0.4
+STATS_LABEL_MIN = 0.4     # a STATS row's label: 0.50-0.54 on its row in the stock font's thin strokes (10-07 007), 0.87 in
+                          # Impact (10-14 005); other rows 0.22-0.45
+STATS_LABEL_MARGIN = 0.15 # the row that wins must win by this much over the next best row (0.25-0.5 on the real frames)
+STATS_INK = 0.6           # and the two cells after the label must not read as a letter: TOTAL FLIGHTS, TOTAL FLIGHT TIME and
+                          # TOTAL DISTANCE begin like TOTAL ARM (0.73 in a crisp font) and go on where it stops
 EDGE_KEEP = 0.75          # a digit cell partly outside the picture is read on what is left when this much of its box is in
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
 
@@ -154,12 +158,14 @@ def derive(profile: dict, name: str = "profile") -> dict:
     # the STATS screen: value column at midCol + 7, a row found by its label at midCol - 13 (STATS_LABELS)
     mid = el["cols"] // 2
     lbox = glyph_box(chars, grid, "TOTALRMBCKX")
+    cell = (0, grid["cw"], lbox[2], lbox[3])
+    letters = [c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if any(p in ("00", "10") for row in chars[ord(c)] for p in row)]
     layout["stats_scan"] = {"x0": X(mid + betaflight.STATS_VALUE_COL), "label_x": X(mid + betaflight.STATS_LABEL_COL),
                             "rows": [Y(r) for r in range(el["rows"])], "label_box": [lbox[2], lbox[3]],
-                            "labels": {k: render(chars, s, grid, (0, grid["cw"], lbox[2], lbox[3])) for k, s in STATS_LABELS.items()}}
-    if el["counter"]:
-        c = el["counter"]
-        layout["counter"] = {"x0": X(c["col"] + 1), "y": Y(c["row"]), "cells": min(5, el["cols"] - c["col"] - 1)}
+                            "labels": {k: render(chars, s, grid, cell) for k, s in STATS_LABELS.items()},
+                            "letters": [render(chars, c, grid, cell) for c in letters]}
+    if counter:
+        layout["counter"] = {"x0": X(counter["col"] + 1), "y": Y(counter["row"]), "cells": min(5, el["cols"] - counter["col"] - 1)}
     if el["displayport"] and el["displayport"].upper() not in ("MAX7456", "AUTO"):
         warnings.append(f"osd_displayport_device = {el['displayport']}: an analog grid assumed (digital goggles record the OSD as a file of its own)")
     layout["warnings"] = warnings
@@ -324,14 +330,30 @@ def stats_rows(buf: bytes, layout: dict) -> dict:
             return -1.0
         v = _norm([float(buf[(y0 + j) * w + x0 + i]) for j in range(gh) for i in range(n)])
         return sum(a * b for a, b in zip(v, t)) / len(v)
+    cw = layout["grid"]["cw"]
+
+    def ink(x, y0):
+        """How much the cell at (x, y0) reads as a capital of the font (the best correlation)."""
+        if x + cw > w or not S.get("letters"):
+            return 0.0
+        v = [float(buf[(y0 + j) * w + x + i]) for j in range(gh) for i in range(cw)] if y0 >= 0 and (y0 + gh) * w <= len(buf) else []
+        if not v or max(v) - min(v) < 1:
+            return 0.0
+        v = _norm(v)
+        return max(sum(a * b for a, b in zip(v, t)) / len(v) for t in S["letters"])
     out = {}
     for key, t in S["labels"].items():
         n = len(t) // gh
-        # every row at the grid's place, then the analog jitter (osd.SHIFTS) around the best one only
-        s, y = max((corr(t, n, S["label_x"], y + gy), y) for y in S["rows"])
-        s = max([s] + [corr(t, n, S["label_x"] + dx, y + gy + dy) for dx, dy in osd.SHIFTS])
-        if s >= STATS_LABEL_MIN:
-            out[key] = y
+        # every row at the grid's place with the analog jitter (osd.SHIFTS); the best row must also beat the next
+        per = sorted(max((corr(t, n, S["label_x"] + dx, y + gy + dy), dx, dy) for dx, dy in osd.SHIFTS) + (y,) for y in S["rows"])[::-1]
+        (s, dx, dy, y), runner = per[0], (per[1][0] if len(per) > 1 else -1.0)
+        if s < STATS_LABEL_MIN or s - runner < STATS_LABEL_MARGIN:
+            continue
+        # a longer label that begins the same goes on in the next two cells; this one leaves them blank
+        after = S["label_x"] + dx + len(STATS_LABELS[key]) * cw
+        if max(ink(after + k * cw, y + gy + dy) for k in (0, 1)) >= STATS_INK:
+            continue
+        out[key] = y
     return out
 
 
