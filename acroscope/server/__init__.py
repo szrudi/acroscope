@@ -14,18 +14,18 @@ import sys
 import threading
 import time
 import uuid
-from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .. import ingest, share, tricks
-from ..analyse import metrics
+from ..analyse import events, lanes, metrics
 from ..match import manual
 from ..review import moments
 from ..sources import blackbox, osdprofile, video
 from ..store import edits, sessions
 from ..config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
+
 
 STATIC = Path(__file__).parent.parent / "static"
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -308,51 +308,6 @@ def _under(root: Path, *parts: str) -> Path:
     return p
 
 
-@lru_cache(maxsize=64)
-def _events(bbl: str, arm: int, stamp: tuple) -> list[dict]:
-    """The suggestions for an arm under the tricks in force (`stamp`: tricks.fingerprint(), the shipped file's mtime
-    and the pilot's layer, so a change shows on the next look without a restart)."""
-    return tricks.detect(blackbox.load_arm(bbl, arm))
-
-
-@lru_cache(maxsize=16)
-def _series(bbl: str, arm: int, step: float) -> dict:
-    """Downsampled lanes for the strip under the video: per `step` s, throttle %, tilt deg, vbat V, |gyro| max."""
-    a = blackbox.load_arm(bbl, arm)
-    rc3, vb = a.col("rcCommand[3]"), a.col("vbatLatest")
-    g = [a.col(f"gyroADC[{k}]") for k in range(3)]
-    n = int(a.length / step) + 1
-    rows = []
-    for b in range(n):
-        i0, i1 = a.window(b * step, (b + 1) * step)
-        if i1 <= i0:
-            rows.append(None)
-            continue
-        mid = (i0 + i1) // 2
-        rows.append([round((rc3[mid] - 1000) / 10), round(a.tilt(mid)), round(vb[mid] / 100, 2),
-                     round(max(max(abs(g[k][i]) for k in range(3)) for i in range(i0, i1, max(1, (i1 - i0) // 20))))])
-    return {"step": step, "length": a.length, "fields": ["throttle", "tilt", "vbat", "gyro_max"], "rows": rows}
-
-
-@lru_cache(maxsize=16)
-def _sticks(bbl: str, arm: int, step: float) -> dict:
-    """The sticks every `step` s for the player's virtual sticks, in the picture's terms: Mode 2, every axis + = stick
-    right or up, in % (throttle 0..100, the others -100..100). rcCommand[2] is + for the left stick LEFT
-    (metrics.CONVENTIONS), so yaw is negated here and nowhere else."""
-    a = blackbox.load_arm(bbl, arm)
-    rc = [a.col(f"rcCommand[{k}]") for k in range(4)]
-    out = {"throttle": [], "yaw": [], "pitch": [], "roll": []}
-    i = 0
-    for b in range(int(a.length / step) + 1):
-        while i + 1 < a.n and a.t[i + 1] <= b * step:
-            i += 1
-        out["throttle"].append(max(0, min(100, round((rc[3][i] - 1000) / 10))))
-        out["yaw"].append(round(-rc[2][i] / 5))
-        out["pitch"].append(round(rc[1][i] / 5))
-        out["roll"].append(round(rc[0][i] / 5))
-    return {"step": step, "length": a.length, **out}
-
-
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -538,7 +493,7 @@ class Handler(BaseHTTPRequestHandler):
                     for m in s["matches"]:
                         if (q.get("video") and m["video"] != q["video"]) or not _indexed(m["bbl"]):
                             continue
-                        for e in _events(m["bbl"], m["arm"], tricks.fingerprint()):
+                        for e in events.arm_events(m["bbl"], m["arm"], tricks.fingerprint()):
                             rows.append({**e, "video": m["video"], "start": round(e["arm_from"] + m["offset"], 2), "end": round(e["arm_to"] + m["offset"], 2)})
                     return self._json(rows)
                 if parts[3] == "series":
@@ -546,12 +501,12 @@ class Handler(BaseHTTPRequestHandler):
                     out = []
                     for m in s["matches"]:
                         if m["video"] == q.get("video") and _indexed(m["bbl"]):
-                            out.append({"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **_series(m["bbl"], m["arm"], float(q.get("step", 0.1)))})
+                            out.append({"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **lanes.series(m["bbl"], m["arm"], float(q.get("step", 0.1)))})
                     return self._json(out)
                 if parts[3] == "sticks":
                     s = sessions.load(name)
                     step = max(0.01, float(q.get("step", 0.02)))
-                    return self._json([{"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **_sticks(m["bbl"], m["arm"], step)}
+                    return self._json([{"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **lanes.sticks(m["bbl"], m["arm"], step)}
                                        for m in s["matches"] if m["video"] == q.get("video") and _indexed(m["bbl"])])
                 if parts[3] == "metrics":
                     s = sessions.load(name)
