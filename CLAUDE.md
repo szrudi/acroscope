@@ -25,9 +25,16 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   `sessions.resolve_clip`/`clip_path` take either, or the number. Never `video.resolve_video` in a command.
 - OSD reader (`acroscope/osd.py`): one profile per OSD layout Rudi has flown (`LAYOUTS`: cells, rows, formats, glyph
   box, which row is the arm timer, which template set), templates per font in `acroscope/static/osd-templates.json`
-  learned from `scripts/osd-labels.json`. After any OSD change: survey one frame (column/row brightness runs on a
-  gray frame fetched through the server), add a layout; relabel only if the font changed (read cells from ASCII
-  dumps, never from sheet thumbnails: three wrong labels once poisoned the rare digits). The aligner: length and
+  learned from `scripts/osd-labels.json`. Since #10 step 1 a layout can be derived instead (`acroscope/osdprofile.py`
+  over `acroscope/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm` font rendered into
+  templates, the DVR's grid at x 3, y -4, 24 x 36 px); stored profiles (settings row `osd`, `osd.PROFILE_SOURCE` set
+  by `cli.main` like the tricks layer) join `osd.layouts()`, a tie with a built-in keeps the built-in. After an OSD
+  change: a new dump and a profile on the config page's osd tab (fit the grid on a frame), not a survey. The
+  Configurator's fonts are GPL-3.0: fetched by name (`betaflight.FONT_COMMIT`), never committed; tests draw a
+  synthetic font (`tests/osd_synthetic.py`). The hand path stays for the clips read with it: relabel only if the
+  font changed (read cells from ASCII dumps, never from sheet thumbnails: three wrong labels once poisoned the rare
+  digits, and 10-10 001's labels at 1:10 and 1:20 still say 9 where the frame shows 3). A labelled time is the frame
+  the 1 fps `fps` filter took, about half a second after an `-ss` seek to the same time. The aligner: length and
   total alignment, then the boot's uptime (offset can only go down along a boot; a line video = a·uptime + b per
   boot, the two clocks differ by ~0.3 %), then arms with no run derived along the line. `OSD_LAG` = 0.25 s.
 - Trick detection (`acroscope/tricks/`, #22): an engine (`segments.py` cuts an arm into windows, `features.py` measures
@@ -51,7 +58,7 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   explicitly): what `acroscope tricks set | unset | on | off | skill` and the player's configuration page (#45)
   write, checked by `tricks.check_layer` before it is stored. A tricks file is the exchange format, not storage
   (Rudi, 2026-10-17): `tricks export | import` and the page's share row, `toml_out.py` writes it. `GET /api/tricks` is `tricks.describe()`. The player's `/config` page
-  (`acroscope/static/config.html`, one file like the player, five tabs) edits that layer whole through
+  (`acroscope/static/config.html`, one file like the player, seven tabs) edits that layer whole through
   `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
   against what the server then holds.
 - Sharing (#57, `acroscope/share.py`): `acroscope share <session> <moment>` renders `shares/<token>/` (a cut of the

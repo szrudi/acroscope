@@ -155,6 +155,10 @@ acroscope unshare <token>                        take a share down     acroscope
 acroscope automatch <session> [clips...] [--write] [--unmatched]   match clips to arms from the OSD timers (see below);
                                                  --unmatched: only clips without a match (the player's 🎯 in the logs tab)
 acroscope osd <session> <clip>                   the timer readings and arm runs of a clip
+acroscope osd-profile [list] | show <name> | derive <dump> | save <name> <dump> | rm <name>  [--font NAME | --mcm FILE] [--grid X,Y]
+                                                 OSD profiles from Betaflight's `diff all` and font (see *OSD profiles*)
+acroscope osd-profile read <name> <session> <clip> <t> [--fit | --fonts]   what a profile reads on one frame; the grid
+                                                 that reads it best; the Configurator's fonts ranked on it
 acroscope transcode <session> [clips...] [--replace]   H.264 proxies in the cache, or replace the clips in place
 acroscope serve [--port 8070]
 ```
@@ -189,6 +193,14 @@ GET  /api/tricks[?craft=]               the tricks in force: params with default
 GET  /api/tricks/layer                  the pilot's layer kept in the database      POST /api/tricks/layer   {the layer, whole}
 DELETE /api/tricks/layer                                                            (a bad layer: 400 with the place named)
 GET  /api/tricks/export                 the layer as a tricks file (TOML)           POST /api/tricks/import  {text, mode: replace|merge}
+GET  /api/osd                           the OSD profiles derived (cells, formats, warnings), the ones that do not derive,
+                                        the Configurator fonts, the built-in layouts
+GET  /api/osd/doc                       the profiles as kept     POST /api/osd/doc?etag=  {version, profiles: {name: ...}}, whole
+DELETE /api/osd/doc                                              (every profile must derive; a stale etag is a 409)
+POST /api/osd/derive                    {dump | settings | profile, font | mcm, grid?}: {profile (the font packed in),
+                                        layout, glyphs}
+POST /api/osd/probe                     {profile, session, video, t, op: probe | fit | fonts}: what the profile reads on
+                                        that frame, cell by cell; the grid that reads it best; the fonts ranked
 GET  /api/shares[?session=&all=1]       the shares that are up (with the clip's name and the moment's title), plus
                                         whether the server has a public URL      DELETE /api/share/<token>   take one down
 POST /api/share/preview                 {session, moment | video, start?, end?, pad?, text?, sticks?, audio?, poster?}:
@@ -204,7 +216,8 @@ POST /api/scan   POST /api/import       GET /api/store
 ### Matching clips to arms
 
 `acroscope automatch <session> [clips] --write` does it from the footage: it reads the two OSD timers (time since
-arming, total armed time) at 2 fps with digit templates learned from labelled frames, turns the timer runs into arm
+arming, total armed time) at 2 fps with digit templates (learned from labelled frames for the layouts measured here,
+rendered from the font for an OSD profile, below), turns the timer runs into arm
 starts in video time, and aligns them to the log's arms by length and by the total counter against the boot's
 cumulative length. Offsets come out within about half a second, and the method carries across the static stretches
 `cobra-compress.py` cuts out. Arms shorter than about 2 s and arms whose timer never shows up readable stay
@@ -228,7 +241,8 @@ says so: after each run the reader looks at the STATS screen Betaflight shows on
 on the pack, and BLACKBOX, how full the flash is). From the first run whose STATS shows BLACKBOX 100 %, in this clip
 or an earlier one of the session after the log's last matched clip, nothing is in that log, and that run itself can
 only be the cut-off last arm. `acroscope osd` lists the STATS reading after each run. The STATS geometry is per
-layout (the rows move with the number of stats on); the bold-font layouts have none yet.
+layout (the rows move with the number of stats on); the bold-font layouts measured by hand have none, and an OSD
+profile finds the rows by their labels instead.
 
 By hand, when needed: `acroscope arms <bbl>` lists the arms and the **boots** (power cycles; the log's time field is
 the FC uptime, so one offset covers every arm of a boot). Read one frame per boot with `acroscope frame ... --osd`,
@@ -239,6 +253,34 @@ record `acroscope match <session> <clip> <bbl> <arm> <offset> --boot`, and refin
 The digit templates live in `acroscope/static/osd-templates.json`; `acroscope osd-learn scripts/osd-labels.json`
 rebuilds them when the OSD font or layout changes (label a few frames by eye first, and label the exact frame the
 reader sees: `acroscope osd` and the ASCII dumps in the labels workflow, not a JPEG from another extraction).
+
+### OSD profiles
+
+The layouts above were measured by hand on Rudi's footage. An **OSD profile** is the same thing derived from what
+Betaflight says (szrudi/acroscope#10, step 1), so a pilot with another OSD needs no survey and no labels:
+
+- **the dump** (`diff all` from the Betaflight CLI): where the timers are (`osd_tim_1_pos`, `osd_tim_2_pos`), what
+  they count and at what precision (`osd_tim1`, `osd_tim2`), the flight counter (`osd_total_flights_pos`), NTSC or
+  PAL. Only those settings are kept (`osd_*`, `vcd_video_system`, `stats_*`, `craft_name`).
+- **the font** on the OSD chip, which is not in the dump: one of the Configurator's (`default`, `bold`, `impact`, …,
+  fetched by name from betaflight-configurator, GPL-3.0, at a pinned commit) or the `.mcm` of your own. The digit
+  templates are rendered from it; a profile carries its font, so reading never fetches anything.
+- **the grid**: where the DVR puts Betaflight's 30 x 13 character grid in the picture (column 0, row 0, and the
+  cell size, on the frame scaled to 720 x 480). The goggles flown here put it at x 3, y -4, 24 x 36 px cells; other
+  goggles can differ by a few pixels, and `fit` finds it on a frame.
+
+A profile is tried next to the built-in layouts on every clip (a tie keeps the built-in), and the STATS screen's
+rows are found by their labels rendered from the same font, whichever stats are on. The configuration page's **osd**
+tab does it with a real frame: paste the dump, pick the font (or ask which one fits the frame), step to a frame
+with the timers, see every cell boxed with what it reads (green, amber, red by how well), fit the grid, save. From
+the CLI: `acroscope osd-profile save otto-impact diff-all.txt --font impact`, then `osd-profile read otto-impact
+<session> <clip> 0:40` (on the server, where the clips are).
+
+How it compares with the hand layouts on the same clips (the proof on the PR): on the bold font (Impact, since
+2026-10-10) the derived profile reads more frames and more arms than the learned templates, which miss digits never
+labelled (4 and 6) and carried two mislabelled cells (10-10 001 at 1:10 and 1:20, a 3 labelled 9); on the stock font
+(until 2026-10-09) it finds the same arm runs with fewer readings per run, its 6/8 and 3/5/9 differing by two font
+pixels the analog picture blurs.
 
 ## Tricks
 
@@ -361,12 +403,13 @@ checklist.
 ## Configuration page
 
 `/config` (the ⚙ in the player's header) is where the pilot sets what the log cannot say, over the shipped tricks,
-in five tabs: **profile** (the skill preset, every number with the shipped default and where the value in force came
+in seven tabs: **profile** (the skill preset, every number with the shipped default and where the value in force came
 from, filtered by number or trick), **drones** (the crafts seen in the logs by their header name: properties, a preset
 and numbers for that quad, its tricks on and off), **tricks** (the list in force with switches, each one's definition
 and examples, "check the examples" against the server's logs, and the tricks scored against a session's tagged
 moments: found, missed with arm and time, detections on no moment), **settings** (what this browser remembers, your layer
-exported as a tricks file or one imported, and the raw layer as the server keeps it), **tags** (the tag manager, moved here from the player) and **shares** (what is published on a secret link, see *Sharing a trick*). Every change goes to
+exported as a tricks file or one imported, and the raw layer as the server keeps it), **tags** (the tag manager, moved here from the player), **shares** (what is published on a secret link, see *Sharing a trick*) and
+**osd** (the OSD profiles, checked on a frame of a clip, see *OSD profiles*). Every change goes to
 the server as the whole layer, checked as a tricks file is; a refused one shows its message and changes nothing. The
 player's suggestions follow on the next look.
 
