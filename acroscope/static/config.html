@@ -139,9 +139,12 @@ const setSkill = (name, c) => edit(t => { const s = section(t, c); if (!name || 
 const setProp = (c, key, value) => edit(t => { const s = section(t, c); if (value === null || value === '') delete s[key]; else s[key] = value; });
 
 async function load() {
-  let layer;
-  [D, DC, layer, TAGS] = await Promise.all([api('/api/tricks'), craft ? api('/api/tricks?craft=' + encodeURIComponent(craft)) : null, api('/api/tricks/layer'), api('/api/tags')]);
-  if (D.error) { err(D.error); return; }
+  // all four or nothing: a failed answer (api() resolves to {error}) must never stand in for the layer, or the next
+  // knob would save an empty layer over the pilot's
+  const [d, dc, layer, tags] = await Promise.all([api('/api/tricks'), craft ? api('/api/tricks?craft=' + encodeURIComponent(craft)) : null, api('/api/tricks/layer'), api('/api/tags')]);
+  const failed = [d, dc, layer, tags].find(x => x && x.error);
+  if (failed) { err(failed.error + '\n(nothing loaded; reload the page)'); return; }
+  [D, DC, TAGS] = [d, dc, tags];
   L = layer.layer || {version: 1}; ETAG = layer.etag;
   if (D.layer_error) err('your layer is not in force: ' + D.layer_error + '\nThe shipped tricks apply meanwhile; repair or clear the layer on the settings tab.');
   render();
@@ -357,7 +360,7 @@ function renderTags() {
     `<div class="row"><input id="newTag" placeholder="new tag" style="width:160px">${sel(TAGS.categories[0]?.name)}<button class="small" id="addTag">add</button></div>`;
   const post = async (p, body) => { const r = await api(p, {method: 'POST', body: JSON.stringify(body)}); if (r.error) err(r.error); else err(''); return r; };
   const del = async (p) => { const r = await api(p, {method: 'DELETE'}); if (r.error) err(r.error); else err(''); return r; };
-  const reload = async () => { TAGS = await api('/api/tags'); renderTags(); };
+  const reload = async () => { const t = await api('/api/tags'); if (t.error) { err(t.error); return; } TAGS = t; renderTags(); };
   box.querySelectorAll('[data-cn]').forEach(row => {
     row.querySelector('[data-ccolor]').onchange = async e => { await post('/api/tag-categories', {name: row.dataset.cn, color: e.target.value}); reload(); };
     row.querySelector('[data-cdel]').onclick = async () => { await del('/api/tag-categories/' + encodeURIComponent(row.dataset.cn)); reload(); };
@@ -380,8 +383,14 @@ function renderTags() {
 let OSD = null, ODOC = {doc: {}, etag: null}, OE = null, OSESS = null, oSeq = 0;
 const ofmt = v => v === null || v === undefined ? '–' : (() => { const m = Math.floor(v / 60), s = v - m * 60; return `${m}:${(Number.isInteger(s) ? String(s).padStart(2, '0') : s.toFixed(1).padStart(4, '0'))}`; })();
 async function loadOsd() {
-  [OSD, ODOC] = await Promise.all([api('/api/osd'), api('/api/osd/doc')]);
-  if (!OSESS) OSESS = (await api('/api/sessions')).filter(s => s.videos).map(s => s.session).sort().reverse();
+  // a failed answer is said and nothing is kept: the next visit asks again (OSD stays null)
+  const [osd, doc] = await Promise.all([api('/api/osd'), api('/api/osd/doc')]);
+  const sess = OSESS ? null : await api('/api/sessions');
+  const failed = [osd, doc, sess].find(x => x && x.error);
+  if (failed) { err(failed.error); return false; }
+  [OSD, ODOC] = [osd, doc];
+  if (!OSESS) OSESS = sess.filter(s => s.videos).map(s => s.session).sort().reverse();
+  return true;
 }
 function osdNew() {
   OE = {name: '', profile: null, layout: null, glyphs: null, mcm: null, session: OE?.session || OSESS[0] || null, video: OE?.video || null, t: OE?.t ?? 30, probe: null, rank: null};
@@ -478,7 +487,7 @@ async function osdClips() {
 }
 async function renderOsd() {
   const box = $('#osdPanel');
-  if (!OSD) { box.innerHTML = '<p class="hint">loading…</p>'; await loadOsd(); }
+  if (!OSD) { box.innerHTML = '<p class="hint">loading…</p>'; if (!await loadOsd()) { box.innerHTML = '<p class="hint">the OSD profiles could not be loaded: open the tab again to retry</p>'; return; } }
   if (!OE) osdNew();
   const names = Object.keys(ODOC.doc.profiles || {});
   const clips = await osdClips();
@@ -515,7 +524,7 @@ async function renderOsd() {
     if (!confirm(`The OSD profile ${n} no longer derives:\n${OSD.errors[n]}\n\nDelete it?`)) return;
     const doc = clone(ODOC.doc); delete doc.profiles[n];
     const r = await api('/api/osd/doc?etag=' + encodeURIComponent(ODOC.etag || ''), {method: 'POST', body: JSON.stringify(doc)});
-    if (r.error) { err(r.error); return; }
+    if (r.error) { err(r.error); if (/changed since/.test(r.error)) { await loadOsd(); await renderOsd(); } return; }
     err(''); await loadOsd(); await renderOsd();
   });
   $('#oNew').onclick = () => { osdNew(); renderOsd(); };
@@ -606,7 +615,8 @@ setPhone();
   status('loading…');
   const first = location.hash.slice(1);
   tab = ['profile', 'drones', 'tricks', 'settings', 'tags', 'shares', 'osd'].includes(first) ? first : (() => { try { return localStorage.getItem('acro.cfgtab'); } catch { return null; } })() || 'profile';
-  SESS = (await api('/api/sessions')).filter(s => s.moments).map(s => ({session: s.session, moments: s.moments}));
+  const sessions = await api('/api/sessions');
+  SESS = sessions.error ? [] : sessions.filter(s => s.moments).map(s => ({session: s.session, moments: s.moments}));
   await load();
   show(tab);
 })();

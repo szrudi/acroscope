@@ -570,7 +570,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
-        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}   # an empty etag= is a stale page, not none
         try:
             if parts == ["api", "scan"]:
                 return self._json(sessions.scan())
@@ -593,7 +593,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(b, dict):
                     return self._json({"error": "the layer is a table"}, 400)
                 tricks.check_layer(b)                             # a LibraryError is a ValueError: 400 with the place named
-                if q.get("etag"):                                 # what the writer started from: another writer's change in between is a 409
+                if "etag" in q:                                   # what the writer started from: another writer's change in between is a 409
+                    # (an empty one too: a page that never loaded the layer does not know what it would overwrite)
                     cur = sessions.store().setting(tricks.LAYER_KEY)
                     if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
                         return self._json({"error": "the layer changed since you loaded it (someone else saved); it was loaded again, redo your change"}, 409)
