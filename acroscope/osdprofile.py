@@ -198,13 +198,18 @@ def osd_settings(dump: dict) -> dict:
     return {k: v for k, v in dump["settings"].items() if keep.fullmatch(k)}
 
 
-def check_profiles(doc) -> dict:
-    """The stored document, checked as it is stored: every profile derives (a font that parses, a dump with a
-    timer). Raises ValueError naming the profile."""
+def check_profiles(doc, stored=None) -> dict:
+    """The document as it is to be stored, checked: every profile derives (a font that parses, a dump with a timer).
+    A profile exactly as in `stored` (the document kept now) is not checked again: one that stopped deriving (a
+    stricter check since) does not block saving the others, and stays listed among the errors until it is removed.
+    Raises ValueError naming the profile."""
     if not isinstance(doc, dict) or not isinstance(doc.get("profiles", {}), dict):
         raise ValueError("the OSD profiles are {version: 1, profiles: {name: {settings, font, grid}}}")
     from . import osd
+    kept = (stored or {}).get("profiles") or {} if isinstance(stored, dict) else {}
     for name, p in doc.get("profiles", {}).items():
+        if name in kept and kept[name] == p:
+            continue
         if not NAME_RE.fullmatch(name) or name in osd.LAYOUTS:
             raise ValueError(f"{name!r}: a profile name is lower case letters, digits, '.', '_' and '-' (40 at most), and not a built-in layout's")
         if not isinstance(p, dict) or not isinstance(p.get("settings"), dict):

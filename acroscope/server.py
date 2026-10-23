@@ -600,9 +600,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
             if parts == ["api", "osd", "doc"]:                         # the OSD profiles, whole: every one must derive
                 b = self._body()
-                osdprofile.check_profiles(b)
+                cur = sessions.store().setting(osdprofile.PROFILES_KEY)
+                osdprofile.check_profiles(b, cur["value"] if cur else None)   # what is kept as it was is not checked again
                 if q.get("etag") is not None:
-                    cur = sessions.store().setting(osdprofile.PROFILES_KEY)
                     if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
                         return self._json({"error": "the OSD profiles changed since you loaded them (someone else saved); they were loaded again, redo your change"}, 409)
                 row = sessions.store().set_setting(osdprofile.PROFILES_KEY, b)
