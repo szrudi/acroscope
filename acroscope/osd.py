@@ -126,14 +126,17 @@ def _x0(layout: str, row: int) -> int:
 
 
 def _crop(layout: str) -> tuple[int, int, int, int]:
-    """x, y, w, h of the strip holding every timer row of a layout (even height: ffmpeg pads odd crops)."""
+    """x, y, w, h of the strip holding every timer row of a layout (even height: ffmpeg pads odd crops), inside the
+    frame: a timer on row 0 has its cell's top above the picture (the grid at y -4), and ffmpeg would move a crop
+    there down to 0 without saying so; _cell measures from the strip's real top."""
     L = _layout(layout)
     gx, gw, gy, gh = L["glyph"]
-    left = min(_x0(layout, r) for r in range(len(L["formats"])))
+    left = max(0, min(_x0(layout, r) for r in range(len(L["formats"]))))
+    top = max(0, L["rows"][0])
     right = max(_x0(layout, r) + len(f) * L["pitch"] + 2 for r, f in enumerate(L["formats"]))
-    h = L["rows"][-1] + gy + gh + 2 - L["rows"][0]
+    h = L["rows"][-1] + gy + gh + 2 - top
     w = min(right, _frame_w(layout)) - left
-    return left, L["rows"][0], w + w % 2, h + h % 2
+    return left, top, w + w % 2, h + h % 2
 
 
 def digit_cols(layout: str, row: int) -> list[int]:
@@ -166,15 +169,15 @@ def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None 
 def _cell(buf: bytes, col: int, row: int, layout: str = "otto", dx: int = 0, dy: int = 0) -> list[float]:
     """Normalised pixel vector of one digit glyph (the layout's glyph box), shifted by (dx, dy); [] when blank."""
     L = _layout(layout)
-    left, _, w, _ = _crop(layout)
-    return _glyph(buf, w, (_x0(layout, row) - left) + col * L["pitch"] + dx, (L["rows"][row] - L["rows"][0]) + dy, L["glyph"])
+    left, top, w, _ = _crop(layout)
+    return _glyph(buf, w, (_x0(layout, row) - left) + col * L["pitch"] + dx, (L["rows"][row] - top) + dy, L["glyph"])
 
 
 def _glyph(buf: bytes, w: int, x: int, y: int, glyph: tuple) -> list[float]:
     """Normalised pixel vector of the glyph box of the cell at (x, y) in a gray image `w` wide; [] when blank."""
     gx, gw, gy, gh = glyph
     cx, cy = x + gx, y + gy
-    if cx < 0 or cx + gw > w or (cy + gh) * w > len(buf):
+    if cx < 0 or cy < 0 or cx + gw > w or (cy + gh) * w > len(buf):      # a negative row would wrap to the bottom
         return []
     v = [float(buf[(cy + j) * w + cx + i]) for j in range(gh) for i in range(gw)]
     m = sum(v) / len(v)
@@ -305,8 +308,9 @@ def read_stats(path: Path, runs: list[dict], layout: str) -> list[dict]:
 
 
 def _value(digits: list) -> float | None:
-    """Seconds from the digits of a "dd:dd" or "dd:dd.d" row; None when a digit is unreadable or impossible."""
-    if any(d is None for d in digits):
+    """Seconds from the digits of a "dd:dd" or "dd:dd.d" row; None when a digit is unreadable or impossible, or when
+    there are not the four of MM:SS."""
+    if len(digits) < 4 or any(d is None for d in digits):
         return None
     m, sec = digits[0] + digits[1], digits[2] + digits[3]
     if int(sec[0]) > 5:                   # MM:SS, so the tens of seconds is 0-5

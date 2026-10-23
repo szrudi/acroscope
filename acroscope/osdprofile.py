@@ -117,12 +117,28 @@ def derive(profile: dict, name: str = "profile") -> dict:
         for k, ch in enumerate(f):                   # a cell past the picture's right edge: read on what is left, or skipped
             left = grid["w"] - (X(t["col"] + 1 + k) + gx)
             if ch == "d" and left < gw * EDGE_KEEP:
-                f[k] = "x"
+                if k < 5:                            # MM:SS itself: a timer without its seconds says nothing
+                    raise ValueError(f"timer {t['n']}: its digit at column {t['col'] + 1 + k} is outside the picture (x {X(t['col'] + 1 + k)} "
+                                     f"on a {grid['w']} px frame): the grid is off, or the timer sits past the edge the DVR records")
+                f[k] = "x"                           # a tenth or a hundredth: read without it
                 warnings.append(f"timer {t['n']}: the cell at column {t['col'] + 1 + k} is outside the picture; read without it")
         formats.append("".join(f))
     right = max(X(t["col"] + 1 + k) + gx + gw for t, f in zip(timers, formats) for k, ch in enumerate(f) if ch == "d")
     if right > grid["w"]:
         gw -= right - grid["w"]                       # every cell's box narrowed alike: the templates stay one set
+    # the top edge likewise: a cell on row 0 starts above the picture (the grid at y -4); the rows the DVR did not
+    # record are left out of every box, or, when too much is gone, the counter is not read and a timer is refused
+    counter = el["counter"]
+    tops = [Y(t["row"]) + gy for t in timers] + ([Y(counter["row"]) + gy] if counter else [])
+    if min(tops) < 0:
+        cut = -min(tops)
+        if cut > gh * (1 - EDGE_KEEP):
+            if min(Y(t["row"]) + gy for t in timers) < 0:
+                raise ValueError(f"a timer's digits start {cut} px above the picture: the grid is off (y {grid['y']})")
+            warnings.append(f"the flight counter's digits start {cut} px above the picture: not read")
+            counter = None
+        else:
+            gy, gh = gy + cut, gh - cut
     box = (gx, gw, gy, gh)
     arm = [i for i, t in enumerate(timers) if t["source"] == "last"]
     if len([t for t in timers if t["source"] == "total"]) > 1 or len(arm) > 1:
@@ -327,7 +343,10 @@ def fit(bufs: list[bytes], profile: dict, reach: int = 12) -> dict:
     g0 = derive(profile)["grid"]
 
     def score(x, y):
-        lay = derive({**profile, "grid": {**g0, "x": x, "y": y}})
+        try:
+            lay = derive({**profile, "grid": {**g0, "x": x, "y": y}})
+        except ValueError:                             # a grid that puts a timer's seconds past the edge reads nothing
+            return -1.0
         w, g, tpl = lay["frame"][0], lay["glyph"], lay["tpl"]
         tot, n = 0.0, 0
         for buf in bufs:
