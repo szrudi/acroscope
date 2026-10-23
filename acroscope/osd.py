@@ -338,14 +338,18 @@ RATES = (0.5, 0.75, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0)
 
 def detect_layout(path: Path, fps: float = 0.5) -> str:
     """The layout whose readings make sense: sampled at `fps` over the whole clip, score a layout by the pairs of
-    consecutive readings of each of its timers that count on at 1 s/s. Wrong cells read like digits too, and
-    static text reads the same wrong digits every time, so standing still does not count; only counting does.
-    Both timers count, so two layouts that share a row are told apart by the other one."""
+    consecutive readings that count on at 1 s/s. Wrong cells read like digits too, and static text reads the same
+    wrong digits every time, so standing still does not count; only counting does. A layout with two timers scores
+    only the pairs where both count together (twice each, as two timers): while armed they always do, so a layout
+    that reads one of another layout's rows as its own and nothing in its other row scores nothing, however well it
+    reads that one row (2026-10-10 001: the v3 profile read the arm timer on row 11 as its total, in Impact more
+    cleanly than the learned otto-bold templates, and won with a dead second row)."""
     step = 1 / fps
+    layouts(fresh=True)
 
-    def counting(vals, rate=1.0):
+    def steps(vals, rate=1.0):
         s, tol = step * rate, 0.6 * max(1.0, rate)
-        return sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and s - tol <= b - a <= s + tol)
+        return [a is not None and b is not None and s - tol <= b - a <= s + tol for a, b in zip(vals, vals[1:])]
     if not layouts():
         raise ValueError("no OSD layout to read with: " + ("; ".join(f"{n}: {e}" for n, e in derived_errors().items()) or "no profiles"))
     reads = {}
@@ -355,7 +359,11 @@ def detect_layout(path: Path, fps: float = 0.5) -> str:
             reads[name] = [read_frame(buf, tpl, name) for _, buf in _frames(path, fps, layout=name)]
 
     def score(name, rate):
-        return counting([r[1] for r in reads[name]], rate) + counting([r[0] for r in reads[name]], rate)
+        arm, total = steps([r[0] for r in reads[name]], rate), steps([r[1] for r in reads[name]], rate)
+        L = layouts().get(name) or {}
+        if len(L.get("formats", [])) == 2 and not L.get("cumulative"):
+            return 2 * sum(1 for a, t in zip(arm, total) if a and t)
+        return sum(arm) + sum(total)                     # one timer: the other reads None throughout
     # a tie goes to the shipped layout (then by name): a pilot's profile that reads a clip as well as the one it
     # was read with so far changes nothing about that clip
     rank = lambda n: (layouts()[n].get("origin") == "shipped", n)
