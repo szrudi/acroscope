@@ -52,11 +52,7 @@ STATS_SCORE = 0.6     # a STATS digit correlates 0.73-0.97 with its template; th
 PROFILE_SOURCE = None
 SOURCE_EVERY = 1.0         # seconds between looks at PROFILE_SOURCE: every cell of a frame asks for its layout
 RETRY_DERIVE = 60          # seconds before profiles that did not derive (a font not fetched yet) are tried again
-_derived: dict = {"source": None, "checked": 0.0, "key": None, "at": 0.0, "layouts": {}, "errors": {}}
-
-
-def _profiles_doc():
-    return PROFILE_SOURCE()[0] if PROFILE_SOURCE else None
+_derived: dict = {"source": None, "checked": 0.0, "key": None, "at": 0.0, "layouts": {}, "errors": {}, "fp": "none", "names": ""}
 
 
 def shipped() -> dict:
@@ -68,21 +64,22 @@ def builtin_names() -> list[str]:
     return sorted(shipped())
 
 
-def layouts() -> dict:
+def layouts(fresh: bool = False) -> dict:
     """Every layout the reader knows, {name: layout} (the cache itself: not to be changed): the shipped profiles,
     then the pilot's (a name the shipped ones have is theirs). A profile that does not derive (its font could not be
     fetched, a stored one that is broken) is left out, named in derived_errors(), and tried again after RETRY_DERIVE
-    s. The stored profiles are looked at once per SOURCE_EVERY s and derived again only when their `updated_at` says
-    they changed: a frame's hundreds of cells do not each read the database."""
+    s. The stored profiles are looked at once per SOURCE_EVERY s (`fresh`: now; the readers ask so at the start of a
+    clip) and derived again only when the document changed, by its fingerprint (an updated_at has whole seconds: two
+    saves within one would look alike): a frame's hundreds of cells do not each read the database.
+    _templates_stamp() takes what these layouts came from, never a newer document."""
     import time
     from . import betaflight, osdprofile
     src, now = PROFILE_SOURCE, time.monotonic()
-    if _derived["source"] is src and _derived["key"] is not None and now - _derived["checked"] < SOURCE_EVERY:
+    if not fresh and _derived["source"] is src and _derived["key"] is not None and now - _derived["checked"] < SOURCE_EVERY:
         return _derived["layouts"]
-    doc, updated = src() if src else (None, None)
+    doc = src()[0] if src else None
     st = SHIPPED.stat() if SHIPPED.exists() else None
-    key = (src, updated, osdprofile.fingerprint(doc) if updated is None else None,      # the source itself: a new one is new
-           st and (st.st_size, st.st_mtime_ns), betaflight.FONT_DIR)
+    key = (src, osdprofile.fingerprint(doc), st and (st.st_size, st.st_mtime_ns), betaflight.FONT_DIR)   # the source itself: a new one is new
     _derived.update(source=src, checked=now)
     if _derived["key"] != key or (_derived["errors"] and now - _derived["at"] > RETRY_DERIVE):
         out, errors = {}, {}
@@ -94,7 +91,8 @@ def layouts() -> dict:
                     out[name] = {**osdprofile.derive(p, name), "origin": origin}
                 except Exception as e:  # noqa: BLE001  (one broken profile is named, the others still read)
                     errors[name] = str(e) or type(e).__name__
-        _derived.update(key=key, at=now, layouts=out, errors=errors)
+        _derived.update(key=key, at=now, layouts=out, errors=errors, fp=key[1],
+                        names=f"{st and (st.st_size, int(st.st_mtime))}|{','.join(sorted(out))}")
     return _derived["layouts"]
 
 
@@ -183,13 +181,13 @@ def _glyph(buf: bytes, w: int, x: int, y: int, glyph: tuple) -> list[float]:
 
 
 def _templates_stamp() -> str:
-    """What the readings depend on besides the clip: the shipped profiles, the pilot's, and which of them derive
-    (a font fetched since): any change means new readings, in every cache keyed on it."""
+    """What the readings depend on besides the clip: the shipped profiles, the pilot's and which of them derive (a
+    font fetched since), as the reader's layouts were derived from them (layouts()' own record, not the store's
+    newest document: a reading is filed under the layouts it was made with). Any change means new readings, in every
+    cache keyed on it."""
     import hashlib
-    from . import osdprofile
-    st = SHIPPED.stat() if SHIPPED.exists() else None
-    names = ",".join(sorted(layouts()))
-    return hashlib.sha1(f"{st and (st.st_size, int(st.st_mtime))}|{osdprofile.fingerprint(_profiles_doc())}|{names}".encode()).hexdigest()[:12]
+    layouts()
+    return hashlib.sha1(f"{_derived['names']}|{_derived['fp']}".encode()).hexdigest()[:12]
 
 
 def _load_templates(layout: str) -> dict[str, list[float]]:
@@ -392,6 +390,7 @@ def carry_reading(was: Path, now: Path, fps: float = 2.0) -> None:
 
 def read_timers(path: Path, fps: float = 2.0, layout: str | None = None) -> dict:
     """Read the timers through the clip: {layout, rows: [{t, top, bottom, conf}]} (cached per clip)."""
+    layouts(fresh=True)                    # the profiles as stored now, for the whole clip and the cache's stamp alike
     cp = _timers_cache(path, fps)
     if cp.exists():
         return json.loads(cp.read_text())
