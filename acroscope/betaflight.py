@@ -21,6 +21,7 @@ A font is 256 characters of 12 x 18 pixels, two bits each: 00 black (the outline
 transparent (the camera picture shows through). Betaflight's fonts map ASCII to itself for digits and capitals.
 """
 import base64
+import os
 import re
 import urllib.request
 
@@ -165,14 +166,43 @@ def unpack_font(data: str) -> list[list[str]]:
     return chars
 
 
+class FontUnavailable(ValueError):
+    """A Configurator font that could not be fetched (no way out to the internet, the repository down)."""
+
+
+FETCH_TIMEOUT = 10              # seconds per font: a server with no way out says so soon
+
+
+def _font_path(name: str):
+    return cache("fonts", FONT_COMMIT[:12], f"{name}.mcm")
+
+
+def have_font(name: str) -> bool:
+    return name in FONTS and _font_path(name).is_file()
+
+
 def fetch_font(name: str) -> str:
-    """The .mcm text of a Configurator font by name (FONTS), from the cache or fetched once."""
+    """The .mcm text of a Configurator font by name (FONTS), from the cache or fetched once. A cached file that does
+    not parse (a write cut short) is fetched again; a fetch that fails is FontUnavailable (a ValueError: the client
+    is told to upload the .mcm instead)."""
     if name not in FONTS:
         raise ValueError(f"{name}: not a Configurator font ({', '.join(FONTS)}); upload the .mcm of your own font instead")
-    p = cache("fonts", FONT_COMMIT[:12], f"{name}.mcm")
-    if not p.exists():
-        with urllib.request.urlopen(FONT_URL.format(commit=FONT_COMMIT, name=name), timeout=30) as r:
+    p = _font_path(name)
+    if p.is_file():
+        text = p.read_text(errors="replace")
+        try:
+            parse_mcm(text)
+            return text
+        except ValueError:
+            pass                                              # broken in the cache: fetched again below
+    try:
+        with urllib.request.urlopen(FONT_URL.format(commit=FONT_COMMIT, name=name), timeout=FETCH_TIMEOUT) as r:
             text = r.read().decode("ascii")
-        parse_mcm(text)                                       # a broken download is not cached
-        p.write_text(text)
-    return p.read_text()
+        parse_mcm(text)                                       # a captive page or a cut download is not a font
+    except (OSError, ValueError) as e:                        # URLError, HTTPError, a timeout; UnicodeDecodeError is a ValueError
+        raise FontUnavailable(f"the font {name} could not be fetched from the Betaflight Configurator's repository ({e}); "
+                              "upload its .mcm instead") from None
+    tmp = p.with_name(f".{p.name}.{os.getpid()}")              # whole or not at all: another reader never sees half a font
+    tmp.write_text(text)
+    os.replace(tmp, p)
+    return text

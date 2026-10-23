@@ -164,8 +164,11 @@ def osd_probe(body: dict) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"{name}/{path.name}: no such clip")
     req = {"op": op, "profile": body["profile"], "path": str(path), "times": [float(t)]}
-    r = subprocess.run([sys.executable, "-m", "acroscope.osdprofile"], input=json.dumps(req), capture_output=True, text=True,
-                       timeout=OSD_PROBE_TIMEOUT, env=dict(os.environ, ACROSCOPE_URL=""))
+    try:
+        r = subprocess.run([sys.executable, "-m", "acroscope.osdprofile"], input=json.dumps(req), capture_output=True, text=True,
+                           timeout=OSD_PROBE_TIMEOUT, env=dict(os.environ, ACROSCOPE_URL=""))
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"the OSD look ({op}) took longer than {OSD_PROBE_TIMEOUT} s: try one frame with fewer fonts, or upload the .mcm") from None
     try:
         out = json.loads(r.stdout)
     except ValueError:

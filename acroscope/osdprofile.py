@@ -422,12 +422,20 @@ def fit(bufs: list[bytes], profile: dict, reach: int = 12) -> dict:
 def rank_fonts(bufs: list[bytes], profile: dict, fonts: list[str] | None = None) -> list[dict]:
     """The Configurator fonts by how well their digits read the timers on these frames, best first:
     [{font, score, values}] (the mean of each digit cell's best correlation; the values read on the first frame)."""
-    out = []
+    out, unreachable = [], None
     for f in fonts or betaflight.FONTS:
+        if unreachable and not betaflight.have_font(f):    # no way out: one wait for the network, not one per font
+            out.append({"font": f, "score": None, "error": unreachable})
+            continue
         try:
-            p = {**profile, "font": {"name": f, "data": betaflight.pack_font(betaflight.parse_mcm(betaflight.fetch_font(f)))}}
-            lay = derive(p)
-        except (ValueError, OSError) as e:
+            text = betaflight.fetch_font(f)
+        except betaflight.FontUnavailable as e:
+            unreachable = str(e)
+            out.append({"font": f, "score": None, "error": str(e)})
+            continue
+        try:
+            lay = derive({**profile, "font": {"name": f, "data": betaflight.pack_font(betaflight.parse_mcm(text))}})
+        except ValueError as e:
             out.append({"font": f, "score": None, "error": str(e)})
             continue
         scores, values = [], None
