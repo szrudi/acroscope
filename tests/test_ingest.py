@@ -466,11 +466,13 @@ class IngestTest(_Scratch):
         self.assertEqual(v["timescale"], 2.2)
         self.assertAlmostEqual(v["duration"], 30.0 * 2.2, delta=3.0)
 
-        res = self.run_recut(S, OSD_AT_2_2)
-        self.assertEqual(res["timescale"], 2.2)
+        # the recut reads the clock again, through the same kept stretches: the OSD at 2.0x this time, so a recut that
+        # read it is told apart from one that could not and kept the stored 2.2 (the stand-in missed: #65's sweep)
+        res = self.run_recut(S, OSD_AT_2_2.replace('osd_rows(kept["v"], 2.2)', 'osd_rows(kept["v"], 2.0)'))
+        self.assertAlmostEqual(res["timescale"], 2.0, delta=0.05)
         v = db.load(S)["videos"][0]
-        self.assertEqual(v["timescale"], 2.2)
-        self.assertAlmostEqual(v["duration"], 30.0 * 2.2, delta=3.0)
+        self.assertAlmostEqual(v["timescale"], 2.0, delta=0.05)
+        self.assertAlmostEqual(v["duration"], 30.0 * 2.0, delta=3.0)
 
     def test_recut_keeps_the_clock_it_cannot_read(self):
         """Review on #30: a re-timed clip (timescale 2.2) recut where the OSD cannot be read keeps its clock: the new
