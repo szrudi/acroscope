@@ -137,6 +137,25 @@ class EditTest(unittest.TestCase):
             self.assertEqual(self.db.c.execute(f"SELECT count(*) FROM {t} WHERE session = ?", (B,)).fetchone()[0], 0, t)
 
 
+class MigrateTest(unittest.TestCase):
+    def test_columns_added_later_come_with_a_reopen(self):
+        """A database from before the columns added since a table shipped opens, and they take values."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Db(Path(tmp) / "t.db")
+            db.upsert_video("2026-10-14-s", "c1.mp4", 10.0, "h264")
+            for col in ("name", "cuts", "original", "original_until", "timescale"):
+                db.c.execute(f"ALTER TABLE videos DROP COLUMN {col}")
+            db.c.execute("ALTER TABLE batches DROP COLUMN result")
+            db2 = Db(Path(tmp) / "t.db")
+            db2.set_video_fields("2026-10-14-s", "c1.mp4", name="2026-10-14_001", cuts=[[0, 4.0]], original="originals/x.mov",
+                                 original_until="2026-10-21", timescale=2.2)
+            v = db2.load("2026-10-14-s")["videos"][0]
+            self.assertEqual((v["name"], v["cuts"], v["original"], v["original_until"], v["timescale"]),
+                             ("2026-10-14_001", [[0, 4.0]], "originals/x.mov", "2026-10-21", 2.2))
+            db2.set_batch("b1", status="done", result={"clips": [], "logs": []})
+            self.assertEqual(db2.batches()[0]["result"], {"clips": [], "logs": []})
+
+
 class BatchBackfillTest(unittest.TestCase):
     def test_result_backfilled_from_clips_and_log_stamp(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,6 +2,7 @@
 sidecar and a manifest, run through the CLI in a child process against a scratch data dir and database."""
 import json
 from datetime import datetime, timezone
+import inspect
 import os
 import shutil
 import subprocess
@@ -26,6 +27,45 @@ def make_clip(path: Path, middle: str = "static") -> None:
                     f"testsrc=d=3:s=160x120:r=30[a];{MIDDLE[middle]}[b];testsrc=d=3:s=160x120:r=30[c];[a][b][c]concat=n=3:v=1:a=0",
                     "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-shortest", "-c:v", "mjpeg", "-q:v", "5", "-pix_fmt", "yuvj420p",
                     "-c:a", "pcm_s16le", str(path)], check=True)
+
+
+def make_breakup_clip(path: Path) -> None:
+    """A signal that breaks up all through a flight: 2 s of bars and 6 s of static, seven times, then 2 s of bars.
+    compress keeps 4 s (the bars, 1 s of padding each side) every 8 s of the original."""
+    parts = []
+    for i in range(7):
+        parts += [f"testsrc=d=2:s=160x120:r=30[b{i}]", f"{MIDDLE['static'].replace('d=7', 'd=6')}[s{i}]"]
+    labels = "".join(f"[b{i}][s{i}]" for i in range(7))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    ";".join(parts) + f";testsrc=d=2:s=160x120:r=30[e];{labels}[e]concat=n=15:v=1:a=0",
+                    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-shortest", "-c:v", "mjpeg", "-q:v", "5", "-pix_fmt", "yuvj420p",
+                    "-c:a", "pcm_s16le", str(path)], check=True)
+
+
+def osd_rows(kept, rate, start=1.0):
+    """read_timers rows for one arm from `start` to the end with the OSD clock at `rate` x the original's, every
+    0.5 s of the original, at the compressed clip's time (`kept`: the stretches compress kept)."""
+    rows = []
+    for i in range(int(kept[-1][1] * 2)):
+        o = i / 2
+        if any(s <= o <= e for s, e in kept):
+            v = round(max(0.0, (o - start) * rate), 2)
+            rows.append({"t": round(ingest._to_clip(o, kept), 2), "top": v, "bottom": int(v)})
+    return rows
+
+
+# a child's OSD reader stood in for: a clock 2.2x the clip's over whatever stretches the encode kept
+OSD_AT_2_2 = inspect.getsource(osd_rows) + """
+kept = {}
+_compress = ingest.compress
+def compress(src, dst, *a, **k):
+    res = _compress(src, dst, *a, **k)
+    kept["v"] = res["kept"]
+    return res
+ingest.compress = compress
+ingest.osd.read_timers = lambda path, fps=2.0, layout=None: {"layout": "x", "rows": osd_rows(kept["v"], 2.2)}
+ingest._cli = lambda *a: None
+"""
 
 
 class _Scratch(unittest.TestCase):
@@ -109,6 +149,8 @@ class IngestTest(_Scratch):
         self.assertAlmostEqual(ingest.clock_fit(rows(2.2)), 2.2, delta=0.02)
         self.assertAlmostEqual(ingest.clock_fit(rows(1.0)), 1.0, delta=0.02)
         self.assertIsNone(ingest.clock_fit(rows(2.2, n=12)))                                  # 6 s of readings: too few
+        self.assertIsNone(ingest.clock_fit(rows(2.2, n=30)))                                  # 29 readings over 14.5 s: too short
+        self.assertAlmostEqual(ingest.clock_fit(rows(2.2, n=34)), 2.2, delta=0.02)            # over 16.5 s: long enough
         self.assertIsNone(ingest.clock_fit([]))
 
     @staticmethod
@@ -159,11 +201,31 @@ class IngestTest(_Scratch):
                 r["top"] = r["bottom"] = r["top"] + 40
         self.assertAlmostEqual(ingest.clock_fit(rows), 1.0, delta=0.01)
 
+    def test_a_noisy_reading_is_no_rate(self):
+        """A fit worse than 1 s rms is no rate. Readings off by +-1.1 s two by two all stay inside the 1.5 s trim
+        and fit 1.0 at 1.04 s rms: None. (From about +-1.13 s the low ones fall to the trim and the rest fit
+        closely: the rms check only bites in that band.)"""
+        rows, _ = self.arm_rows()
+        for i, r in enumerate(rows):
+            if r["top"] > 3:
+                r["top"] = round(r["top"] + (1.1 if i % 4 < 2 else -1.1), 2)
+                r["bottom"] = int(r["top"])
+        self.assertIsNone(ingest.clock_fit(rows))
+
+    def test_readings_of_a_second_or_less_do_not_count(self):
+        """A timer at 0 read as 0 and 1 in turn (two minutes on the ground before the arm) would put a flat line
+        of 1s through the fit, longer than the arm: those readings never count, and the arm's clock stands."""
+        rows, _ = self.arm_rows(start=120.0)
+        for i, r in enumerate(rows):
+            if r["t"] < 119:
+                r["top"], r["bottom"] = float(i % 2), i % 2
+        self.assertAlmostEqual(ingest.clock_fit(rows), 1.0, delta=0.01)
+
     def test_fix_clock_retimes_a_misstamped_clip(self):
         """A clip whose OSD clock runs k times its own is stretched by k (timestamps scaled, no re-encode; the audio,
-        stamped as wrongly, goes); a clip on time is left alone."""
+        stamped as wrongly, goes), a clip stamped too slow shrunk; within 5 % either way, a clip is left alone."""
         from unittest import mock
-        for k, want in ((2.2, 2.2), (1.02, 1.0)):
+        for k, want in ((2.2, 2.2), (1.1, 1.1), (0.5, 0.5), (1.02, 1.0), (0.97, 1.0)):
             with self.subTest(k=k):
                 src = self.root / f"c{k}.mp4"
                 subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=d=4:s=160x120:r=60", "-f", "lavfi",
@@ -293,26 +355,7 @@ class IngestTest(_Scratch):
         from its kept original. Moments and a match inside one old stretch move with the footage (old clip time ->
         original -> new clip time); a match whose arm spans an old cut held on one side of it only: it is left as it
         is and reported. Cached frames of the clip go."""
-        b = self.data / "inbox" / "dusk"
-        b.mkdir(parents=True)
-        make_clip(b / "VID0001.mov", "dusk")
-        (b / "import.json").write_text(json.dumps({"date": "2026-10-14", "session": "dusk"}))
-        (b / ".done").write_text("")
-        r = self.cli("ingest", "dusk")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        S = "2026-10-14-dusk"
-        db = Db(self.root / "t.db")
-        v = db.load(S)["videos"][0]
-        db.set_video_fields(S, v["file"], cuts=[[0.0, 4.0], [9.0, 13.0]], duration=8.0)    # as the old detector left it
-        db.tag(S, v["file"], 2.0, 3.0, "before the cut", [])
-        db.tag(S, v["file"], 5.0, 6.0, "after the cut", [])
-        (self.data / "blackbox").mkdir(exist_ok=True)
-        (self.data / "blackbox" / "BTFL_d.bbl").write_bytes(b"x")
-        idx = self.root / "cache" / "arms" / "BTFL_d" / "arms.json"
-        idx.parent.mkdir(parents=True)
-        idx.write_text(json.dumps({"v": blackbox.INDEX_VERSION, "file": "BTFL_d.bbl", "stem": "BTFL_d", "date": None, "boots": [],
-                                   "arms": [{"index": 1, "length": 2.0, "frames": 10}, {"index": 2, "length": 3.0, "frames": 10}]}))
-        db.set_match(S, v["file"], "BTFL_d.bbl", 1, 4.5)                  # 4.5-6.5: inside the second stretch
+        S, db, v = self.cut_by_the_old_detector("dusk")
         db.set_match(S, v["file"], "BTFL_d.bbl", 2, 3.0)                  # 3-6: across the old cut at 4.0
         db.add_share("s" * 24, S, v["file"], "m02", 4.5, 6.5, "shared", None)                  # a share's window moves with the footage too (#59 review)
         db.add_share("r" * 24, S, v["file"], "m01", 2.0, 3.0, "revoked", None)
@@ -339,6 +382,93 @@ class IngestTest(_Scratch):
         self.assertFalse(stale.exists())
         self.assertTrue((self.data / v["original"]).exists())               # the original stays until its date
 
+    def cut_by_the_old_detector(self, name: str):
+        """A dusk clip ingested, then stored as the old detector cut it ([0, 4] and [9, 13] kept, 8 s), with a moment
+        on each side of the old cut and arm 1 of BTFL_d (2 s long) matched at 4.5, inside the second stretch."""
+        b = self.data / "inbox" / name
+        b.mkdir(parents=True)
+        make_clip(b / "VID0001.mov", "dusk")
+        (b / "import.json").write_text(json.dumps({"date": "2026-10-14", "session": name}))
+        (b / ".done").write_text("")
+        r = self.cli("ingest", name)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        S = f"2026-10-14-{name}"
+        db = Db(self.root / "t.db")
+        v = db.load(S)["videos"][0]
+        db.set_video_fields(S, v["file"], cuts=[[0.0, 4.0], [9.0, 13.0]], duration=8.0)
+        db.tag(S, v["file"], 2.0, 3.0, "before the cut", [])
+        db.tag(S, v["file"], 5.0, 6.0, "after the cut", [])
+        (self.data / "blackbox").mkdir(exist_ok=True)
+        (self.data / "blackbox" / "BTFL_d.bbl").write_bytes(b"x")
+        idx = self.root / "cache" / "arms" / "BTFL_d" / "arms.json"
+        idx.parent.mkdir(parents=True)
+        idx.write_text(json.dumps({"v": blackbox.INDEX_VERSION, "file": "BTFL_d.bbl", "stem": "BTFL_d", "date": None, "boots": [],
+                                   "arms": [{"index": 1, "length": 2.0, "frames": 10}, {"index": 2, "length": 3.0, "frames": 10}]}))
+        db.set_match(S, v["file"], "BTFL_d.bbl", 1, 4.5)
+        return S, db, v
+
+    def run_recut(self, session: str, patch: str = "") -> dict:
+        """recut of the session's clip 001 in a child with `patch` applied first; its result."""
+        code = (f"from acroscope import ingest\nimport json\n{patch}\n"
+                f"print(json.dumps(ingest.recut({session!r}, '001', log=lambda m: None)))")
+        r = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout.strip().splitlines()[-1])
+
+    def test_recut_across_a_clock_change(self):
+        """#51 (2026-10-14 007 went this way): a clip stored on time is recut and its new encode runs 2.2x. Moments
+        move through the cuts and the clock (old clip -> original -> new clip x 2.2); the match, measured on the old
+        clock, stays where it was and is listed under check. Recut back to on time, the moments return, and the clip
+        is stored as on time (no timescale), not as re-timed x1."""
+        S, db, v = self.cut_by_the_old_detector("reclock")
+        res = self.run_recut(S, "def fix(path, kept, log=print):\n    ingest.retime(path, 2.2)\n    return 2.2\ningest.fix_clock = fix")
+        self.assertEqual(res["timescale"], 2.2)
+        s = db.load(S)
+        self.assertEqual(s["videos"][0]["timescale"], 2.2)
+        self.assertAlmostEqual(s["videos"][0]["duration"], 13.0 * 2.2, delta=1.5)
+        self.assertEqual({m["title"]: (m["start"], m["end"]) for m in s["moments"]},
+                         {"before the cut": (4.4, 6.6), "after the cut": (22.0, 24.2)})
+        self.assertEqual([(m["arm"], m["offset"]) for m in s["matches"]], [(1, 4.5)])
+        self.assertEqual([c["arm"] for c in res["check"]], [1])
+        self.assertIn("clock changed (1.0 -> 2.2)", res["check"][0]["why"])
+
+        res = self.run_recut(S, "ingest.fix_clock = lambda path, kept, log=print: 1.0")
+        self.assertEqual(res["timescale"], 1.0)
+        s = db.load(S)
+        self.assertIsNone(s["videos"][0].get("timescale"))
+        self.assertAlmostEqual(s["videos"][0]["duration"], 13.0, delta=0.6)
+        self.assertEqual({m["title"]: (m["start"], m["end"]) for m in s["moments"]},
+                         {"before the cut": (2.0, 3.0), "after the cut": (10.0, 11.0)})
+        self.assertEqual([(m["arm"], m["offset"]) for m in s["matches"]], [(1, 4.5)])
+        self.assertIn("clock changed (2.2 -> 1.0)", res["check"][0]["why"])
+
+    def test_cuts_inside_an_arm_do_not_bend_the_clock(self):
+        """#51: the kept stretches reach the clock fit from the batch and from recut. A mis-stamped clip (the OSD at
+        2.2x) whose signal breaks up all through an arm (4 s cut every 8 s): in the compressed clip's own time the
+        OSD runs about 4.4x, evenly; in the original's it is 2.2x, and the clip is re-timed by that, at the import
+        and at a recut. (An on-time clip with the same cuts fits no rate in the clip's own time, not a fast one.)"""
+        b = self.data / "inbox" / "breakup"
+        b.mkdir(parents=True)
+        make_breakup_clip(b / "VID0001.mov")
+        (b / "import.json").write_text(json.dumps({"date": "2026-10-14", "session": "breakup"}))
+        (b / ".done").write_text("")
+        r = self.run_patched("breakup", OSD_AT_2_2)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        S = "2026-10-14-breakup"
+        db = Db(self.root / "t.db")
+        v = db.load(S)["videos"][0]
+        self.assertGreaterEqual(len(v["cuts"]), 7, v["cuts"])
+        rows = osd_rows(v["cuts"], 2.2)
+        self.assertGreater(ingest.clock_fit(rows), 4.0)                   # what a fit without the stretches would re-time by
+        self.assertEqual(v["timescale"], 2.2)
+        self.assertAlmostEqual(v["duration"], 30.0 * 2.2, delta=3.0)
+
+        res = self.run_recut(S, OSD_AT_2_2)
+        self.assertEqual(res["timescale"], 2.2)
+        v = db.load(S)["videos"][0]
+        self.assertEqual(v["timescale"], 2.2)
+        self.assertAlmostEqual(v["duration"], 30.0 * 2.2, delta=3.0)
+
     def test_recut_keeps_the_clock_it_cannot_read(self):
         """Review on #30: a re-timed clip (timescale 2.2) recut where the OSD cannot be read keeps its clock: the new
         encode is re-timed by the stored factor, and moments and matches stay put, instead of the clip playing 2.2x
@@ -356,11 +486,7 @@ class IngestTest(_Scratch):
         ingest.retime(p, 2.2)                                                           # as ingest left a mis-stamped clip
         db.set_video_fields(S, v["file"], timescale=2.2, duration=ingest.video.probe(p)["duration"])
         db.tag(S, v["file"], 11.0, 13.2, "at 5-6 s of the original", [])
-        code = ("from acroscope import ingest\nimport json\ningest.fix_clock = lambda path, kept, log=print: None\n"
-                f"print(json.dumps(ingest.recut({S!r}, '001', log=lambda m: None)))")
-        r = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        res = json.loads(r.stdout.strip().splitlines()[-1])
+        res = self.run_recut(S, "ingest.fix_clock = lambda path, kept, log=print: None")
         self.assertEqual(res["timescale"], 2.2)
         s = db.load(S)
         self.assertEqual(s["videos"][0]["timescale"], 2.2)
