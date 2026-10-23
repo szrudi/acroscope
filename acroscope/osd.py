@@ -77,10 +77,11 @@ STATS_SCORE = 0.6     # a STATS digit correlates 0.73-0.97 with its template; th
                       # STATS screen 0.25-0.5
 
 
-# The derived layouts (osdprofile): () -> (the stored profiles document, updated_at), set by the server and the local
-# CLI like tricks.LAYER_SOURCE, so this module never opens a database itself; tests set it explicitly.
+# The derived layouts (osdprofile): () -> (the stored profiles document, updated_at), set by the local CLI (cli.main)
+# like tricks.LAYER_SOURCE, so this module never opens a database itself; tests set it explicitly.
 PROFILE_SOURCE = None
-_derived: dict = {"key": None, "layouts": {}, "errors": {}}
+SOURCE_EVERY = 1.0         # seconds between looks at PROFILE_SOURCE: every cell of a frame asks for its layout
+_derived: dict = {"source": None, "checked": 0.0, "key": None, "layouts": {}, "errors": {}, "all": {}}
 
 
 def _profiles_doc():
@@ -88,20 +89,29 @@ def _profiles_doc():
 
 
 def layouts() -> dict:
-    """Every layout the reader knows: the hand-measured LAYOUTS, then the derived profiles (a profile that does not
-    derive any more is left out and named in derived_errors())."""
+    """Every layout the reader knows, {name: layout} (the cache itself: not to be changed): the hand-measured
+    LAYOUTS, then the derived profiles (a profile that does not derive is left out and named in derived_errors()).
+    The stored profiles are looked at once per SOURCE_EVERY s and derived again only when their `updated_at` says
+    they changed: a frame's hundreds of cells do not each read the database."""
+    import time
     from . import osdprofile
-    doc = _profiles_doc()
-    key = osdprofile.fingerprint(doc)
+    src, now = PROFILE_SOURCE, time.monotonic()
+    if _derived["source"] is src and _derived["key"] is not None and now - _derived["checked"] < SOURCE_EVERY:
+        return _derived["all"]
+    doc, updated = src() if src else (None, None)
+    key = (src, updated, osdprofile.fingerprint(doc) if updated is None else None)     # the source itself: a new one is new
+    _derived.update(source=src, checked=now)
     if _derived["key"] != key:
         out, errors = {}, {}
         for name, p in ((doc or {}).get("profiles") or {}).items():
+            if name in LAYOUTS:
+                continue
             try:
                 out[name] = osdprofile.derive(p, name)
-            except (ValueError, KeyError) as e:
-                errors[name] = str(e)
-        _derived.update(key=key, layouts=out, errors=errors)
-    return {**LAYOUTS, **{k: v for k, v in _derived["layouts"].items() if k not in LAYOUTS}}
+            except Exception as e:  # noqa: BLE001  (one broken stored profile is named, the others still read)
+                errors[name] = str(e) or type(e).__name__
+        _derived.update(key=key, layouts=out, errors=errors, all={**LAYOUTS, **out})
+    return _derived["all"]
 
 
 def derived_errors() -> dict:
