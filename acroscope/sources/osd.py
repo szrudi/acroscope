@@ -48,11 +48,7 @@ STATS_SCORE = 0.6     # a STATS digit correlates 0.73-0.97 with its template; th
 PROFILE_SOURCE = None
 SOURCE_EVERY = 1.0         # seconds between looks at PROFILE_SOURCE: every cell of a frame asks for its layout
 RETRY_DERIVE = 60          # seconds before profiles that did not derive (a font not fetched yet) are tried again
-_derived: dict = {"source": None, "checked": 0.0, "key": None, "at": 0.0, "layouts": {}, "errors": {}}
-
-
-def _profiles_doc():
-    return PROFILE_SOURCE()[0] if PROFILE_SOURCE else None
+_derived: dict = {"source": None, "checked": 0.0, "key": None, "at": 0.0, "layouts": {}, "errors": {}, "fp": "none", "names": ""}
 
 
 def shipped() -> dict:
@@ -64,21 +60,22 @@ def builtin_names() -> list[str]:
     return sorted(shipped())
 
 
-def layouts() -> dict:
+def layouts(fresh: bool = False) -> dict:
     """Every layout the reader knows, {name: layout} (the cache itself: not to be changed): the shipped profiles,
     then the pilot's (a name the shipped ones have is theirs). A profile that does not derive (its font could not be
     fetched, a stored one that is broken) is left out, named in derived_errors(), and tried again after RETRY_DERIVE
-    s. The stored profiles are looked at once per SOURCE_EVERY s and derived again only when their `updated_at` says
-    they changed: a frame's hundreds of cells do not each read the database."""
+    s. The stored profiles are looked at once per SOURCE_EVERY s (`fresh`: now; the readers ask so at the start of a
+    clip) and derived again only when the document changed, by its fingerprint (an updated_at has whole seconds: two
+    saves within one would look alike): a frame's hundreds of cells do not each read the database.
+    _templates_stamp() takes what these layouts came from, never a newer document."""
     import time
     from . import betaflight, osdprofile
     src, now = PROFILE_SOURCE, time.monotonic()
-    if _derived["source"] is src and _derived["key"] is not None and now - _derived["checked"] < SOURCE_EVERY:
+    if not fresh and _derived["source"] is src and _derived["key"] is not None and now - _derived["checked"] < SOURCE_EVERY:
         return _derived["layouts"]
-    doc, updated = src() if src else (None, None)
+    doc = src()[0] if src else None
     st = SHIPPED.stat() if SHIPPED.exists() else None
-    key = (src, updated, osdprofile.fingerprint(doc) if updated is None else None,      # the source itself: a new one is new
-           st and (st.st_size, st.st_mtime_ns), betaflight.FONT_DIR)
+    key = (src, osdprofile.fingerprint(doc), st and (st.st_size, st.st_mtime_ns), betaflight.FONT_DIR)   # the source itself: a new one is new
     _derived.update(source=src, checked=now)
     if _derived["key"] != key or (_derived["errors"] and now - _derived["at"] > RETRY_DERIVE):
         out, errors = {}, {}
@@ -90,7 +87,8 @@ def layouts() -> dict:
                     out[name] = {**osdprofile.derive(p, name), "origin": origin}
                 except Exception as e:  # noqa: BLE001  (one broken profile is named, the others still read)
                     errors[name] = str(e) or type(e).__name__
-        _derived.update(key=key, at=now, layouts=out, errors=errors)
+        _derived.update(key=key, at=now, layouts=out, errors=errors, fp=key[1],
+                        names=f"{st and (st.st_size, int(st.st_mtime))}|{','.join(sorted(out))}")
     return _derived["layouts"]
 
 
@@ -118,16 +116,19 @@ def _x0(layout: str, row: int) -> int:
 
 def _crop(layout: str) -> tuple[int, int, int, int]:
     """x, y, w, h of the strip holding every timer row of a layout (even height: ffmpeg pads odd crops), inside the
-    frame: a timer on row 0 has its cell's top above the picture (the grid at y -4), and ffmpeg would move a crop
-    there down to 0 without saying so; _cell measures from the strip's real top."""
+    frame: a timer on row 0 has its cell's top above the picture (the grid at y -4), one on the last row can end below
+    it, and ffmpeg would move such a crop into the frame without saying so; _cell measures from the strip's real
+    top."""
     L = _layout(layout)
     gx, gw, gy, gh = L["glyph"]
     left = max(0, min(_x0(layout, r) for r in range(len(L["formats"]))))
     top = max(0, L["rows"][0])
     right = max(_x0(layout, r) + len(f) * L["pitch"] + 2 for r, f in enumerate(L["formats"]))
-    h = L["rows"][-1] + gy + gh + 2 - top
+    fh = L.get("frame", [720, 480])[1]
+    bottom = min(L["rows"][-1] + gy + gh + 2, fh)       # nor below it: ffmpeg would move a crop past the bottom up
+    h = bottom - top
     w = min(right, _frame_w(layout)) - left
-    return left, top, w + w % 2, h + h % 2
+    return left, top, w + w % 2, h + h % 2 if top + h + h % 2 <= fh else h - h % 2
 
 
 def digit_cols(layout: str, row: int) -> list[int]:
@@ -179,13 +180,13 @@ def _glyph(buf: bytes, w: int, x: int, y: int, glyph: tuple) -> list[float]:
 
 
 def _templates_stamp() -> str:
-    """What the readings depend on besides the clip: the shipped profiles, the pilot's, and which of them derive
-    (a font fetched since): any change means new readings, in every cache keyed on it."""
+    """What the readings depend on besides the clip: the shipped profiles, the pilot's and which of them derive (a
+    font fetched since), as the reader's layouts were derived from them (layouts()' own record, not the store's
+    newest document: a reading is filed under the layouts it was made with). Any change means new readings, in every
+    cache keyed on it."""
     import hashlib
-    from . import osdprofile
-    st = SHIPPED.stat() if SHIPPED.exists() else None
-    names = ",".join(sorted(layouts()))
-    return hashlib.sha1(f"{st and (st.st_size, int(st.st_mtime))}|{osdprofile.fingerprint(_profiles_doc())}|{names}".encode()).hexdigest()[:12]
+    layouts()
+    return hashlib.sha1(f"{_derived['names']}|{_derived['fp']}".encode()).hexdigest()[:12]
 
 
 def _load_templates(layout: str) -> dict[str, list[float]]:
@@ -334,14 +335,18 @@ RATES = (0.5, 0.75, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0)
 
 def detect_layout(path: Path, fps: float = 0.5) -> str:
     """The layout whose readings make sense: sampled at `fps` over the whole clip, score a layout by the pairs of
-    consecutive readings of each of its timers that count on at 1 s/s. Wrong cells read like digits too, and
-    static text reads the same wrong digits every time, so standing still does not count; only counting does.
-    Both timers count, so two layouts that share a row are told apart by the other one."""
+    consecutive readings that count on at 1 s/s. Wrong cells read like digits too, and static text reads the same
+    wrong digits every time, so standing still does not count; only counting does. A layout with two timers scores
+    only the pairs where both count together (twice each, as two timers): while armed they always do, so a layout
+    that reads one of another layout's rows as its own and nothing in its other row scores nothing, however well it
+    reads that one row (2026-10-10 001: the v3 profile read the arm timer on row 11 as its total, in Impact more
+    cleanly than the learned otto-bold templates, and won with a dead second row)."""
     step = 1 / fps
+    layouts(fresh=True)
 
-    def counting(vals, rate=1.0):
+    def steps(vals, rate=1.0):
         s, tol = step * rate, 0.6 * max(1.0, rate)
-        return sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and s - tol <= b - a <= s + tol)
+        return [a is not None and b is not None and s - tol <= b - a <= s + tol for a, b in zip(vals, vals[1:])]
     if not layouts():
         raise ValueError("no OSD layout to read with: " + ("; ".join(f"{n}: {e}" for n, e in derived_errors().items()) or "no profiles"))
     reads = {}
@@ -351,7 +356,11 @@ def detect_layout(path: Path, fps: float = 0.5) -> str:
             reads[name] = [read_frame(buf, tpl, name) for _, buf in _frames(path, fps, layout=name)]
 
     def score(name, rate):
-        return counting([r[1] for r in reads[name]], rate) + counting([r[0] for r in reads[name]], rate)
+        arm, total = steps([r[0] for r in reads[name]], rate), steps([r[1] for r in reads[name]], rate)
+        L = layouts().get(name) or {}
+        if len(L.get("formats", [])) == 2 and not L.get("cumulative"):
+            return 2 * sum(1 for a, t in zip(arm, total) if a and t)
+        return sum(arm) + sum(total)                     # one timer: the other reads None throughout
     # a tie goes to the shipped layout (then by name): a pilot's profile that reads a clip as well as the one it
     # was read with so far changes nothing about that clip
     rank = lambda n: (layouts()[n].get("origin") == "shipped", n)
@@ -380,6 +389,7 @@ def carry_reading(was: Path, now: Path, fps: float = 2.0) -> None:
 
 def read_timers(path: Path, fps: float = 2.0, layout: str | None = None) -> dict:
     """Read the timers through the clip: {layout, rows: [{t, top, bottom, conf}]} (cached per clip)."""
+    layouts(fresh=True)                    # the profiles as stored now, for the whole clip and the cache's stamp alike
     cp = _timers_cache(path, fps)
     if cp.exists():
         return json.loads(cp.read_text())

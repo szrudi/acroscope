@@ -142,10 +142,11 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   (`.venv`'s finder serves a module the worktree lacks from the main checkout: an old import path still works
   there, against main's code).
 - Smoke checks with known answers through the server, seconds each: `tricks check` (the tricks file's examples, the
-  10-07 pins among them); `sessions 2026-10-07` (20 arms, 15 matches, 29
+  10-07 pins among them); `sessions 2026-10-07` (20 arms, 16 matches with arm 16 matched by hand in 008, 29
   moments); `events 2026-10-07 011` (motor 1 power loss at 1:23.4, hard landing at 1:24.4); `automatch 2026-10-07 008`
   without `--write` (arms 14/15/17 at about +4.75/+20.25/+64.25); `metrics 2026-10-07 007 1:20 1:25 --loop` (-385 deg
-  pitch); `automatch 2026-10-10 001` (15 arms, arm 1 at 8.0, arm 9 at 150.3, boot fit a = 0.9971).
+  pitch); `automatch 2026-10-10 001` (15 arms, arm 1 at 7.9, arm 9 at 150.3, boot fit a = 0.9965; 8.0 and 0.9971 with the hand
+  layouts).
 - `transcode --replace` rewrites clips in the data dir (a second lossy generation); Rudi's call, never run it unasked.
   Clips before 2026-10-09 are still HEVC; proxies in the cache are fine.
 - Pure-Python work that takes seconds (decoding, the OSD reader, detection over many arms) must run in a child

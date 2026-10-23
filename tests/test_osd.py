@@ -105,7 +105,7 @@ class DetectLayoutRateTest(unittest.TestCase):
         from acroscope.sources import osd
         frames = lambda path, fps, layout=None: ((i * 2.0, layout) for i in range(len(readings["A"])))
         seq = {n: iter(r) for n, r in readings.items()}
-        with mock.patch.object(osd, "layouts", lambda: {"A": {}, "B": {}}), mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
+        with mock.patch.object(osd, "layouts", lambda fresh=False: {"A": {}, "B": {}}), mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
                 mock.patch.object(osd, "_frames", frames), mock.patch.object(osd, "read_frame", lambda buf, tpl, name: next(seq[name])):
             return osd.detect_layout(Path("clip.mp4"))
 
@@ -113,6 +113,22 @@ class DetectLayoutRateTest(unittest.TestCase):
         fast = [(round(i * 4.4, 1), round(i * 4.4, 1), 1.0) for i in range(30)]                  # 2.2x: 4.4 s a sample
         junk = [(7.0, 3.0, 1.0)] * 30                                                            # static text read as digits
         self.assertEqual(self.detect({"A": junk, "B": fast}), "B")
+
+    def test_a_dead_second_row_does_not_win(self):
+        """2026-10-10 001: a v3 profile read the arm timer on row 11 as its own total, cleanly, and nothing in its other
+        row; the right layout read both timers but missed half its digits (the learned templates had no 4 or 6). A
+        two-timer layout scores only the pairs where both its timers count together."""
+        from unittest import mock
+        from acroscope.sources import osd
+        two = {"formats": ["dd:dd", "dd:dd.d"], "cumulative": False}
+        dead_row = [(None, i * 2.0, 1.0) for i in range(30)]                            # one row counts, the other never reads
+        patchy = [(i * 2.0 if i % 4 < 2 else None, i * 2.0 + 30 if i % 4 < 2 else None, 1.0) for i in range(30)]   # both, half the time
+        frames = lambda path, fps, layout=None: ((i * 2.0, layout) for i in range(30))
+        seq = {"A": iter(dead_row), "B": iter(patchy)}
+        with mock.patch.object(osd, "layouts", lambda fresh=False: {"A": two, "B": two}), \
+                mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), mock.patch.object(osd, "_frames", frames), \
+                mock.patch.object(osd, "read_frame", lambda buf, tpl, name: next(seq[name])):
+            self.assertEqual(osd.detect_layout(Path("clip.mp4")), "B")
 
     def test_counting_at_one_rate_still_wins(self):
         on_time = [(i * 2.0, i * 2.0, 1.0) for i in range(30)]

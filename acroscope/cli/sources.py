@@ -201,7 +201,7 @@ def cmd_osd_profile(a):
     p = doc["profiles"][a.name]
     if what == "show":
         lay = osdprofile.derive(p, a.name)
-        return out({"profile": {k: v for k, v in p.items() if k != "font"} | {"font": p["font"]["name"]}, "layout": osdprofile._public(lay)}) if a.json \
+        return out({"profile": {k: v for k, v in p.items() if k != "font"} | {"font": (p.get("font") or {}).get("name")}, "layout": osdprofile._public(lay)}) if a.json \
             else print(_profile_summary(a.name, lay))
     if what == "rm":
         new = {**doc, "profiles": {k: v for k, v in doc["profiles"].items() if k != a.name}}

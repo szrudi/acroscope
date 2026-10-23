@@ -3,6 +3,7 @@ profiles against the layouts once measured by hand (HAND), and the reader on syn
 font (tests/osd_synthetic.py; the Configurator's fonts are GPL-3.0 and fetched at run time, never in here: in this
 module every Configurator font is the synthetic one). The real footage is in the proofs on PRs #63 and #64, and in
 the real-data pins (tests/test_realdata.py)."""
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -349,14 +350,14 @@ class RegistryTest(unittest.TestCase):
         frames = lambda path, fps, layout=None: ((i * 2.0, layout) for i in range(30))
         seq = iter(range(10 ** 6))                 # both layouts read the very same counting timers
         two = {"otto": {"origin": "shipped"}, "zz-mine": {"origin": "yours"}}
-        with mock.patch.object(osd, "layouts", lambda: two), mock.patch.object(osd, "_frames", frames), \
+        with mock.patch.object(osd, "layouts", lambda fresh=False: two), mock.patch.object(osd, "_frames", frames), \
                 mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
                 mock.patch.object(osd, "read_frame", lambda buf, tpl, name: same[next(seq) % 30]):
             self.assertEqual(osd.detect_layout(Path("clip.mp4")), "otto")
         # and when nothing counts at 1 s/s (a clock off the clip's), the tie at the other rate goes the same way
         fast = [(round(i * 4.4, 1), round(i * 4.4, 1), 1.0) for i in range(30)]
         seq = iter(range(10 ** 6))
-        with mock.patch.object(osd, "layouts", lambda: two), mock.patch.object(osd, "_frames", frames), \
+        with mock.patch.object(osd, "layouts", lambda fresh=False: two), mock.patch.object(osd, "_frames", frames), \
                 mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
                 mock.patch.object(osd, "read_frame", lambda buf, tpl, name: fast[next(seq) % 30]):
             self.assertEqual(osd.detect_layout(Path("clip.mp4")), "otto")
@@ -426,21 +427,22 @@ class ReviewTest(unittest.TestCase):
             calls.append(1)
             return doc, "2026-10-23T10:00:00"
         osd.PROFILE_SOURCE = source
-        lay = osd.layouts()["synth"]
-        full = syn.osd_frame(syn.font_chars(), lay["grid"], 10.35)
-        x, y, w, h = osd._crop("synth")
-        crop = bytes(full[(y + j) * 720 + x + i] for j in range(h) for i in range(w))
-        calls.clear()
-        for _ in range(20):                                                    # 20 frames, every cell asking for its layout
-            self.assertEqual(osd.read_frame(crop, lay["tpl"], "synth")[:2], (6.3, 36))
-        self.assertLessEqual(len(calls), 2)                                     # once a second, not 652 times a frame
+        with mock.patch("time.monotonic", return_value=1000.0):                # a frozen clock: the count is the code's, not the machine's speed
+            lay = osd.layouts()["synth"]
+            full = syn.osd_frame(syn.font_chars(), lay["grid"], 10.35)
+            x, y, w, h = osd._crop("synth")
+            crop = bytes(full[(y + j) * 720 + x + i] for j in range(h) for i in range(w))
+            calls.clear()
+            for _ in range(20):                                                # 20 frames, every cell asking for its layout
+                self.assertEqual(osd.read_frame(crop, lay["tpl"], "synth")[:2], (6.3, 36))
+        self.assertEqual(len(calls), 0)                                         # within the second: not once, let alone 652 times a frame
         # a change is seen at the next look, by its updated_at
         doc2 = {"version": 1, "profiles": {"synth": {**synth_profile(), "grid": {**synth_profile()["grid"], "x": 5}}}}
         osd.PROFILE_SOURCE = lambda: (doc2, "2026-10-23T10:05:00")
         self.assertEqual(osd.layouts()["synth"]["grid"]["x"], 5)
         same = osd.layouts()
         with mock.patch.object(osd, "SOURCE_EVERY", 0):
-            self.assertIs(osd.layouts(), same)                                  # the same updated_at: nothing derived again
+            self.assertIs(osd.layouts()["synth"], same["synth"])                # the same updated_at: nothing derived again
 
     def test_3_stats_labels_that_only_begin_alike(self):
         lay = osdprofile.derive(synth_profile())
@@ -587,6 +589,121 @@ class ReviewTest(unittest.TestCase):
         self.assertIn("new", osdprofile.check_profiles({"version": 1, "profiles": {"old": broken, "new": synth_profile()}}, stored)["profiles"])
         with self.assertRaises(ValueError):
             osdprofile.check_profiles({"version": 1, "profiles": {"old": broken}})              # nor taken in new
+
+
+
+class SecondReviewTest(unittest.TestCase):
+    """The independent pass over the review's fixes (2026-10-23), finding by finding."""
+
+    def tearDown(self):
+        osd.PROFILE_SOURCE = None
+
+    def test_bottom_edge(self):
+        # PAL, the arm timer on row 15 (the last), the total on row 14, the grid 8 px lower than the default: the arm
+        # cell's box ended 2 px below the 576 px frame, no warning, and ffmpeg moved the reader's crop up 4 px
+        pal = lambda y: profile_with(f"set vcd_video_system = PAL\nset osd_tim_1_pos = {0x800 | (15 << 5) | 20}\nset osd_tim_2_pos = {0x800 | (14 << 5) | 22}\n"
+                                     "set osd_total_flights_pos = 0\n", grid={"y": y})
+        doc = {"version": 1, "profiles": {"pal": pal(4)}}
+        osd.PROFILE_SOURCE = lambda: (doc, "pal")
+        lay = osd.layouts()["pal"]
+        self.assertLessEqual(lay["rows"][1] + lay["glyph"][2] + lay["glyph"][3], 576)   # every box inside the picture
+        x, y, w, h = osd._crop("pal")
+        self.assertLessEqual(y + h, 576)                                        # and the reader's crop
+        chars, buf = syn.font_chars(), syn.background(720, 576)
+        syn.draw(buf, chars, lay["grid"], 22, 14, "\x9c00:36")
+        syn.draw(buf, chars, lay["grid"], 20, 15, "\x9c00:06.3")
+        crop = bytes(buf[(y + j) * 720 + x + i] for j in range(h) for i in range(w))
+        self.assertEqual(osd.read_frame(crop, lay["tpl"], "pal")[:2], (6.3, 36))
+        with self.assertRaisesRegex(ValueError, "px below the picture"):
+            osdprofile.derive(pal(30))                                          # most of the cell below: refused, said
+
+    def test_top_edge_judged_per_cell(self):
+        # timers on rows 1 and 2 cut 2 px at the top, the counter on row 0 cut 38: the counter goes, the timers stay
+        s = (f"set osd_tim_2_pos = {0x800 | (1 << 5) | 22}\nset osd_tim_1_pos = {0x800 | (2 << 5) | 20}\nset osd_total_flights_pos = {0x800 | 24}\n")
+        lay = osdprofile.derive(profile_with(s, grid={"y": -40}))
+        self.assertNotIn("counter", lay)
+        self.assertTrue(any("flight counter" in w for w in lay["warnings"]))
+        self.assertEqual(lay["glyph"][2], 2 + 2)                               # the box narrowed by the timers' own 2 px
+
+    def test_settings_are_text(self):
+        for bad in ({"vcd_video_system": 1}, {"osd_displayport_device": 7}, {"osd_tim_1_pos": float("inf")}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                osdprofile.derive({**synth_profile(), "settings": {**synth_profile()["settings"], **bad}})
+        with self.assertRaisesRegex(ValueError, "not a number"):
+            osdprofile.derive(profile_with("set osd_tim_1_pos = 9e999\n"))      # text that is no number either
+
+    def test_whatever_derive_trips_on_is_a_400(self):
+        # what the type checks do not foresee still names the profile as a ValueError (a 400), never a 500
+        with mock.patch.object(osdprofile, "derive", side_effect=TypeError("something unforeseen")):
+            with self.assertRaisesRegex(ValueError, "mine: something unforeseen"):
+                osdprofile.check_profiles({"version": 1, "profiles": {"mine": synth_profile()}})
+
+    def test_a_stored_font_has_a_name(self):
+        p = synth_profile()
+        with self.assertRaisesRegex(ValueError, "font.name"):
+            osdprofile.check_profiles({"version": 1, "profiles": {"noname": {**p, "font": {"data": p["font"]["data"]}}}})
+
+    def test_two_writers_of_one_font(self):
+        import threading
+        mcm = syn.mcm_text(syn.font_chars())
+
+        class Slow:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self):
+                gate.wait(5)
+                return mcm.encode()
+        gate, both_written, out, errors = threading.Barrier(2), threading.Barrier(2), [], []
+        real_replace = os.replace
+
+        def replace(src, dst):                                                  # both have written before either moves its file
+            both_written.wait(5)
+            real_replace(src, dst)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(betaflight, "FONT_CACHE", Path(tmp)), \
+                mock.patch.object(betaflight, "FONT_DIR", None), mock.patch.object(betaflight, "_failed", {}), \
+                mock.patch("urllib.request.urlopen", return_value=Slow()), mock.patch("os.replace", replace):
+            def fetch():
+                try:
+                    out.append(REAL_FETCH("bold"))
+                except Exception as e:  # noqa: BLE001
+                    errors.append(e)
+            ts = [threading.Thread(target=fetch) for _ in range(2)]
+            [t.start() for t in ts]
+            [t.join(10) for t in ts]
+            self.assertEqual((len(out), errors), (2, []))
+            self.assertEqual(sorted(x.name for x in betaflight._font_path("bold").parent.iterdir()), ["bold.mcm"])
+
+    def test_fonts_ranked_from_a_folder_each_named(self):
+        # ACROSCOPE_FONTS with impact alone: every other font says it is missing itself (not the first one's message)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(betaflight, "FONT_DIR", tmp), mock.patch.object(betaflight, "fetch_font", REAL_FETCH):
+            (Path(tmp) / "impact.mcm").write_text(syn.mcm_text(syn.font_chars()))
+            lay = osdprofile.derive(synth_profile())
+            r = {x["font"]: x for x in osdprofile.rank_fonts([bytes(syn.osd_frame(syn.font_chars(), lay["grid"], 10.35))], synth_profile(), ["default", "bold", "impact"])}
+        self.assertIsNotNone(r["impact"]["score"])
+        self.assertIn("default.mcm is not in", r["default"]["error"])
+        self.assertIn("bold.mcm is not in", r["bold"]["error"])
+
+    def test_the_stamp_is_the_layouts_own(self):
+        # a long reader looked at the profiles a moment ago; a newer document in the store must not stamp a reading
+        # made with the older layouts, and a reader starting a clip looks again
+        box = {"doc": {"version": 1, "profiles": {"mine": synth_profile(x=39)}}}
+        osd.PROFILE_SOURCE = lambda: (box["doc"], "2026-10-23T12:00:00")
+        with mock.patch.object(osd, "SOURCE_EVERY", 3600):
+            old = osd.layouts()["mine"]
+            stamp = osd._templates_stamp()
+            box["doc"] = {"version": 1, "profiles": {"mine": synth_profile(x=3)}}   # saved within the same second
+            self.assertIs(osd.layouts()["mine"], old)
+            self.assertEqual(osd._templates_stamp(), stamp)                     # still the old layouts: the old stamp
+            self.assertEqual(osd.layouts(fresh=True)["mine"]["grid"]["x"], 3)   # a fresh look sees it, same updated_at or not
+            self.assertNotEqual(osd._templates_stamp(), stamp)
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = syn.make_clip(Path(tmp) / "videos" / "s" / "c.mp4", syn.font_chars(), {"x": 3, "y": -4, "cw": 24, "ch": 36}, seconds=8)
+            with mock.patch("acroscope.config.CACHE_DIR", Path(tmp) / "cache"), mock.patch.object(osd, "SOURCE_EVERY", 3600):
+                box["doc"] = {"version": 1, "profiles": {"mine": synth_profile(x=39)}}
+                osd.layouts(fresh=True)
+                box["doc"] = {"version": 1, "profiles": {"mine": synth_profile(x=3)}}
+                rt = osd.read_timers(clip, 2.0, layout="mine")                  # starts a clip: looks again
+                self.assertTrue(any(r["bottom"] is not None for r in rt["rows"]))
 
 
 if __name__ == "__main__":
