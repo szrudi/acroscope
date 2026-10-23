@@ -534,6 +534,54 @@ class ConfigPageTest(unittest.TestCase):
         self.assertEqual(sorted(self.osd_doc()["profiles"]), ["twice"])
         urllib.request.urlopen(urllib.request.Request(self.url + "/api/osd/doc", method="DELETE")).read()
 
+    def test_a_failed_load_overwrites_nothing(self):
+        """Second review: a 502 for the layer on the page's first load used to leave an empty layer in the page, and the
+        next knob saved it over the pilot's. Nothing is loaded, it is said, and nothing can be saved over it."""
+        self.api.set_setting("tricks", {"version": 1, "skill": "beginner", "params": {"tumble_dps": 1234}})
+        ctx = self.browser.new_context(**DESKTOP)
+        self.addCleanup(ctx.close)
+        page = ctx.new_page()
+        page.route("**/api/tricks/layer", lambda route: route.fulfill(status=502, body="<html>Bad Gateway</html>", content_type="text/html")
+                   if route.request.method == "GET" else route.continue_())
+        page.goto(self.url + "/config")
+        page.wait_for_function("() => document.querySelector('#err').classList.contains('on')")
+        self.assertIn("nothing loaded", page.text_content("#err"))
+        page.evaluate("() => setParam('flip_min_deg', 200)")                  # what a knob does: posts the page's layer
+        page.wait_for_function("() => /changed since|reload/.test(document.querySelector('#err').textContent)")
+        self.assertEqual(self.layer(), {"version": 1, "skill": "beginner", "params": {"tumble_dps": 1234}})
+
+    def test_osd_tab_after_a_failed_load_and_a_stale_delete(self):
+        """Second review: one failed load of the OSD profiles broke the tab until a reload; the broken-profile chip
+        retried a stale etag after a 409."""
+        urllib.request.urlopen(urllib.request.Request(self.url + "/api/osd/doc", method="DELETE")).read()
+        page = self.open("/config#profile")
+        page.route("**/api/osd", lambda route: route.fulfill(status=502, body="<html>Bad Gateway</html>", content_type="text/html"))
+        page.click("#tabs [data-tab=osd]")
+        page.wait_for_function("() => /could not be loaded/.test(document.querySelector('#osdPanel').textContent)")
+        page.unroute("**/api/osd")
+        page.click("#tabs [data-tab=tags]")
+        page.click("#tabs [data-tab=osd]")
+        page.wait_for_selector("#oDump")                                        # asked again, and loaded
+        # a broken stored profile, and the document changed by someone else after the page loaded it
+        from acroscope.db import Db
+        from acroscope import osdprofile
+        db = Db(Path(self.tmp.name) / "t.db")
+        good = osdprofile.make(osyn.DUMP, mcm=osyn.mcm_text(osyn.font_chars()), font="synth")
+        db.set_setting("osd", {"version": 1, "profiles": {"good": good, "stale": {**good, "grid": {**good["grid"], "cw": 7}}}})
+        page = self.open("/config#osd")
+        page.wait_for_selector("[data-obroken=stale]")
+        db.set_setting("osd", {"version": 1, "profiles": {"good": {**good, "note": "elsewhere"}, "stale": {**good, "grid": {**good["grid"], "cw": 7}}}})
+        page.on("dialog", lambda d: d.accept())
+        etag = page.evaluate("() => ODOC.etag")
+        page.click("[data-obroken=stale]")
+        page.wait_for_function("() => /changed since/.test(document.querySelector('#err').textContent)")
+        page.wait_for_function("(e) => ODOC.etag !== e && document.querySelector('[data-obroken=stale]')", arg=etag)   # loaded again
+        page.click("[data-obroken=stale]")                                      # so the retry goes through
+        page.wait_for_function("() => !document.querySelector('[data-obroken=stale]')")
+        self.assertEqual(self.osd_doc()["profiles"]["good"]["note"], "elsewhere")
+        self.assertNotIn("stale", self.osd_doc()["profiles"])
+        urllib.request.urlopen(urllib.request.Request(self.url + "/api/osd/doc", method="DELETE")).read()
+
 
 if __name__ == "__main__":
     unittest.main()

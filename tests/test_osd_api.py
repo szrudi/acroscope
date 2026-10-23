@@ -220,6 +220,25 @@ class OsdApiTest(unittest.TestCase):
         self.assertEqual(sorted(saved["doc"]["profiles"]), ["new", "old"])
         self.call("DELETE", "/api/osd/doc")
 
+    def test_7_second_review(self):
+        """The independent pass over the fixes: numbers where the dump has text, a font without a name, a child that
+        fails in an unforeseen way, and a writer that never loaded what it would overwrite."""
+        p = self.derive()["profile"]
+        odd = {**p, "settings": {**p["settings"], "vcd_video_system": 1}}
+        self.assertIn("settings", self.call("POST", "/api/osd/derive", {"profile": odd}, 400)["error"])
+        self.assertIn("settings", self.call("POST", "/api/osd/doc", {"version": 1, "profiles": {"odd": odd}}, 400)["error"])
+        raw = json.dumps({"profile": p, "session": S, "video": "001", "t": 1}).replace(f'"osd_tim_1_pos": "{p["settings"]["osd_tim_1_pos"]}"', '"osd_tim_1_pos": Infinity')
+        self.assertIn("settings", self.call("POST", "/api/osd/probe", raw=raw, code=400)["error"])
+        self.assertIn("font.name", self.call("POST", "/api/osd/doc", {"version": 1, "profiles": {"noname": {**p, "font": {"data": p["font"]["data"]}}}}, 400)["error"])
+        # the tricks layer and the OSD profiles: an empty etag is a page that never loaded them, refused, not a blind overwrite
+        self.r.set_setting("tricks", {"version": 1, "skill": "beginner"})
+        self.assertIn("changed since", self.call("POST", "/api/tricks/layer?etag=", {"version": 1}, 409)["error"])
+        self.assertEqual(self.r.setting("tricks")["value"], {"version": 1, "skill": "beginner"})
+        self.r.delete_setting("tricks")
+        self.call("POST", "/api/osd/doc", {"version": 1, "profiles": {"kept": p}})
+        self.assertIn("changed since", self.call("POST", "/api/osd/doc?etag=", {"version": 1, "profiles": {}}, 409)["error"])
+        self.call("DELETE", "/api/osd/doc")
+
 
 if __name__ == "__main__":
     unittest.main()
