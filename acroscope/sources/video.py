@@ -7,7 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from .config import H264_ARGS, NAMES_ONLY, VIDEOS_DIR, cache
+from ..config import H264_ARGS, NAMES_ONLY, VIDEOS_DIR, cache
 
 
 def resolve_video(session: str, file: str) -> Path:

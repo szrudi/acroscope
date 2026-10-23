@@ -7,7 +7,7 @@ import traceback
 import unittest
 from pathlib import Path
 
-from acroscope.db import Db
+from acroscope.store.db import Db
 
 
 class ThreadsTest(unittest.TestCase):

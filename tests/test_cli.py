@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from acroscope.cli import fmt_time, parse_time
+from acroscope.cli.common import fmt_time, parse_time
 
 
 class CliTest(unittest.TestCase):

@@ -10,9 +10,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from acroscope.metrics import LEAN_CONVENTION  # noqa: E402
-from acroscope.remote import Remote  # noqa: E402
-from acroscope import sessions  # noqa: E402
+from acroscope.store import sessions
+from acroscope.analyse.metrics import LEAN_CONVENTION
+from acroscope.store.remote import Remote
 
 
 def todo(r: Remote):

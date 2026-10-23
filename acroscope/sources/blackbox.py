@@ -18,7 +18,7 @@ import struct
 from bisect import bisect_left
 from pathlib import Path
 
-from .config import BLACKBOX_DIR, NAMES_ONLY, cache
+from ..config import BLACKBOX_DIR, NAMES_ONLY, cache
 
 logging.getLogger("orangebox").setLevel(logging.ERROR)
 

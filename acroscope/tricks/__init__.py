@@ -13,14 +13,14 @@ A sequence trick (`phases`) chains windows of several segments: each phase's con
 phase starting after the one before and within so many seconds of its end; the detection spans them all and its
 texts see every phase's features as p1.*, p2.*.
 """
-import hashlib
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..blackbox import Arm
 from . import expr, features, segments
+from ..sources.blackbox import Arm
+from ..store import db
 from .library import SHIPPED, Library, LibraryError, Trick
 
 __all__ = ["check", "describe", "detect", "evaluate", "explain", "export_toml", "import_table", "library", "merge_tables", "Library", "LibraryError", "SHIPPED"]
@@ -67,8 +67,9 @@ def library() -> Library:
 
 def layer_etag(table) -> str:
     """A short hash of a layer document: what a writer says it started from, so two writers do not lose each
-    other's changes (`updated_at` is whole seconds)."""
-    return hashlib.sha1(json.dumps(table or {}, sort_keys=True).encode()).hexdigest()[:12]
+    other's changes (`updated_at` is whole seconds). The store's settings etag (db.etag_of), by the tricks package's
+    name for it."""
+    return db.etag_of(table)
 
 
 def check_layer(table: dict) -> Library:
@@ -81,7 +82,7 @@ def describe(lib: Library, craft: str | None = None) -> dict:
     """The library in force as the player and `tricks --json` see it: every param with its default and where its
     value came from, the presets, the crafts (declared, and seen in the logs), the segments, the tricks with their
     definitions and sources, the feature names per segment kind."""
-    from .. import blackbox
+    from ..sources import blackbox
     eff = lib.for_craft(craft)
     sources = lib.param_sources(craft)
     shipped = lib.layers[0][1] if lib.layers else {}
@@ -533,7 +534,7 @@ def check(lib: Library | None = None, only: list[str] | None = None, craft: str 
     makes under that file's own numbers: the shipped examples run on the shipped file alone, a layer's on the files
     up to and including it (`craft`: each one's section for that craft), so the pilot's preset, params or a trick
     switched off fail no shipped example."""
-    from .. import blackbox
+    from ..sources import blackbox
     lib = lib or library()
     results = []
     arms: dict[tuple, list | None] = {}

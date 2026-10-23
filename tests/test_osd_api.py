@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from acroscope.remote import Remote
+from acroscope.store.remote import Remote
 
 try:
     from tests import osd_synthetic as syn
@@ -208,7 +208,7 @@ class OsdApiTest(unittest.TestCase):
 
     def test_6_review_a_broken_stored_profile(self):
         """#63 review: a stored profile that no longer derives is listed, and does not block saving the others."""
-        from acroscope.db import Db
+        from acroscope.store.db import Db
         p = self.derive()["profile"]
         broken = {**p, "grid": {**p["grid"], "cw": 7}}                          # a check stricter than when it was stored
         db = Db(Path(self.tmp.name) / "t.db")

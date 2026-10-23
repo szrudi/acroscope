@@ -19,8 +19,9 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from acroscope import blackbox, share
-from acroscope.db import Db
+from acroscope import share
+from acroscope.sources import blackbox
+from acroscope.store.db import Db
 
 SESSION = "2026-10-04-motor-jitter-testing"
 REPO = "https://github.com/szrudi/acroscope"               # the footer's one link out
@@ -675,7 +676,7 @@ class ThroughServerTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_share_through_the_server(self):
-        from acroscope.remote import Remote
+        from acroscope.store.remote import Remote
         c = self.client
         Remote(self.url).refresh(SESSION)                                                 # the server walks its folder
         self.assertEqual(cli(c, "match", SESSION, "001", LOG, "1", "2").returncode, 0)

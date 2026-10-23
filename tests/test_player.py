@@ -114,7 +114,7 @@ class PlayerTest(unittest.TestCase):
                 time.sleep(0.1)
         else:
             raise RuntimeError("server did not come up")
-        from acroscope.remote import Remote
+        from acroscope.store.remote import Remote
         cls.api = Remote(cls.url)
         for s in cls.SESSIONS:
             cls.api.refresh(s, probe_videos=s == cls.SHARE)

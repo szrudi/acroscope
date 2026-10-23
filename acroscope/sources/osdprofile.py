@@ -12,7 +12,7 @@ OSD tab, or `acroscope osd-profile`).
 The grid is the one thing that is the DVR's, not Betaflight's. On the goggles flown here (720 x 480 analog DVR,
 2026-10) column c starts at x = 3 + 24 c and row r at y = -4 + 36 r: fitted (`fit`) on the 10-09 and 10-11 timers (x = 4 on
 the 09-23 dump's footage: the reader's one-pixel shifts take either).
-The layouts flown here ship as profiles (acroscope/osd-profiles.json, fonts by name); a pilot's own live in the
+The layouts flown here ship as profiles (acroscope/sources/osd-profiles.json, fonts by name); a pilot's own live in the
 database (settings row `osd`, PROFILES_KEY), one document {version, profiles: {name: ...}}. osd.layouts() is both,
 and detect_layout picks among them by which counts.
 """

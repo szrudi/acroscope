@@ -7,6 +7,7 @@ rest of the package has always used: load() gives {session, date, note, videos, 
 Clips are never deleted by a scan: a clip whose file is gone gets `missing_since` set (and cleared when it comes
 back); purge() is the only thing that removes rows, and it is explicit.
 """
+import hashlib
 import json
 import re
 import sqlite3
@@ -71,6 +72,12 @@ SEED_TAGS = [("flip", "tricks", "#f5a524"), ("roll", "tricks", "#ffd166"), ("pow
 
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def etag_of(doc) -> str:
+    """A short hash of a settings document: what a writer says it started from, so two writers do not lose each
+    other's changes (`updated_at` is whole seconds). The tricks layer's and the OSD profiles' writes both carry one."""
+    return hashlib.sha1(json.dumps(doc or {}, sort_keys=True).encode()).hexdigest()[:12]
 
 
 class Db:
@@ -547,13 +554,12 @@ class Db:
         return {"value": json.loads(r["value"]), "updated_at": r["updated_at"]} if r else None
 
     def set_setting(self, key: str, value, etag: str | None = None) -> dict:
-        """Store a setting. With `etag` (a hash of the document the writer started from, tricks.layer_etag), the
+        """Store a setting. With `etag` (a hash of the document the writer started from, etag_of), the
         write is refused when the stored document is not that one any more: two writers never lose each other's
         changes silently."""
         if etag is not None:
-            from .tricks import layer_etag
             row = self.setting(key)
-            if layer_etag(row["value"] if row else None) != etag:
+            if etag_of(row["value"] if row else None) != etag:
                 raise ValueError(f"{key}: changed since you loaded it; load it again and redo the change")
         stamp = now()
         self.c.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",

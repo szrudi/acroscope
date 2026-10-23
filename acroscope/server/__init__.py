@@ -2,8 +2,8 @@
 as static files with Range support (seeking needs it). The server owns the database; the CLI on another machine
 uses these endpoints (remote.Remote). Writes go through the same functions as the CLI.
 
-The data dir is only walked in the background (a scan at start and every SCAN_EVERY seconds, and on request): a
-page open never waits on the Drive mount."""
+The data dir is only walked in the background (jobs: a scan at start, every SCAN_EVERY seconds, and on request):
+a page open never waits on the Drive mount."""
 import json
 import math
 import mimetypes
@@ -12,135 +12,26 @@ import re
 import subprocess
 import sys
 import threading
-import time
-import uuid
-from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import blackbox, ingest, metrics, osdprofile, sessions, share, tricks, video
-from .config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
+from . import jobs
+from .. import ingest, share, tricks
+from ..analyse import events, lanes, metrics
+from ..match import manual
+from ..review import moments
+from ..sources import blackbox, osdprofile, video
+from ..store import db, edits, sessions
+from ..config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
 
-STATIC = Path(__file__).parent / "static"
+
+STATIC = Path(__file__).parent.parent / "static"
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 _lock = threading.Lock()
-_busy: set[str] = set()          # blackbox files being decoded / sessions being probed right now
-_busy_lock = threading.Lock()
-SCAN_EVERY = 300                 # seconds between background walks of the data dir
-# CLI commands a client may run here (they need the clips, the logs or the cache, which only the server has);
-# each runs in a child process, so the reader's pure-Python work never holds this process's GIL
-PROXIED = {"arms", "decode", "metrics", "events", "tricks", "frame", "sheet", "osd", "automatch", "tags", "sessions", "moments", "inbox", "match", "attach", "detach", "tag", "recut",
-           "share", "unshare", "shares", "osd-profile"}        # osd-profile: `read` only (_check_proxied)
-INBOX_EVERY = 20                 # seconds between looks at inbox/ for a complete batch
-
-
-def _background(key: str, fn):
-    """Run fn once in a thread, keyed so repeated requests don't start it twice."""
-    with _busy_lock:
-        if key in _busy:
-            return
-        _busy.add(key)
-
-    def run():
-        try:
-            fn()
-        except Exception as e:  # noqa: BLE001
-            print(f"background {key}: {type(e).__name__}: {e}")
-        finally:
-            with _busy_lock:
-                _busy.discard(key)
-    threading.Thread(target=run, name=key, daemon=True).start()
-
-
-def _cli(*args: str):
-    """Run an acroscope CLI command in a child process. Decoding is pure Python and would hold the GIL for
-    30 s per file inside this server; a child process keeps requests responsive and uses another core."""
-    env = dict(os.environ, ACROSCOPE_URL="")      # the child writes the database directly, never through this server
-    subprocess.run([sys.executable, "-m", "acroscope.cli", *args], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-
-
-FREE_TEXT = {"title", "note", "tags", "text"}   # a client's command may say anything here; every other value names something
 # a share request's keys and their types (#57): what POST /api/share and /api/share/preview accept, nothing else
 SHARE_BODY = {"moment": str, "video": str, "text": str, "expires": str, "preview": str, "sticks": bool, "audio": bool,
               "start": float, "end": float, "pad": float, "poster": float}
-
-
-def _check_proxied(args: list[str]) -> None:
-    """Only PROXIED commands, and only names (sessions, clips, logs, times) where a value names something: a path
-    would let a client point ffmpeg or the decoder at any file on this host. Free text (a moment's title, a note,
-    tags) may hold a '/' ("725 deg/s", #32): the command is parsed with the CLI's own parser to tell which is which."""
-    if not args or args[0] not in PROXIED:
-        raise ValueError(f"not a command a client may run here: {args[:1]}")
-    from . import cli
-    try:
-        ns = cli.parser().parse_args(args)
-    except SystemExit:                                   # argparse's own error (or --help): not a command to run
-        raise ValueError(f"not a valid command: {' '.join(args)}") from None
-    for k, v in vars(ns).items():
-        if k in FREE_TEXT:
-            continue
-        for x in v if isinstance(v, list) else [v]:
-            if isinstance(x, str) and "/" in x:
-                raise ValueError("paths are not accepted here: name the session, the clip and the log instead")
-    if args[0] == "tricks" and len(args) > 1 and args[1] in ("export", "import"):
-        raise ValueError("tricks export/import read and write a file on the client: not through the server")
-    if args[0] == "osd-profile" and getattr(ns, "what", None) != "read":
-        raise ValueError("osd-profile: only `read` runs here (a profile is made from a dump and a font on the client)")
-
-
-def run_cli(args: list[str], timeout: float = 1800) -> dict:
-    """A client's CLI command, run here: {stdout, stderr, code}."""
-    _check_proxied(args)
-    env = dict(os.environ, ACROSCOPE_URL="", ACROSCOPE_NAMES_ONLY="1")   # and a bare name never means a file in our cwd
-    r = subprocess.run([sys.executable, "-m", "acroscope.cli", *args], capture_output=True, text=True, env=env, timeout=timeout)
-    return {"stdout": r.stdout, "stderr": r.stderr, "code": r.returncode}
-
-
-# A client's command as a job: POST /api/cli with "async" answers {job} at once, GET /api/cli/<job> gives {done}
-# until it has finished, then the result (once). An automatch over a whole session takes longer than any HTTP
-# read timeout the client can sensibly wait on (#9). The child is a subprocess, so a thread is fine.
-_jobs: dict[str, dict] = {}
-_jobs_lock = threading.Lock()
-JOB_TIMEOUT = 3600               # seconds a job's child may run
-JOB_KEEP = 3600                  # seconds a finished job nobody fetched is kept
-
-
-def start_job(args: list[str]) -> str:
-    """A new job, or the one already running the very same command (a player reloaded during its 🎯 presses it
-    again: two `automatch --write` children on one session would race each other's matches)."""
-    _check_proxied(args)
-    jid = uuid.uuid4().hex[:12]
-    now = time.time()
-    with _jobs_lock:
-        for k in [k for k, j in _jobs.items() if j["done"] and now - j["finished"] > JOB_KEEP]:
-            del _jobs[k]
-        same = next((k for k, j in _jobs.items() if not j["done"] and j["args"] == args), None)
-        if same:
-            return same
-        _jobs[jid] = {"done": False, "args": args, "started": now}
-
-    def run():
-        try:
-            r = run_cli(args, timeout=JOB_TIMEOUT)
-        except Exception as e:  # noqa: BLE001  (the child timed out, ...)
-            r = {"stdout": "", "stderr": f"{type(e).__name__}: {e}\n", "code": 1}
-        with _jobs_lock:
-            _jobs[jid] = {"done": True, "finished": time.time(), **r}
-    threading.Thread(target=run, name=f"job:{jid}", daemon=True).start()
-    return jid
-
-
-def job(jid: str) -> dict | None:
-    """{done: False, seconds} while running; the result once done (and the job is forgotten); None if unknown."""
-    with _jobs_lock:
-        j = _jobs.get(jid)
-        if j is None:
-            return None
-        if not j["done"]:
-            return {"done": False, "seconds": round(time.time() - j["started"])}
-        del _jobs[jid]
-    return {"done": True, "stdout": j["stdout"], "stderr": j["stderr"], "code": j["code"]}
 
 
 OSD_PROBE_TIMEOUT = 180          # seconds an OSD tab look (a frame read, a grid fit, the fonts ranked) may take in its child
@@ -165,7 +56,7 @@ def osd_probe(body: dict) -> dict:
         raise FileNotFoundError(f"{name}/{path.name}: no such clip")
     req = {"op": op, "profile": body["profile"], "path": str(path), "times": [float(t)]}
     try:
-        r = subprocess.run([sys.executable, "-m", "acroscope.osdprofile"], input=json.dumps(req), capture_output=True, text=True,
+        r = subprocess.run([sys.executable, "-m", "acroscope.sources.osdprofile"], input=json.dumps(req), capture_output=True, text=True,
                            timeout=OSD_PROBE_TIMEOUT, env=dict(os.environ, ACROSCOPE_URL=""))
     except subprocess.TimeoutExpired:
         raise ValueError(f"the OSD look ({op}) took longer than {OSD_PROBE_TIMEOUT} s: try one frame with fewer fonts, or upload the .mcm") from None
@@ -213,88 +104,6 @@ def osd_derive(body: dict) -> dict:
     return {"profile": prof, "layout": osdprofile._public(lay), "glyphs": osdprofile.glyphs(prof)}
 
 
-def _decode_async(bbl: str):
-    _background(f"decode:{bbl}", lambda: _cli("arms", bbl))
-
-
-def _log_state(bbl: str) -> str:
-    """"ready" when the log's arms are in the cache, "gone" when the log file is, else "decoding": the decode starts
-    in a child, as a request thread must never decode (30 s with the GIL held freezes every other request)."""
-    try:
-        if blackbox.index_bbl(bbl, cached_only=True) is not None:
-            return "ready"
-    except FileNotFoundError:            # nothing to show, nothing to decode
-        return "gone"
-    _decode_async(bbl)
-    return "decoding"
-
-
-def _indexed(bbl: str) -> bool:
-    return _log_state(bbl) == "ready"
-
-
-def _probe_async(session: str):
-    # ffprobe is a subprocess, so a thread is fine here (unlike decoding)
-    _background(f"probe:{session}", lambda: sessions.refresh(session))
-
-
-def scan_all(decode: bool = True) -> None:
-    """Walk the data dir: register new session folders, refresh every session (new clips probed, gone clips marked
-    missing), and decode blackbox files that are not in the cache yet (one child process at a time)."""
-    if not sessions.session_dirs():
-        print("scan: data dir not mounted, nothing to do", flush=True)
-        return
-    for row in sessions.scan():
-        try:
-            s = sessions.refresh(row["session"])
-        except Exception as e:  # noqa: BLE001
-            print(f"scan {row['session']}: {type(e).__name__}: {e}", flush=True)
-            continue
-        if decode:
-            for b in s["blackbox"]:
-                if blackbox.index_bbl(b, cached_only=True) is None:
-                    _cli("arms", b)
-
-
-def first_start() -> None:
-    """An empty database next to a data dir with the old session.json files: import them once."""
-    if not sessions.remote() and not sessions.store().sessions():
-        done = sessions.import_json()
-        if done:
-            print(f"imported {len(done)} session file(s) into {sessions.store()}", flush=True)
-
-
-def ingest_pending() -> None:
-    """One batch at a time, in a child process (ffmpeg, the decoder and the OSD reader live there)."""
-    for b in ingest.pending():
-        print(f"ingest {b}", flush=True)
-        _cli("ingest", b)
-
-
-def background_scans():
-    """Every INBOX_EVERY s: ingest complete batches. Every SCAN_EVERY s: walk the data dir. Once a day: originals
-    past retention go, the database is backed up into the data dir."""
-    def run():
-        first_start()
-        last_scan, last_day = 0.0, None
-        while True:
-            if time.time() - last_scan >= SCAN_EVERY:
-                t = time.time()
-                scan_all()
-                print(f"scan done in {time.time() - t:.0f} s", flush=True)
-                last_scan = time.time()
-            try:
-                ingest_pending()
-            except Exception as e:  # noqa: BLE001
-                print(f"ingest: {type(e).__name__}: {e}", flush=True)
-            day = time.strftime("%Y-%m-%d")
-            if day != last_day:
-                _cli("housekeeping")
-                last_day = day
-            time.sleep(INBOX_EVERY)
-    threading.Thread(target=run, name="scan", daemon=True).start()
-
-
 def _under(root: Path, *parts: str) -> Path:
     """root/parts, refused when it would leave root (a '..' or an encoded slash inside a path segment). Lexical,
     so a session folder that is a symlink to somewhere else still serves."""
@@ -302,51 +111,6 @@ def _under(root: Path, *parts: str) -> Path:
     if not Path(os.path.normpath(p)).is_relative_to(Path(os.path.normpath(root))):
         raise FileNotFoundError(f"{'/'.join(parts)}: not under {root.name}")
     return p
-
-
-@lru_cache(maxsize=64)
-def _events(bbl: str, arm: int, stamp: tuple) -> list[dict]:
-    """The suggestions for an arm under the tricks in force (`stamp`: tricks.fingerprint(), the shipped file's mtime
-    and the pilot's layer, so a change shows on the next look without a restart)."""
-    return tricks.detect(blackbox.load_arm(bbl, arm))
-
-
-@lru_cache(maxsize=16)
-def _series(bbl: str, arm: int, step: float) -> dict:
-    """Downsampled lanes for the strip under the video: per `step` s, throttle %, tilt deg, vbat V, |gyro| max."""
-    a = blackbox.load_arm(bbl, arm)
-    rc3, vb = a.col("rcCommand[3]"), a.col("vbatLatest")
-    g = [a.col(f"gyroADC[{k}]") for k in range(3)]
-    n = int(a.length / step) + 1
-    rows = []
-    for b in range(n):
-        i0, i1 = a.window(b * step, (b + 1) * step)
-        if i1 <= i0:
-            rows.append(None)
-            continue
-        mid = (i0 + i1) // 2
-        rows.append([round((rc3[mid] - 1000) / 10), round(a.tilt(mid)), round(vb[mid] / 100, 2),
-                     round(max(max(abs(g[k][i]) for k in range(3)) for i in range(i0, i1, max(1, (i1 - i0) // 20))))])
-    return {"step": step, "length": a.length, "fields": ["throttle", "tilt", "vbat", "gyro_max"], "rows": rows}
-
-
-@lru_cache(maxsize=16)
-def _sticks(bbl: str, arm: int, step: float) -> dict:
-    """The sticks every `step` s for the player's virtual sticks, in the picture's terms: Mode 2, every axis + = stick
-    right or up, in % (throttle 0..100, the others -100..100). rcCommand[2] is + for the left stick LEFT
-    (metrics.CONVENTIONS), so yaw is negated here and nowhere else."""
-    a = blackbox.load_arm(bbl, arm)
-    rc = [a.col(f"rcCommand[{k}]") for k in range(4)]
-    out = {"throttle": [], "yaw": [], "pitch": [], "roll": []}
-    i = 0
-    for b in range(int(a.length / step) + 1):
-        while i + 1 < a.n and a.t[i + 1] <= b * step:
-            i += 1
-        out["throttle"].append(max(0, min(100, round((rc[3][i] - 1000) / 10))))
-        out["yaw"].append(round(-rc[2][i] / 5))
-        out["pitch"].append(round(rc[1][i] / 5))
-        out["roll"].append(round(rc[0][i] / 5))
-    return {"step": step, "length": a.length, **out}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -470,7 +234,7 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "inbox"]:
                 return self._json(ingest.list_inbox())
             if parts[:2] == ["api", "cli"] and len(parts) == 3:
-                j = job(parts[2])
+                j = jobs.job(parts[2])
                 return self._json(j if j else {"error": f"no job {parts[2]} (finished and fetched, or the server restarted)"}, 200 if j else 404)
             if parts == ["api", "file"]:                      # a file the CLI made here (a frame, a sheet): cache only
                 p = Path(q.get("path", "")).resolve()
@@ -486,14 +250,14 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "tricks", "layer"]:
                 row = sessions.store().setting(tricks.LAYER_KEY)
                 return self._json({"layer": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None,
-                                   "etag": tricks.layer_etag(row["value"] if row else None)})
+                                   "etag": db.etag_of(row["value"] if row else None)})
             if parts == ["api", "osd"]:                               # the derived OSD profiles (#10), as the reader sees them
                 row = sessions.store().setting(osdprofile.PROFILES_KEY)
                 return self._json({**osdprofile.describe(row["value"] if row else None), "updated_at": row["updated_at"] if row else None})
             if parts == ["api", "osd", "doc"]:
                 row = sessions.store().setting(osdprofile.PROFILES_KEY)
                 return self._json({"doc": row["value"] if row else {}, "updated_at": row["updated_at"] if row else None,
-                                   "etag": tricks.layer_etag(row["value"] if row else None)})
+                                   "etag": db.etag_of(row["value"] if row else None)})
             if parts == ["api", "tricks", "export"]:                   # the layer as a tricks file: what is shared
                 row = sessions.store().setting(tricks.LAYER_KEY)
                 return self._text(tricks.export_toml(row["value"] if row else None), "acroscope-tricks.toml")
@@ -509,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
                     o = sessions.overview(name, cached_only=True)
                     o["blackbox_gone"] = [b for b in o["blackbox"] if not (BLACKBOX_DIR / b).is_file()]   # the player offers no download
                     for b in o["arms_pending"]:
-                        _decode_async(b)
+                        jobs.decode_async(b)
                     for v in o["videos"]:
                         p = VIDEOS_DIR / name / v["file"]
                         v["playable"] = video.playable(p).name if p.exists() else None
@@ -520,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
                             v["codec"] = info["codec"] if info else None
                     if any(v.get("duration") is None or v.get("codec") is None for v in o["videos"]):
                         o["probe_pending"] = True
-                        _probe_async(name)
+                        jobs.probe_async(name)
                     return self._json(o)
                 if parts[3] == "data":
                     return self._json(sessions.load(name))
@@ -532,28 +296,28 @@ class Handler(BaseHTTPRequestHandler):
                     s = sessions.load(name)
                     rows = []
                     for m in s["matches"]:
-                        if (q.get("video") and m["video"] != q["video"]) or not _indexed(m["bbl"]):
+                        if (q.get("video") and m["video"] != q["video"]) or not jobs.indexed(m["bbl"]):
                             continue
-                        for e in _events(m["bbl"], m["arm"], tricks.fingerprint()):
-                            rows.append({**e, "video": m["video"], "start": round(e["arm_from"] + m["offset"], 2), "end": round(e["arm_to"] + m["offset"], 2)})
+                        for e in events.arm_events(m["bbl"], m["arm"], tricks.fingerprint()):
+                            rows.append(events.on_clip(e, m))
                     return self._json(rows)
                 if parts[3] == "series":
                     s = sessions.load(name)
                     out = []
                     for m in s["matches"]:
-                        if m["video"] == q.get("video") and _indexed(m["bbl"]):
-                            out.append({"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **_series(m["bbl"], m["arm"], float(q.get("step", 0.1)))})
+                        if m["video"] == q.get("video") and jobs.indexed(m["bbl"]):
+                            out.append({"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **lanes.series(m["bbl"], m["arm"], float(q.get("step", 0.1)))})
                     return self._json(out)
                 if parts[3] == "sticks":
                     s = sessions.load(name)
                     step = max(0.01, float(q.get("step", 0.02)))
-                    return self._json([{"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **_sticks(m["bbl"], m["arm"], step)}
-                                       for m in s["matches"] if m["video"] == q.get("video") and _indexed(m["bbl"])])
+                    return self._json([{"offset": m["offset"], "arm": m["arm"], "bbl": m["bbl"], **lanes.sticks(m["bbl"], m["arm"], step)}
+                                       for m in s["matches"] if m["video"] == q.get("video") and jobs.indexed(m["bbl"])])
                 if parts[3] == "metrics":
                     s = sessions.load(name)
                     t0, t1 = float(q["from"]), float(q["to"])
                     # before match_for measures the arms; a gone log measures as no length and load_arm 404s below
-                    if any(_log_state(m["bbl"]) == "decoding" for m in s["matches"] if m["video"] == q.get("video")):
+                    if any(jobs.log_state(m["bbl"]) == "decoding" for m in s["matches"] if m["video"] == q.get("video")):
                         return self._json({"error": "log not decoded yet, try again shortly"}, 503)
                     m = sessions.match_for(s, q["video"], t0)
                     if not m:
@@ -578,8 +342,8 @@ class Handler(BaseHTTPRequestHandler):
                 b = self._body()
                 args = [str(x) for x in b.get("args", [])]
                 if b.get("async"):
-                    return self._json({"job": start_job(args)})
-                return self._json(run_cli(args))
+                    return self._json({"job": jobs.start_job(args)})
+                return self._json(jobs.run_cli(args))
             if parts == ["api", "import"]:
                 return self._json(sessions.import_json(self._body().get("session")))
             if parts[:2] == ["api", "inbox"] and len(parts) == 4 and parts[3] == "retry":
@@ -596,19 +360,19 @@ class Handler(BaseHTTPRequestHandler):
                 if "etag" in q:                                   # what the writer started from: another writer's change in between is a 409
                     # (an empty one too: a page that never loaded the layer does not know what it would overwrite)
                     cur = sessions.store().setting(tricks.LAYER_KEY)
-                    if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
+                    if db.etag_of(cur["value"] if cur else None) != q["etag"]:
                         return self._json({"error": "the layer changed since you loaded it (someone else saved); it was loaded again, redo your change"}, 409)
                 row = sessions.store().set_setting(tricks.LAYER_KEY, b)
-                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": db.etag_of(row["value"])})
             if parts == ["api", "osd", "doc"]:                         # the OSD profiles, whole: every one must derive
                 b = self._body()
                 cur = sessions.store().setting(osdprofile.PROFILES_KEY)
                 osdprofile.check_profiles(b, cur["value"] if cur else None)   # what is kept as it was is not checked again
                 if q.get("etag") is not None:
-                    if tricks.layer_etag(cur["value"] if cur else None) != q["etag"]:
+                    if db.etag_of(cur["value"] if cur else None) != q["etag"]:
                         return self._json({"error": "the OSD profiles changed since you loaded them (someone else saved); they were loaded again, redo your change"}, 409)
                 row = sessions.store().set_setting(osdprofile.PROFILES_KEY, b)
-                return self._json({"doc": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
+                return self._json({"doc": row["value"], "updated_at": row["updated_at"], "etag": db.etag_of(row["value"])})
             if parts == ["api", "osd", "derive"]:
                 return self._json(osd_derive(self._body()))
             if parts == ["api", "osd", "probe"]:
@@ -620,7 +384,7 @@ class Handler(BaseHTTPRequestHandler):
                 current = sessions.store().setting(tricks.LAYER_KEY)
                 table = tricks.import_table(b["text"], current["value"] if current else None, b.get("mode", "replace"))
                 row = sessions.store().set_setting(tricks.LAYER_KEY, table)
-                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": tricks.layer_etag(row["value"])})
+                return self._json({"layer": row["value"], "updated_at": row["updated_at"], "etag": db.etag_of(row["value"])})
             if parts == ["api", "tag-categories"]:
                 b = self._body()
                 return self._json(sessions.store().set_category(b["name"], b.get("color")))
@@ -647,7 +411,7 @@ class Handler(BaseHTTPRequestHandler):
                     vid = next((m["video"] for m in s["moments"] if m["id"] == what.get("moment")), what.get("video"))
                     if vid:
                         vid = sessions.resolve_clip(what["session"], vid)   # as resolve takes it: a number or a name too (#59 review)
-                    if any(_log_state(m["bbl"]) == "decoding" for m in s["matches"] if m["video"] == vid):
+                    if any(jobs.log_state(m["bbl"]) == "decoding" for m in s["matches"] if m["video"] == vid):
                         return self._json({"error": "log not decoded yet, try again shortly"}, 503)
                 if parts[-1] == "preview":
                     what.pop("expires", None); what.pop("preview", None)
@@ -659,33 +423,33 @@ class Handler(BaseHTTPRequestHandler):
             name, what, b = parts[2], parts[3], self._body()
             with _lock:
                 if what == "moment":
-                    return self._json(sessions.tag(name, b["video"], float(b["start"]), float(b["end"]), b.get("title", ""),
+                    return self._json(moments.tag(name, b["video"], float(b["start"]), float(b["end"]), b.get("title", ""),
                                                    [t for t in b.get("tags", []) if t], b.get("note", ""), b.get("metrics"), b.get("id")))
                 if what == "note":
-                    sessions.set_note(name, b.get("note", ""), b.get("video"))
+                    moments.set_note(name, b.get("note", ""), b.get("video"))
                     return self._json({"ok": True})
                 if what == "match":                     # resolves the clip and the log like the CLI does
-                    return self._json(sessions.set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", ""))[0])
+                    return self._json(manual.set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", ""))[0])
                 if what == "blackbox":
                     if b.get("add") and not sessions.store().exists(name):     # attaching makes no session
                         raise FileNotFoundError(f"{name}: no such session")
                     for f in b.get("add", []):
-                        sessions.attach(name, f)
+                        manual.attach(name, f)
                     for f in b.get("remove", []):
-                        sessions.detach(name, f)
+                        manual.detach(name, f)
                     return self._json(sessions.load(name)["blackbox"])
                 if what == "purge":
-                    return self._json(sessions.purge(name, b.get("video"), float(b.get("days") or 0)))
+                    return self._json(edits.purge(name, b.get("video"), float(b.get("days") or 0)))
                 if what == "rename":
-                    return self._json(sessions.rename_session(name, b["name"]))
+                    return self._json(edits.rename_session(name, b["name"]))
                 if what == "date":
-                    return self._json(sessions.set_date(name, b["date"]))
+                    return self._json(edits.set_date(name, b["date"]))
                 if what == "move-log":
-                    return self._json(sessions.move_log(name, b["bbl"], b["to"]))
+                    return self._json(manual.move_log(name, b["bbl"], b["to"]))
                 if what == "move":
-                    return self._json(sessions.move_clip(name, b["video"], b["to"]))
+                    return self._json(edits.move_clip(name, b["video"], b["to"]))
                 if what == "merge":
-                    return self._json(sessions.merge_sessions(name, b["into"]))
+                    return self._json(edits.merge_sessions(name, b["into"]))
             if what == "refresh":                      # walks the mount: outside the lock, it can take a while
                 return self._json(sessions.refresh(name, probe_videos=b.get("probe", True)))
             return self._json({"error": "not found"}, 404)
@@ -703,14 +467,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parts[:2] == ["api", "session"] and len(parts) == 5 and parts[3] == "moment":
                 with _lock:
-                    ok = sessions.untag(parts[2], parts[4])
+                    ok = moments.untag(parts[2], parts[4])
                 return self._json({"removed": ok})
             if parts[:2] == ["api", "session"] and len(parts) == 4 and parts[3] == "clip":
                 with _lock:
-                    return self._json(sessions.delete_clip(parts[2], q["video"]))
+                    return self._json(edits.delete_clip(parts[2], q["video"]))
             if parts[:2] == ["api", "session"] and len(parts) == 4 and parts[3] == "match":
                 with _lock:
-                    n = sessions.unmatch(parts[2], q["video"], int(q["arm"]) if q.get("arm") else None)
+                    n = manual.unmatch(parts[2], q["video"], int(q["arm"]) if q.get("arm") else None)
                 return self._json({"removed": n})
             if parts[:2] == ["api", "tags"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})
@@ -747,9 +511,9 @@ def serve(host="0.0.0.0", port=8070, warm: bool = True):
     srv.daemon_threads = True
     print(f"acroscope player on http://{host}:{port}/  (data {VIDEOS_DIR.parent}, {sessions.store()})")
     if warm:
-        background_scans()
+        jobs.background_scans()
     else:
-        first_start()
+        jobs.first_start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -4,7 +4,7 @@ The clips of the first days (before 2026-10-11) were cut and encoded (HEVC; 10-0
 up to 29 s apart (seeking lags), and cuts made by the old static detector, which took real footage too (one clip
 kept 26 s of 148). Where the DVR's original (Motion JPEG) is still in videos/mov/<name>.mov:
 
-- in place, through `ingest.recut`, when nothing can shift: the clip was never cut (same length as its original, so
+- in place, through `ingest.recut.recut`, when nothing can shift: the clip was never cut (same length as its original, so
   its matches map exactly) or it has no matches and no moments;
 - else into a new session `<session>-recut` beside the old one: the clip compressed from its original under the
   same readable name, the session's logs attached, automatch run; moments are not copied (their times would be
@@ -24,8 +24,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from acroscope import cli, ingest, sessions, video  # noqa: E402
-from acroscope.config import DATA_DIR, VIDEOS_DIR  # noqa: E402
+from acroscope import cli, ingest
+from acroscope.ingest import clock, encode, recut
+from acroscope.sources import video
+from acroscope.store import sessions
+from acroscope.config import DATA_DIR, VIDEOS_DIR
 
 MOV = VIDEOS_DIR / "mov"
 
@@ -62,7 +65,7 @@ def plan() -> tuple[list, list, list]:
 
 def in_place(session: str, v: dict, src: Path) -> None:
     sessions.store().set_video_fields(session, v["file"], original=str(src.relative_to(DATA_DIR)))
-    r = ingest.recut(session, v["file"], log=print)
+    r = recut.recut(session, v["file"], log=print)
     print(f"   {v.get('name')}: {r['duration']} s, cuts {r['cuts']}, timescale {r['timescale']}, "
           f"{len(r['matches'])} matches moved, {len(r['check'])} to check {r['check'] or ''}")
 
@@ -82,8 +85,8 @@ def into_copy(session: str, v: dict, src: Path) -> str:
     work = ingest.ORIGINALS_DIR / ".ingest" / f"restore-{cid}.mp4"          # not under videos/: the scan would take it
     work.parent.mkdir(parents=True, exist_ok=True)
     try:
-        res = ingest.compress(src, work)
-        k = ingest.fix_clock(work, res["kept"], print)
+        res = encode.compress(src, work)
+        k = clock.fix_clock(work, res["kept"], print)
     except Exception:
         work.unlink(missing_ok=True)
         raise

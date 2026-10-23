@@ -38,7 +38,7 @@ class ShareApiTest(unittest.TestCase):
                 time.sleep(0.1)
         else:
             raise RuntimeError("server did not come up")
-        from acroscope.remote import Remote
+        from acroscope.store.remote import Remote
         cls.api = Remote(cls.url)
         cls.api.refresh(SESSION)
         cls.api.set_match(SESSION, CLIP, LOG, 1, 2.0)                                   # arm 1 covers video 2.0-4.99

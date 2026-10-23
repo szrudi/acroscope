@@ -13,8 +13,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from acroscope import blackbox
-from acroscope.remote import Remote, RemoteError
+from acroscope.sources import blackbox
+from acroscope.store.remote import Remote, RemoteError
 
 
 def free_port() -> int:
@@ -396,7 +396,8 @@ class ApiTest(unittest.TestCase):
         import io
         from contextlib import redirect_stdout
         from unittest import mock
-        from acroscope import cli, sessions
+        from acroscope import cli
+        from acroscope.store import sessions
         self.r.refresh("2026-10-07-s", probe_videos=False)
         self.r.attach("2026-10-07-s", "dump #2.bbl")
         with tempfile.TemporaryDirectory() as tmp:
@@ -423,7 +424,8 @@ class ApiTest(unittest.TestCase):
         import io
         from contextlib import redirect_stdout
         from unittest import mock
-        from acroscope import cli, sessions
+        from acroscope import cli
+        from acroscope.store import sessions
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "logs").mkdir()
             (Path(tmp) / "logs" / "L_20261007.bbl").write_bytes(LOG_BYTES)
@@ -611,22 +613,22 @@ class JobTest(unittest.TestCase):
     def test_a_running_job_is_not_started_twice(self):
         import threading
         from unittest import mock
-        from acroscope import server
+        from acroscope.server import jobs
         go, calls = threading.Event(), []
 
         def run(args, timeout=0):
             calls.append(args)
             go.wait(5)
             return {"stdout": "", "stderr": "", "code": 0}
-        with mock.patch.object(server, "run_cli", run):
+        with mock.patch.object(jobs, "run_cli", run):
             args = ["automatch", "2026-10-15-x", "--unmatched", "--write"]
-            a, b = server.start_job(args), server.start_job(list(args))
-            c = server.start_job(["automatch", "2026-10-15-y", "--unmatched", "--write"])
+            a, b = jobs.start_job(args), jobs.start_job(list(args))
+            c = jobs.start_job(["automatch", "2026-10-15-y", "--unmatched", "--write"])
             self.assertEqual(a, b)
             self.assertNotEqual(a, c)
             go.set()
             for _ in range(200):                                      # both children done
-                if all(server._jobs[j]["done"] for j in (a, c)):
+                if all(jobs._jobs[j]["done"] for j in (a, c)):
                     break
                 time.sleep(0.01)
         self.assertEqual(len(calls), 2)

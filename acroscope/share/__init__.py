@@ -32,8 +32,10 @@ from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import blackbox, sessions, video
-from .config import CACHE_DIR, SHARE_PUSH, SHARE_REVOKE, SHARE_URL, SHARES_DIR, VIDEOS_DIR
+from ..analyse import lanes
+from ..sources import blackbox, video
+from ..store import sessions
+from ..config import CACHE_DIR, SHARE_PUSH, SHARE_REVOKE, SHARE_URL, SHARES_DIR, VIDEOS_DIR
 
 TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
 TOKEN_LEN = 24
@@ -46,8 +48,8 @@ DEFAULT_EXPIRY = "30d"     # a secret link is not private: it is forwarded, prev
 STEP = 0.02                # the sticks every 20 ms, as the player's overlay
 PREVIEW_KEEP = 86400       # seconds a preview nobody published stays in the cache
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
-TEMPLATE = Path(__file__).parent / "static" / "share.html"
-BRAND = Path(__file__).parent / "static" / "brand"          # the mark and the favicon go into the page inline: nothing to fetch
+TEMPLATE = Path(__file__).parent.parent / "static" / "share.html"
+BRAND = Path(__file__).parent.parent / "static" / "brand"          # the mark and the favicon go into the page inline: nothing to fetch
 PREVIEW_DIR = CACHE_DIR / "share-preview"
 ROOT_PAGE = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow">'
              '<title>acroscope</title></head><body>Nothing here.</body></html>\n')
@@ -107,22 +109,19 @@ def window(start: float, end: float, pad: float, duration: float) -> tuple[float
 
 
 def stick_samples(arm: blackbox.Arm, offset: float, w0: float, w1: float, step: float = STEP) -> dict:
-    """The four stick channels every `step` s over video time w0..w1, in the picture's terms (Mode 2, every axis
-    + = stick right or up, in %; yaw negated since rcCommand[2] is + for the left stick LEFT, see metrics.CONVENTIONS
-    and the player's /sticks); None where the arm does not cover the picture (video = arm time + offset)."""
+    """The four stick channels every `step` s over video time w0..w1, in the picture's terms (lanes.stick_frame, as
+    the player's /sticks); None where the arm does not cover the picture (video = arm time + offset)."""
     rc = [arm.col(f"rcCommand[{k}]") for k in range(4)]
-    out = {"step": step, "throttle": [], "yaw": [], "pitch": [], "roll": []}
+    out = {"step": step, **{k: [] for k in lanes.STICKS}}
     for b in range(int(round((w1 - w0) / step)) + 1):
         a = w0 + b * step - offset
         if a < 0 or a > arm.length:
-            for k in ("throttle", "yaw", "pitch", "roll"):
+            for k in lanes.STICKS:
                 out[k].append(None)
             continue
         i = max(0, bisect_right(arm.t, a) - 1)          # the last frame at or before a
-        out["throttle"].append(max(0, min(100, round((rc[3][i] - 1000) / 10))))
-        out["yaw"].append(round(-rc[2][i] / 5))
-        out["pitch"].append(round(rc[1][i] / 5))
-        out["roll"].append(round(rc[0][i] / 5))
+        for k, v in zip(lanes.STICKS, lanes.stick_frame(rc, i)):
+            out[k].append(v)
     return out
 
 

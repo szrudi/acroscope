@@ -13,7 +13,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from acroscope import blackbox
+from acroscope.sources import blackbox
 
 try:
     from playwright.sync_api import sync_playwright
@@ -91,7 +91,7 @@ class ConfigPageTest(unittest.TestCase):
                 time.sleep(0.1)
         else:
             raise RuntimeError("server did not come up")
-        from acroscope.remote import Remote
+        from acroscope.store.remote import Remote
         cls.api = Remote(cls.url)
         cls.api.refresh(S, probe_videos=False)
         cls.api.refresh(OS)
@@ -355,7 +355,7 @@ class ConfigPageTest(unittest.TestCase):
     def test_shares_tab(self):
         """What is up, with the moment's title, the clip and the link; take down; the expired and revoked ones on
         request. The rows come from the database (the bundles themselves are the player's business)."""
-        from acroscope.db import Db
+        from acroscope.store.db import Db
         from datetime import datetime, timedelta, timezone
         db = Db(Path(self.tmp.name) / "t.db")
         future = (datetime.now(timezone.utc) + timedelta(days=9)).replace(microsecond=0).isoformat()
@@ -521,7 +521,7 @@ class ConfigPageTest(unittest.TestCase):
         self.assertFalse(page.is_disabled("#oRankBtn"))
         page.unroute("**/api/osd/probe")
         # a stored profile that no longer derives (a stricter check since): its chip deletes it, the others stay
-        from acroscope.db import Db
+        from acroscope.store.db import Db
         db = Db(Path(self.tmp.name) / "t.db")
         doc = db.setting("osd")["value"]
         doc["profiles"]["stale"] = {**doc["profiles"]["twice"], "grid": {**doc["profiles"]["twice"]["grid"], "cw": 7}}
@@ -563,8 +563,8 @@ class ConfigPageTest(unittest.TestCase):
         page.click("#tabs [data-tab=osd]")
         page.wait_for_selector("#oDump")                                        # asked again, and loaded
         # a broken stored profile, and the document changed by someone else after the page loaded it
-        from acroscope.db import Db
-        from acroscope import osdprofile
+        from acroscope.store.db import Db
+        from acroscope.sources import osdprofile
         db = Db(Path(self.tmp.name) / "t.db")
         good = osdprofile.make(osyn.DUMP, mcm=osyn.mcm_text(osyn.font_chars()), font="synth")
         db.set_setting("osd", {"version": 1, "profiles": {"good": good, "stale": {**good, "grid": {**good["grid"], "cw": 7}}}})

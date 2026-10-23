@@ -4,9 +4,9 @@ arm's own facts (its rate profile, its craft). Flat, dotted: `rotation_deg.roll`
 
 `numbers` on an event is the same measurement nested, so an accepted suggestion stores the same snapshot the
 `metrics` command gives for that window."""
-from .. import metrics
-from ..blackbox import Arm
 from . import segments
+from ..analyse import metrics
+from ..sources.blackbox import Arm
 
 AXES = ("roll", "pitch", "yaw")
 

@@ -6,7 +6,7 @@ powerloop integrate to a NEGATIVE pitch angle.
 """
 import math
 
-from .blackbox import Arm
+from ..sources.blackbox import Arm
 
 AXES = ("roll", "pitch", "yaw")
 

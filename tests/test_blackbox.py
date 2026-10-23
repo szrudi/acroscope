@@ -8,7 +8,7 @@ from unittest import mock
 import orangebox
 import orangebox.reader
 
-from acroscope import blackbox
+from acroscope.sources import blackbox
 
 
 class UnreadableSegmentTest(unittest.TestCase):
@@ -50,8 +50,8 @@ class UnreadableSegmentTest(unittest.TestCase):
 class OverviewTest(unittest.TestCase):
     def test_the_overview_says_which_segments_hold_frames(self):
         """The player tells an arm from an unreadable segment by `frames` and `error`, so the overview passes them on."""
-        from acroscope import sessions
-        from acroscope.db import Db
+        from acroscope.store import sessions
+        from acroscope.store.db import Db
         with tempfile.TemporaryDirectory() as tmp:
             db = Db(Path(tmp) / "t.db")
             db.ensure_session("2026-10-16-x")
@@ -97,7 +97,7 @@ class LeanTest(unittest.TestCase):
     def test_orbit_lean_direction(self):
         """metrics.orbit's lean direction against the nose: 0 forward, 90 right, -90 left (it had the side flipped)."""
         import math
-        from acroscope import metrics
+        from acroscope.analyse import metrics
         h = math.radians(30) / 2
         for q, want in (((math.sin(h), 0.0, 0.0), 90), ((-math.sin(h), 0.0, 0.0), -90), ((0.0, math.sin(h), 0.0), 0)):
             rows = metrics.orbit(self.arm(q), 0.0, 0.19, step=0.1)
@@ -108,7 +108,7 @@ class LeanTest(unittest.TestCase):
         correction of stored snapshots flips only those without it, so it can run before or after the deploy, twice."""
         import array
         import math
-        from acroscope import metrics
+        from acroscope.analyse import metrics
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         n, rate = 200, 200
@@ -123,7 +123,7 @@ class LeanTest(unittest.TestCase):
         self.assertEqual(snap["lean_convention"], metrics.LEAN_CONVENTION)
 
     def test_the_conventions_say_which_side(self):
-        from acroscope import metrics
+        from acroscope.analyse import metrics
         self.assertIn("right side down", metrics.CONVENTIONS["lean"])
         self.assertIn("right end rises", metrics.CONVENTIONS["roll"])   # the horizon, not "the picture": the video check (#38)
 
@@ -155,7 +155,8 @@ class SegmentListingTest(unittest.TestCase):
     def cli(self, *args):
         import io
         from contextlib import redirect_stdout
-        from acroscope import cli, sessions
+        from acroscope import cli
+        from acroscope.store import sessions
         out = io.StringIO()
         segs = [{"index": i, "start": 0, "size": sz} for i, sz in ((1, 300_000), (2, 6144), (3, 280_000), (4, 512))]
         with mock.patch.object(sessions, "SERVER_URL", ""), mock.patch.object(blackbox, "index_bbl", lambda b, **k: self.IDX), \
@@ -180,8 +181,8 @@ class SegmentListingTest(unittest.TestCase):
         self.assertEqual([a.get("size") for a in arms], [300_000, 6144, 280_000, 512])
 
     def test_sessions_says_what_a_segment_without_frames_is(self):
-        from acroscope import sessions
-        from acroscope.db import Db
+        from acroscope.store import sessions
+        from acroscope.store.db import Db
         with tempfile.TemporaryDirectory() as tmp:
             db = Db(Path(tmp) / "t.db")
             db.ensure_session("2026-10-16-x")

@@ -17,7 +17,7 @@ what it does there is no trick and no crash (the crash came before). No scan loo
 import math
 from dataclasses import dataclass, field
 
-from ..blackbox import Arm
+from ..sources.blackbox import Arm
 
 # kind: {option: default}. A trick's segment may set any of these and no other name (a typo is an error at load).
 KINDS = {
