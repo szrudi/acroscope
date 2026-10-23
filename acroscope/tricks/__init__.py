@@ -67,7 +67,8 @@ def library() -> Library:
 
 def layer_etag(table) -> str:
     """A short hash of a layer document: what a writer says it started from, so two writers do not lose each
-    other's changes (`updated_at` is whole seconds). The store's settings etag (db.etag_of), which every write checks."""
+    other's changes (`updated_at` is whole seconds). The store's settings etag (db.etag_of), by the tricks package's
+    name for it."""
     return db.etag_of(table)
 
 

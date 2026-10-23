@@ -86,6 +86,7 @@ The package follows the workflow: a package per phase, over the two layers every
 
 ```
 acroscope/
+  config.py  where the data, the database and the cache are (the environment)
   sources/   the raw inputs, read: blackbox (decoded into the cache), video (probes, frames, proxies), osd (the timers
              read off the picture, and the arm runs they make), osdprofile and betaflight (a profile from a dump and
              a font)

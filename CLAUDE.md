@@ -9,18 +9,22 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   `gh` on this machine is logged in as `joan-grazo`, so issues and PRs filed from here carry that account.
 - Package layout (#60), by the workflow's phases: `sources/` (the raw inputs, read: blackbox, video, the OSD reader,
   osdprofile, betaflight) and `store/` (db, remote, sessions: `store()`, the resolvers, the scan; edits, upkeep)
-  underneath; the phases `ingest/` (the batch in `__init__`; intake, encode, clock, recut), `match/` (manual,
-  pairing, planner, automatch), `analyse/` (metrics, lanes, events; `tricks/` beside it), `review/` (moments),
-  `share/`; the surfaces on top, `cli/` (a module of commands per phase, each with its parser lines in `add()`) and
-  `server/` (the handler; `jobs`: child processes, the CLI proxy, the background). A module imports from its own
-  layer or an earlier one, never a later one (`tests/test_layers.py`; a new part of the package goes in its
-  `LAYERS`); a layer that needs a later one's work runs it as a child (`python -m acroscope.cli`, as ingest runs
-  automatch). Logic lives in the phases and the surfaces only parse and print, so the CLI, the API and an MCP
-  server can share it (`automatch.run`, `events.on_clip`, `lanes.stick_frame`). Modules are imported as modules and
-  used qualified (`osd.read_timers`, never `from .osd import read_timers`), so a test's `patch.object(osd, ...)`
-  reaches every caller. The one exception is the CLI's own formatting helpers (`cli/common`: `out`, `fmt_time`,
-  `parse_time`, `_session`), which the groups import by name as the commands always called them; patch a command's
-  group module if a test ever needs one.
+  underneath; the phases `ingest/` (the batch in `__init__`; intake, encode, clock, recut), `match/` (manual, pairing,
+  planner, automatch), `analyse/` (metrics, lanes, events; `tricks/` beside it), `review/` (moments), `share/`; the
+  surfaces on top, `cli/` (a module of commands per phase, each with its parser lines in `add()`; the groups are named
+  like the packages they serve, so in `cli/__init__` a name like `store` or `share` is the group) and `server/` (the
+  handler; `jobs`: child processes, the CLI proxy, the background). A module imports from its own layer or an earlier
+  one, never a later one (`tests/test_layers.py`; a new part of the package goes in its `LAYERS`); a layer that needs a
+  later one's work runs it as a child (`python -m acroscope.cli`, as ingest runs automatch). New logic goes into the
+  phases and the surfaces parse and print, so the CLI, the API and an MCP server can share it (#60 moved
+  `automatch.run`, `events.on_clip`, `lanes.stick_frame` there); still in a surface: the OSD tab's profile building
+  (`server.osd_derive`; the CLI's `osd-profile` builds its own), and the pilot's tricks layer read from the store and a
+  tricks file imported (once per surface). Another module's functions are called through the module (`osd.read_timers`,
+  never `from .osd import read_timers`), so a test's `patch.object(osd, ...)` reaches every caller. Imported by name:
+  the `config` constants (each module holds its own copy: patch the module that uses one, as the tests do, or set the
+  environment before import), classes and exceptions (`Arm`, `Library`, `RemoteError`), `db.now`, and the CLI's helpers
+  in `cli/common` (`out`, `fmt_time`, `parse_time`, `_session`, `_arm_for`, `_segment_count`; patch the group module if
+  a test needs one).
 - Data: the data dir (`ACROSCOPE_DATA`) is the acroscope LXC's `/data`, a bind mount of the homelab's `Data/fpv` dataset
   (szrudi/homelab#102): `videos/`, `blackbox/`, `inbox/`, `originals/`, `state/`. Matches, moments, notes, tags and
   batches are in the server's SQLite database (`acroscope/store/db.py`), live at `/opt/acroscope/state/acroscope.db` on

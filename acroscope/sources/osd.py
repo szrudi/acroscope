@@ -1,4 +1,4 @@
-"""Read the OSD timers off the footage and match clips to arms automatically.
+"""Read the OSD timers off the footage, and the arm runs they show.
 
 A layout says where the timers are on the frame, what they count, and what their digits look like. Every layout is
 derived from what Betaflight says (osdprofile, #10): a dump's OSD settings, the font on the OSD chip, and where the
@@ -12,9 +12,8 @@ templates rendered from the font. No general OCR needed.
 
 Reading the timers at 2 fps gives every arm start in video time: with two timers an arm is a run where the arm
 timer counts up from 0; with the cumulative timer alone an arm is a stretch where the total counts (it stands
-still while disarmed). Those runs are aligned to the log's arm lengths (and the total against the boot's
-cumulative length), and each aligned pair yields a match with its own offset, which also carries across the
-static stretches cobra-compress.py cuts out.
+still while disarmed). Pairing those runs with a log's arms is the match phase's (match/: pairing, planner,
+automatch).
 """
 import json
 import math

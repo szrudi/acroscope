@@ -1,5 +1,6 @@
-"""Keeping the data dir tidy (`acroscope housekeeping`): a deleted clip's trash/<date>/ emptied after TRASH_DAYS, and
-the database copied into state/ so clips and index restore from one snapshot.
+"""The store's part of keeping the data dir tidy: a deleted clip's trash/<date>/ emptied after TRASH_DAYS, and the
+database copied into state/ so clips and index restore from one snapshot. `acroscope housekeeping` runs these with
+ingest's (originals past retention) and share's (expired links).
 """
 import shutil
 from datetime import datetime, timezone

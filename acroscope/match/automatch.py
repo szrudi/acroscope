@@ -1,5 +1,6 @@
 """Automatch: a clip's arms matched from its OSD timers, inside the window the session plan and the other clips'
-matches leave it, then written or proposed.
+matches leave it, then written or proposed (automatch); and a session's clips, planned whole and passed one by one
+(run, what the CLI's command and the player's button go through).
 """
 from . import pairing, planner
 from ..sources import blackbox, osd

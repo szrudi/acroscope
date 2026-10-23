@@ -1,8 +1,9 @@
-"""What the server runs off the request threads. A client's CLI command (only the PROXIED ones, names checked: a
+"""The server's child processes and its background. A client's CLI command (only the PROXIED ones, names checked: a
 client names sessions, clips and logs, never a path here) runs in a child process, at once or as a job the client
 polls. Decoding and the OSD reader are pure Python for seconds, so they run in a child too, never in a thread that
 would hold the GIL against every request; ffprobe is a subprocess, so a thread is fine. And the background: the data
-dir walked every SCAN_EVERY s, complete inbox batches ingested every INBOX_EVERY s, housekeeping once a day.
+dir walked every SCAN_EVERY s, complete inbox batches ingested every INBOX_EVERY s, housekeeping once a day. (The OSD
+tab's look, osd_probe, runs its child from the handler's module, beside the request checks it shares with it.)
 """
 import os
 import subprocess

@@ -2,8 +2,8 @@
 as static files with Range support (seeking needs it). The server owns the database; the CLI on another machine
 uses these endpoints (remote.Remote). Writes go through the same functions as the CLI.
 
-The data dir is only walked in the background (a scan at start and every SCAN_EVERY seconds, and on request): a
-page open never waits on the Drive mount."""
+The data dir is only walked in the background (jobs: a scan at start, every SCAN_EVERY seconds, and on request):
+a page open never waits on the Drive mount."""
 import json
 import math
 import mimetypes
