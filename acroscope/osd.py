@@ -120,16 +120,19 @@ def _x0(layout: str, row: int) -> int:
 
 def _crop(layout: str) -> tuple[int, int, int, int]:
     """x, y, w, h of the strip holding every timer row of a layout (even height: ffmpeg pads odd crops), inside the
-    frame: a timer on row 0 has its cell's top above the picture (the grid at y -4), and ffmpeg would move a crop
-    there down to 0 without saying so; _cell measures from the strip's real top."""
+    frame: a timer on row 0 has its cell's top above the picture (the grid at y -4), one on the last row can end below
+    it, and ffmpeg would move such a crop into the frame without saying so; _cell measures from the strip's real
+    top."""
     L = _layout(layout)
     gx, gw, gy, gh = L["glyph"]
     left = max(0, min(_x0(layout, r) for r in range(len(L["formats"]))))
     top = max(0, L["rows"][0])
     right = max(_x0(layout, r) + len(f) * L["pitch"] + 2 for r, f in enumerate(L["formats"]))
-    h = L["rows"][-1] + gy + gh + 2 - top
+    fh = L.get("frame", [720, 480])[1]
+    bottom = min(L["rows"][-1] + gy + gh + 2, fh)       # nor below it: ffmpeg would move a crop past the bottom up
+    h = bottom - top
     w = min(right, _frame_w(layout)) - left
-    return left, top, w + w % 2, h + h % 2
+    return left, top, w + w % 2, h + h % 2 if top + h + h % 2 <= fh else h - h % 2
 
 
 def digit_cols(layout: str, row: int) -> list[int]:

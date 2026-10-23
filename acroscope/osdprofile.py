@@ -150,19 +150,23 @@ def derive(profile: dict, name: str = "profile") -> dict:
     right = max(X(t["col"] + 1 + k) + gx + gw for t, f in zip(timers, formats) for k, ch in enumerate(f) if ch == "d")
     if right > grid["w"]:
         gw -= right - grid["w"]                       # every cell's box narrowed alike: the templates stay one set
-    # the top edge likewise: a cell on row 0 starts above the picture (the grid at y -4); the rows the DVR did not
-    # record are left out of every box, or, when too much is gone, the counter is not read and a timer is refused
+    # the top and bottom edges likewise: a cell on row 0 starts above the picture (the grid at y -4), one on the last
+    # row can end below it (PAL, a grid a few px low). The rows the DVR did not record are left out of every box; when
+    # too much of a cell is gone, the counter is not read and a timer is refused. Each is judged by its own cut.
     counter = el["counter"]
-    tops = [Y(t["row"]) + gy for t in timers] + ([Y(counter["row"]) + gy] if counter else [])
-    if min(tops) < 0:
-        cut = -min(tops)
-        if cut > gh * (1 - EDGE_KEEP):
-            if min(Y(t["row"]) + gy for t in timers) < 0:
-                raise ValueError(f"a timer's digits start {cut} px above the picture: the grid is off (y {grid['y']})")
-            warnings.append(f"the flight counter's digits start {cut} px above the picture: not read")
-            counter = None
-        else:
-            gy, gh = gy + cut, gh - cut
+    allowed = gh * (1 - EDGE_KEEP)
+    t_top = max(0, -min(Y(t["row"]) + gy for t in timers))
+    t_bottom = max(0, max(Y(t["row"]) + gy + gh for t in timers) - grid["h"])
+    if t_top > allowed or t_bottom > allowed:
+        raise ValueError(f"a timer's digits are {max(t_top, t_bottom)} px {'above' if t_top > t_bottom else 'below'} the picture: "
+                         f"the grid is off (y {grid['y']} on a {grid['h']} px frame)")
+    c_top = max(0, -(Y(counter["row"]) + gy)) if counter else 0
+    c_bottom = max(0, Y(counter["row"]) + gy + gh - grid["h"]) if counter else 0
+    if counter and (c_top > allowed or c_bottom > allowed):
+        warnings.append(f"the flight counter's digits are {max(c_top, c_bottom)} px outside the picture: not read")
+        counter, c_top, c_bottom = None, 0, 0
+    top, bottom = max(t_top, c_top), max(t_bottom, c_bottom)
+    gy, gh = gy + top, gh - top - bottom
     box = (gx, gw, gy, gh)
     arm = [i for i, t in enumerate(timers) if t["source"] == "last"]
     if len([t for t in timers if t["source"] == "total"]) > 1 or len(arm) > 1:
