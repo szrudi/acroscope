@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .. import ingest, share, tricks
 from ..analyse import metrics
+from ..ingest import recut
 from ..match import manual
 from ..review import moments, xspf
 from ..sources import betaflight, blackbox, osd, osdprofile, video
@@ -191,7 +192,7 @@ def cmd_ingest(a):
 
 
 def cmd_recut(a):
-    out(ingest.recut(_session(a.session), a.clip, log=lambda m: print(m, file=sys.stderr)))
+    out(recut.recut(_session(a.session), a.clip, log=lambda m: print(m, file=sys.stderr)))
 
 
 def cmd_housekeeping(a):

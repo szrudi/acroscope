@@ -21,20 +21,19 @@ this runs as root. So: only regular files with one link and a plain basename cou
 the batch, the marker and the sidecar are opened without following links, a file is looked at again once it sits
 in a root-owned dir (the push user cannot reach it there), and what is filed is owned by root.
 """
-import json
 import os
 import re
 import secrets
 import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import clock, encode, intake
 from ..sources import blackbox, osd, video
 from ..store import sessions
-from ..config import BLACKBOX_DIR, CACHE_DIR, DATA_DIR, H264_ARGS, VIDEOS_DIR
+from ..config import BLACKBOX_DIR, DATA_DIR, VIDEOS_DIR
 
 
 INBOX_DIR = DATA_DIR / "inbox"
@@ -42,15 +41,6 @@ ORIGINALS_DIR = DATA_DIR / "originals"
 ORIGINAL_DAYS = 90         # an original is kept this long after its compressed clip verified (Rudi, 2026-10-18: the
                            # cutting still changes, and a clip is recut from its original; it was 7, then 60; 90 keeps
                            # October's into January, past December's dev time)
-RATE = 2                   # no-signal analysis samples per second
-THRESHOLD = 35             # luma range (16x12 frame, 10th-90th percentile) below this = flat: static, or a dark/flat picture
-CHANGE = 8.0               # and frame-to-frame change (mean |difference|, 64x48) above this = static (snow 15-21; a flat
-                           # live picture 0.3-3: dusk, a grey sky with the OSD on, 2026-10-14 schammer 018 and 022)
-MIN_GAP = 5.0              # only cut no-signal runs at least this long (brief breakups mid-flight are kept)
-PAD = 1.0                  # seconds of context kept around each cut
-CLOCK_TOL = 0.05           # an OSD clock off the clip's by more than this = a mis-stamped frame rate (2026-10-14 007:
-                           # the DVR wrote ~27 fps stamped 60, the OSD ran 2.20x the clip): the clip is re-timed
-CLIP_RE = re.compile(r"^vid.*\.(mov|mp4|avi)$", re.I)
 
 
 def now() -> datetime:
@@ -67,7 +57,7 @@ def list_inbox() -> list[dict]:
         for d in sorted(p for p in INBOX_DIR.iterdir() if p.is_dir()):
             files = [f.name for f in d.iterdir() if f.is_file() and not f.name.startswith(".")]
             b = rows.pop(d.name, None) or {"id": d.name, "status": "pending" if (d / ".done").exists() else "arriving"}
-            b = dict(b, files=len(files), clips=sum(1 for f in files if CLIP_RE.match(f)), logs=sum(1 for f in files if f.lower().endswith(".bbl")))
+            b = dict(b, files=len(files), clips=sum(1 for f in files if intake.CLIP_RE.match(f)), logs=sum(1 for f in files if f.lower().endswith(".bbl")))
             out.append(b)
     for b in rows.values():             # done or failed batches whose dir is gone: what they produced
         r = b.get("result") or {}
@@ -75,101 +65,6 @@ def list_inbox() -> list[dict]:
     # in the order they came, whatever their state: the id is the push's timestamp (the player shows it newest first;
     # with the folders first, a new batch went to the bottom and jumped to the top once done and its folder gone)
     return sorted(out, key=lambda b: b["id"])
-
-
-def plain_name(name: str) -> str:
-    """A file name as the push user may give one: one path component, nothing hidden behind it."""
-    if not name or name in (".", "..") or "/" in name or "\\" in name or "\0" in name or name != os.path.basename(name):
-        raise ValueError(f"{name!r}: not a plain file name")
-    return name
-
-
-def _read_nofollow(p: Path, limit: int = 1 << 20) -> str:
-    """The text of a small file, opened without following a link (a link there fails the batch)."""
-    try:
-        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError as e:
-        raise ValueError(f"{p.name}: {e.strerror}") from None
-    with os.fdopen(fd, "rb") as f:
-        st = os.fstat(fd)
-        if not os.path.isfile(p) or st.st_size > limit:
-            raise ValueError(f"{p.name}: not a small regular file")
-        return f.read().decode("utf-8", "replace")
-
-
-def batch_entries(d: Path) -> list[Path]:
-    """The regular files of a batch dir. Anything else there (a link, a directory, a file with several links, a
-    name that is not plain) fails the batch: the push user put it there, and this runs as root."""
-    out = []
-    with os.scandir(d) as it:
-        for e in it:
-            plain_name(e.name)
-            st = os.lstat(e.path)
-            import stat as _st
-            if not _st.S_ISREG(st.st_mode):
-                raise ValueError(f"{e.name}: not a regular file")
-            if st.st_nlink > 1:
-                raise ValueError(f"{e.name}: has {st.st_nlink} links")
-            out.append(Path(e.path))
-    return sorted(out)
-
-
-def sidecar(d: Path) -> dict:
-    p = d / "import.json"
-    if not os.path.lexists(p):
-        return {}
-    try:
-        sc = json.loads(_read_nofollow(p))
-    except json.JSONDecodeError as e:
-        raise ValueError(f"import.json: {e}") from None
-    if not isinstance(sc, dict):
-        raise ValueError("import.json: not an object")
-    return {k: v for k, v in sc.items() if isinstance(v, str)}
-
-
-def manifest(d: Path) -> dict:
-    p = d / ".done"
-    if not os.path.lexists(p):
-        raise ValueError("no .done marker: the batch is still arriving")
-    try:
-        txt = _read_nofollow(p).strip()
-        man = json.loads(txt) if txt else {}
-    except json.JSONDecodeError as e:
-        raise ValueError(f".done: {e}") from None
-    if not isinstance(man, dict) or not isinstance(man.get("files", {}), dict):
-        raise ValueError(".done: not a manifest")
-    for name in man.get("files") or {}:
-        plain_name(name)
-    return man
-
-
-def check_sizes(d: Path, man: dict, taken: set[str] = frozenset()) -> None:
-    """The manifest against the batch dir; `taken` are clips an earlier attempt already took out of it."""
-    for name, size in (man.get("files") or {}).items():
-        if plain_name(name) in taken and not os.path.lexists(d / name):
-            continue
-        f = d / name
-        if not os.path.lexists(f):
-            raise ValueError(f"{name}: in the manifest, not in the batch")
-        st = os.lstat(f)
-        if size is not None and st.st_size != size:
-            raise ValueError(f"{name}: {st.st_size} bytes, the manifest says {size}")
-
-
-def _take(src: Path, dst: Path) -> Path:
-    """Move a batch file into a root-owned place, then make sure it is still a plain file there (the push user
-    could have swapped it for a link between the look and the move), and give it to root."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    os.rename(src, dst)                                   # same filesystem; renames a link as a link, never follows
-    st = os.lstat(dst)
-    import stat as _st
-    if not _st.S_ISREG(st.st_mode) or st.st_nlink > 1:
-        dst.unlink()
-        raise ValueError(f"{src.name}: was swapped for a link or hard-linked while being taken")
-    if os.geteuid() == 0:
-        os.chown(dst, 0, 0)
-    os.chmod(dst, 0o644)
-    return dst
 
 
 def batch_date_session(d: Path, sc: dict) -> tuple[str, str]:
@@ -189,270 +84,6 @@ def next_numbers(date: str, count: int) -> list[str]:
 
 def new_id() -> str:
     return "c" + secrets.token_hex(5)
-
-
-# ---- the compressor (cobra-compress.py as functions) ---------------------------------------------------------------
-
-def signal_stats(path: Path) -> tuple[list[float], list[float]]:
-    """Per RATE-th of a second: the luma spread of the frame shrunk to 16x12 (analog static averages to flat grey,
-    ~15; footage mostly stays above 50, but dusk or a sky-filled frame drops to 22-34), and the mean change from one
-    frame to the next at 64x48 over that stretch (static is new noise every frame, 15-21; a flat live picture with
-    its OSD is nearly still). One decode, two branches, each printing its own stats to a file."""
-    with tempfile.TemporaryDirectory() as tmp:
-        a, b = Path(tmp) / "range", Path(tmp) / "change"
-        cmd = ["ffmpeg", "-hide_banner", "-nostats", "-nostdin", "-i", str(path), "-filter_complex",
-               f"[0:v]split[x][y];[x]fps={RATE},scale=16:12:flags=area,signalstats,metadata=print:file={a}[ra];"
-               f"[y]scale=64:48:flags=area,tblend=all_mode=difference,signalstats,metadata=print:file={b}[rb]",
-               "-map", "[ra]", "-f", "null", "-", "-map", "[rb]", "-f", "null", "-"]
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=900)
-        except subprocess.TimeoutExpired:   # ffmpeg hung here once (2026-10-09, main thread spinning); a rerun passed
-            subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=900)
-        ra, rb = a.read_text(), b.read_text()
-    lo = [float(x) for x in re.findall(r"YLOW=([\d.]+)", ra)]
-    hi = [float(x) for x in re.findall(r"YHIGH=([\d.]+)", ra)]
-    ranges = [h - l for l, h in zip(lo, hi)]
-    sums, counts = [0.0] * len(ranges), [0] * len(ranges)
-    for t, d in zip(re.findall(r"pts_time:([\d.]+)", rb), re.findall(r"YAVG=([\d.]+)", rb)):
-        i = int(float(t) * RATE)
-        if i < len(ranges):
-            sums[i] += float(d); counts[i] += 1
-    return ranges, [s / c if c else CHANGE for s, c in zip(sums, counts)]
-
-
-def keep_segments(ranges: list[float], duration: float, changes: list[float] | None = None) -> list[tuple[float, float]]:
-    """[(start, end)] seconds worth keeping: signal runs, gaps shorter than MIN_GAP bridged, PAD around each. A
-    sample is no signal when it is flat (range below THRESHOLD) and, where `changes` are given, changes like noise
-    (above CHANGE): flat and still is a picture (dusk, a grey sky) and is kept."""
-    live = [r >= THRESHOLD or (changes is not None and i < len(changes) and changes[i] <= CHANGE) for i, r in enumerate(ranges)]
-    segs, start = [], None
-    for i, ok in enumerate(live + [False]):
-        t = i / RATE
-        if ok and start is None:
-            start = t
-        elif not ok and start is not None:
-            segs.append([start, t])
-            start = None
-    merged: list[list[float]] = []
-    for s, e in segs:
-        if merged and s - merged[-1][1] < MIN_GAP:
-            merged[-1][1] = e
-        else:
-            merged.append([s, e])
-    return [(max(0.0, s - PAD), min(duration, e + PAD)) for s, e in merged]
-
-
-def encode(src: Path, dst: Path, segs: list[tuple[float, float]], progress=None) -> None:
-    """The kept stretches of src as one H.264 clip (config.H264_ARGS: what the player wants), niced."""
-    sel = "+".join(f"between(t,{s:.2f},{e:.2f})" for s, e in segs)
-    kept = sum(e - s for s, e in segs) or 1
-    part = dst.with_name(dst.name + ".part.mp4")
-    cmd = ["nice", "-n", "10", "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-nostdin", "-progress", "pipe:1", "-y",
-           "-i", str(src), "-vf", f"select='{sel}',setpts=N/FRAME_RATE/TB", "-af", f"aselect='{sel}',asetpts=N/SR/TB",
-           *H264_ARGS, str(part)]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
-    for line in p.stdout:
-        if progress and line.startswith("out_time_us=") and line[12:].strip().isdigit():
-            progress(min(1.0, int(line[12:]) / 1e6 / kept))
-    if p.wait():
-        part.unlink(missing_ok=True)
-        raise subprocess.CalledProcessError(p.returncode, "ffmpeg")
-    part.replace(dst)
-
-
-def compress(src: Path, dst: Path, progress=None) -> dict:
-    """Analyse, cut and encode src into dst. Returns {kept: [[s, e]...], source_duration, duration, verified}.
-    A clip without any signal is encoded whole (nothing cut), so nothing is silently dropped."""
-    dur = video.probe(src)["duration"]
-    ranges, changes = signal_stats(src)
-    segs = keep_segments(ranges, dur, changes) or [(0.0, dur)]
-    encode(src, dst, segs, progress)
-    info = video.probe(dst)
-    kept = sum(e - s for s, e in segs)
-    return {"kept": [[round(s, 2), round(e, 2)] for s, e in segs], "source_duration": round(dur, 2),
-            "duration": info["duration"], "codec": info["codec"], "verified": abs(info["duration"] - kept) <= 1.5}
-
-
-def _to_source(t: float, cuts: list) -> float:
-    """A time in a compressed clip -> the same moment in its original, through the kept stretches."""
-    acc = 0.0
-    for s, e in cuts:
-        if t <= acc + (e - s):
-            return s + (t - acc)
-        acc += e - s
-    return cuts[-1][1]
-
-
-def _to_clip(o: float, cuts: list) -> float:
-    """A time in an original -> the compressed clip (a moment inside a cut lands where the next stretch starts)."""
-    acc = 0.0
-    for s, e in cuts:
-        if o <= e:
-            return acc + max(0.0, o - s)
-        acc += e - s
-    return acc
-
-
-def move_time(t: float, old: list, k_old: float, new: list, k_new: float) -> float:
-    """A time in a clip as it was (kept stretches `old`, re-timed by k_old) -> the same moment in the clip as it is
-    now (`new`, k_new). Cuts are in the original's own (stamped) time; a re-timed clip runs k times that."""
-    return round(_to_clip(_to_source(t / k_old, old), new) * k_new, 2)
-
-
-def _stretch(t: float, cuts: list) -> int:
-    """Which kept stretch a compressed clip's time t falls in."""
-    acc = 0.0
-    for i, (s, e) in enumerate(cuts):
-        acc += e - s
-        if t < acc:
-            return i
-    return len(cuts) - 1
-
-
-CLOCK_EVEN = 0.03          # clock_fit: each third's slope within this of the whole fit's (frames dropped evenly; 007's
-                           # thirds are within 1.3 % of its 2.2001)
-
-
-def clock_fit(rows: list[dict], kept: list | None = None) -> float | None:
-    """How fast the OSD arm clock runs against the clip's own time, from read_timers rows: only readings where both
-    timers agree (a second arm's total and arm timers differ) and that advanced since the last one (a disarmed timer
-    stands still), misreads trimmed. Fitted in the original's time (each reading back through the kept stretches): a
-    cut inside an arm is not a fast clock. None (cannot tell) on less than 20 readings over 15 s, a fit worse than
-    1 s rms, a third with too few readings, or a third whose rate is not the whole fit's: an off clock is only fixed when the
-    frames were dropped evenly (2026-10-14 007: 2.200 / 2.183 / 2.207), not for one DVR stall."""
-    pts, prev = [], None
-    for x in rows:
-        top, bot = x.get("top"), x.get("bottom")
-        if top is None or bot is None or abs(top - bot) > 1.2 or top <= 1:
-            continue
-        if prev is not None and top > prev:
-            pts.append((_to_source(x["t"], kept) if kept else x["t"], top))
-        prev = top
-
-    def fit(p):
-        n = len(p)
-        mx, my = sum(t for t, _ in p) / n, sum(y for _, y in p) / n
-        sxx = sum((t - mx) ** 2 for t, _ in p)
-        a = sum((t - mx) * (y - my) for t, y in p) / sxx if sxx else 0.0
-        return a, my - a * mx
-
-    for lim in (10.0, 4.0, 2.0, 1.5):
-        if len(pts) < 20:
-            return None
-        a, b = fit(pts)
-        pts = [(t, y) for t, y in pts if abs(y - a * t - b) < lim]
-    if len(pts) < 20 or pts[-1][0] - pts[0][0] < 15:
-        return None
-    a, b = fit(pts)
-    rms = (sum((y - a * t - b) ** 2 for t, y in pts) / len(pts)) ** 0.5
-    if not (rms < 1.0 and a > 0):
-        return None
-    t0, t1 = pts[0][0], pts[-1][0]
-    thirds = [[p for p in pts if t0 + k * (t1 - t0) / 3 <= p[0] <= t0 + (k + 1) * (t1 - t0) / 3] for k in range(3)]
-    if any(len(th) < 5 for th in thirds):
-        return None
-    # each third runs at the whole fit's rate: a stall between two thirds leaves them all at 1.0 against a fit of 1.06
-    return a if all(abs(fit(th)[0] - a) <= CLOCK_EVEN * a for th in thirds) else None
-
-
-def retime(path: Path, k: float) -> None:
-    """Stretch a clip's clock by k: the video's timestamps scaled, no re-encode. The audio goes (the DVR stamped it as
-    wrongly). Built beside the clip as .part (not a video suffix: the scan leaves it alone), then put in place."""
-    tmp = path.with_name(path.name + ".retime.part")
-    try:
-        subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-itsscale", f"{k:.5f}", "-i", str(path), "-map", "0:v", "-c", "copy",
-                        "-movflags", "+faststart", "-f", "mp4", str(tmp)], check=True)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    os.replace(tmp, path)
-
-
-def fix_clock(path: Path, kept: list, log=print) -> float | None:
-    """1.0 (on time), the factor a clip was re-timed by, or None when it cannot tell (an OSD the reader cannot read, no
-    arm long enough, an uneven clock): the clip then stays as it is. The OSD's arm clock against the clip's, in the
-    original's time (`kept`: the stretches compress kept), read at automatch's 2 fps."""
-    try:
-        k = clock_fit(osd.read_timers(path, 2.0)["rows"], kept)
-    except Exception:  # noqa: BLE001  (an OSD the reader has no layout for: nothing to go by)
-        return None
-    if k is None:
-        return None
-    if abs(k - 1) <= CLOCK_TOL:
-        return 1.0
-    k = round(k, 4)
-    log(f"{path.name}: the OSD clock runs {k}x the clip's (a mis-stamped frame rate): re-timed to {video.probe(path)['duration'] * k:.1f} s")
-    retime(path, k)
-    return k
-
-
-def recut(session: str, vid: str, log=print) -> dict:
-    """Compress a clip again from its kept original, under the same id: for a cut that took real footage (the
-    detector before 2026-10-14 took dusk and a grey sky for static, and 3.5 s of flight each in 2026-10-14
-    schammer 018 and 022). Moments and matches move with the footage: old clip time -> original -> new clip time.
-    A match whose arm spans an old cut held on one side of it only, so it is left as it is and listed in `check`
-    for a look. The clip's cached frames and sheets go; the original stays until its date.
-    {video, old_cuts, cuts, duration, moments, matches, shares, check}"""
-    db = sessions.store()
-    file = sessions.resolve_clip(session, vid)
-    s = db.load(session)
-    v = next((x for x in s["videos"] if x["file"] == file), None)
-    if v is None:
-        raise ValueError(f"{session}: no clip {vid}")
-    src = DATA_DIR / v["original"] if v.get("original") else None
-    if not src or not src.is_file():
-        raise ValueError(f"{v.get('name') or file}: no original kept (they go {ORIGINAL_DAYS} days after the import)")
-    k_old = v.get("timescale") or 1.0
-    old = v.get("cuts") or [[0.0, v["duration"] / k_old]]
-    work = ORIGINALS_DIR / ".ingest" / f"recut-{file}"                     # not under videos/: the scan would take it
-    work.parent.mkdir(parents=True, exist_ok=True)
-    log(f"{session}/{v.get('name') or file}: compressing again from {v['original']}")
-    try:
-        res = compress(src, work)
-        if not res["verified"]:
-            raise ValueError(f"{file}: compressed clip is {res['duration']} s against {sum(e - s for s, e in res['kept']):.1f} s kept: not replaced")
-    except Exception:
-        work.unlink(missing_ok=True)
-        raise
-    new = res["kept"]
-    k_new = fix_clock(work, new, log)
-    if k_new is None:                       # cannot tell from the new encode: the clock is the original's, as it was
-        k_new = k_old
-        if k_old != 1.0:
-            retime(work, k_old)
-    move = lambda t: move_time(t, old, k_old, new, k_new)
-    reclocked = abs(k_new / k_old - 1) > 0.01
-    moments, matches, check = [], [], []
-    for m in (m for m in s["moments"] if m["video"] == file):
-        a, b = move(m["start"]), move(m["end"])
-        if (a, b) != (m["start"], m["end"]):
-            db.tag(session, file, a, b, m["title"], m.get("tags") or [], m.get("note") or "", mid=m["id"])
-            moments.append({"id": m["id"], "from": [m["start"], m["end"]], "to": [a, b]})
-    for m in (m for m in s["matches"] if m["video"] == file):
-        idx = blackbox.index_bbl(m["bbl"], cached_only=True) if (BLACKBOX_DIR / m["bbl"]).is_file() else None
-        length = next((a["length"] for a in (idx or {}).get("arms", []) if a["index"] == m["arm"]), None)
-        if length is None or reclocked or _stretch(m["offset"] / k_old, old) != _stretch((m["offset"] + length) / k_old, old):
-            why = ("arm length unknown" if length is None else f"the clip's clock changed ({k_old} -> {k_new}): the offset was measured on the old one"
-                   if reclocked else "the arm spans an old cut: its offset held on one side only")
-            check.append({"bbl": m["bbl"], "arm": m["arm"], "offset": m["offset"], "why": why})
-            continue
-        o = move(m["offset"])
-        if o != m["offset"]:
-            db.set_match(session, file, m["bbl"], m["arm"], o, m.get("note") or "")
-            matches.append({"bbl": m["bbl"], "arm": m["arm"], "from": m["offset"], "to": o})
-    shares = []
-    for sh in (x for x in db.shares() if x["session"] == session and x["video"] == file):   # the ones up: their window on the new timeline (#59 review)
-        a, b = move(sh["start"]), move(sh["end"])
-        if (a, b) != (sh["start"], sh["end"]):
-            db.update_share(sh["token"], start=a, end=b)
-            shares.append({"token": sh["token"], "from": [sh["start"], sh["end"]], "to": [a, b]})
-    os.replace(work, VIDEOS_DIR / session / file)
-    duration = video.probe(VIDEOS_DIR / session / file)["duration"]
-    db.set_video_fields(session, file, cuts=new, duration=duration, codec=res["codec"], timescale=k_new if k_new != 1.0 else None)
-    for f in (CACHE_DIR / "frames" / session).glob(f"{Path(file).stem}_*"):
-        f.unlink()
-    return {"video": file, "old_cuts": old, "cuts": new, "timescale": k_new, "duration": duration, "moments": moments,
-            "matches": matches, "shares": shares, "check": check}
 
 
 # ---- a batch -----------------------------------------------------------------------------------------------------
@@ -493,21 +124,21 @@ def _tidy(work: Path) -> None:
 def process_batch(batch: str, log=print) -> dict:
     """Consume inbox/<batch>/. Idempotent: a clip already recorded for this batch is not imported twice."""
     db = sessions.store()
-    d = INBOX_DIR / plain_name(batch)
+    d = INBOX_DIR / intake.plain_name(batch)
     if not d.is_dir() or d.is_symlink():
         raise FileNotFoundError(f"inbox/{batch}: no such batch")
-    work = ORIGINALS_DIR / ".ingest" / plain_name(batch)                  # root's side of the batch, until each clip is in place
+    work = ORIGINALS_DIR / ".ingest" / intake.plain_name(batch)                  # root's side of the batch, until each clip is in place
     db.set_batch(batch, status="running", started_at=now().isoformat(), error=None)
     try:
-        man, sc = manifest(d), sidecar(d)
-        staged = {f.name: f for f in batch_entries(work / "taken")} if (work / "taken").is_dir() else {}
+        man, sc = intake.manifest(d), intake.sidecar(d)
+        staged = {f.name: f for f in intake.batch_entries(work / "taken")} if (work / "taken").is_dir() else {}
         done_clips = db.batch_clips(batch)                               # {source name: file} from an earlier attempt
-        check_sizes(d, man, set(done_clips) | set(staged))
+        intake.check_sizes(d, man, set(done_clips) | set(staged))
         date, session = batch_date_session(d, sc)
         db.ensure_session(session, date)
         db.set_batch(batch, session=session, date=date)
-        entries = batch_entries(d)
-        inbox = {f.name for f in entries if CLIP_RE.match(f.name)}
+        entries = intake.batch_entries(d)
+        inbox = {f.name for f in entries if intake.CLIP_RE.match(f.name)}
         logs = [f for f in entries if f.name.lower().endswith(".bbl")]
         (VIDEOS_DIR / session).mkdir(parents=True, exist_ok=True)
         (ORIGINALS_DIR / session).mkdir(parents=True, exist_ok=True)
@@ -528,7 +159,7 @@ def process_batch(batch: str, log=print) -> dict:
             log(f"{batch}: {source} -> {session}/{cid}.mp4 ({name})")
             src = d / source
             # out of the push user's reach first (a new push of a staged clip replaces the staged copy)
-            taken = _take(src, work / "taken" / source) if source in inbox else staged[source]
+            taken = intake._take(src, work / "taken" / source) if source in inbox else staged[source]
             orig = ORIGINALS_DIR / session / f"{cid}{src.suffix.lower()}"
             part = work / "out" / f"{cid}.mp4"                           # not under videos/ until whole: the scan would take it
             dst = VIDEOS_DIR / session / f"{cid}.mp4"
@@ -537,10 +168,10 @@ def process_batch(batch: str, log=print) -> dict:
                 prog["pct"] = round(x * 100)
                 db.set_batch(batch, progress=prog)
             try:
-                res = compress(taken, part, pct)
+                res = encode.compress(taken, part, pct)
                 # the clock on the encode, before the clip is recorded: a crash here is redone by the retry
                 db.set_batch(batch, progress={**prog, "step": "clock"})
-                k = fix_clock(part, res["kept"], lambda m: log(f"{batch}: {m}"))
+                k = clock.fix_clock(part, res["kept"], lambda m: log(f"{batch}: {m}"))
                 k = None if k in (None, 1.0) else k
                 duration = video.probe(part)["duration"] if k else res["duration"]
                 if os.geteuid() == 0:
@@ -567,7 +198,7 @@ def process_batch(batch: str, log=print) -> dict:
             if dst.exists() and dst.stat().st_size == os.lstat(f).st_size:
                 f.unlink()                                               # the same dump again
             else:
-                dst = _take(f, _unique(dst))
+                dst = intake._take(f, _unique(dst))
             db.attach(session, dst.name)
             attached.append(dst.name)
         db.set_batch(batch, progress={"step": "decode", "logs": attached})
@@ -583,7 +214,7 @@ def process_batch(batch: str, log=print) -> dict:
         db.set_batch(batch, progress={"step": "automatch", "clips": len(to_match)})
         if to_match:                         # in one run: the clips are planned together, not each bounded by the last (#26)
             _cli("automatch", session, *to_match, "--write")
-        for f in batch_entries(d):
+        for f in intake.batch_entries(d):
             if f.name.startswith(".") or f.name == "import.json":
                 f.unlink()
         if not any(d.iterdir()):
