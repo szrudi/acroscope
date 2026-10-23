@@ -7,26 +7,42 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - Code: this repo (`szrudi/acroscope`, main). Venv `.venv` (`.venv/bin/acroscope`), Python 3.13; the dependencies are
   the stdlib plus orangebox, nothing else (no numpy: the container is python:3.13-slim). ffmpeg/ffprobe on the PATH.
   `gh` on this machine is logged in as `joan-grazo`, so issues and PRs filed from here carry that account.
+- Package layout (#60), by the workflow's phases: `sources/` (the raw inputs, read: blackbox, video, the OSD reader,
+  osdprofile, betaflight) and `store/` (db, remote, sessions: `store()`, the resolvers, the scan; edits, upkeep)
+  underneath; the phases `ingest/` (the batch in `__init__`; intake, encode, clock, recut), `match/` (manual,
+  pairing, planner, automatch), `analyse/` (metrics, lanes, events; `tricks/` beside it), `review/` (moments),
+  `share/`; the surfaces on top, `cli/` (a module of commands per phase, each with its parser lines in `add()`) and
+  `server/` (the handler; `jobs`: child processes, the CLI proxy, the background). A module imports from its own
+  layer or an earlier one, never a later one (`tests/test_layers.py`; a new part of the package goes in its
+  `LAYERS`); a layer that needs a later one's work runs it as a child (`python -m acroscope.cli`, as ingest runs
+  automatch). Logic lives in the phases and the surfaces only parse and print, so the CLI, the API and an MCP
+  server can share it (`automatch.run`, `events.on_clip`, `lanes.stick_frame`). Modules are imported as modules and
+  used qualified (`osd.read_timers`, never `from .osd import read_timers`), so a test's `patch.object(osd, ...)`
+  reaches every caller. The one exception is the CLI's own formatting helpers (`cli/common`: `out`, `fmt_time`,
+  `parse_time`, `_session`), which the groups import by name as the commands always called them; patch a command's
+  group module if a test ever needs one.
 - Data: the data dir (`ACROSCOPE_DATA`) is the acroscope LXC's `/data`, a bind mount of the homelab's `Data/fpv` dataset
   (szrudi/homelab#102): `videos/`, `blackbox/`, `inbox/`, `originals/`, `state/`. Matches, moments, notes, tags and
-  batches are in the server's SQLite database (`acroscope/db.py`), live at `/opt/acroscope/state/acroscope.db` on
+  batches are in the server's SQLite database (`acroscope/store/db.py`), live at `/opt/acroscope/state/acroscope.db` on
   the LXC with a nightly copy in `/data/state/`. **joan has no data**: `~/.config/acroscope/url` points the CLI at
   the server, the store calls go to the API, and the commands that need clips, logs or the cache (`cli.PROXIED`)
-  run on the server through `POST /api/cli` (a child process, allow-listed in `server.PROXIED`); frames and sheets
+  run on the server through `POST /api/cli` (a child process, allow-listed in `server.jobs.PROXIED`); frames and sheets
   come back through `GET /api/file` into the local cache. The server is `ACROSCOPE_URL`, else the URL file, so
   unsetting the variable still reaches the live server: a throwaway run needs `ACROSCOPE_URL=` (empty: a private
   local database, said on stderr); check with `acroscope --version` (it names the store) before anything that
   writes. joan's `~/gdrive/fpv` is Rudi's Drive folder: notes and gear docs only now (the flight-analysis session's
   `CLAUDE.md`, `app-handover.md`, `video-blackbox-index.md`); the clips and logs left it on 2026-10-10.
-- Ingest (`acroscope/ingest.py`): the laptop drops a batch into `inbox/` (`cobra-import-inbox.sh` on Rudi's laptop,
+- Ingest (`acroscope/ingest/`): the laptop drops a batch into `inbox/` (`cobra-import-inbox.sh` on Rudi's laptop,
   via the `fpvpush` user, write-only), the server numbers, compresses, files, decodes and automatches it. The inbox
   is hostile ground (the push user owns everything in a batch): keep the regular-file/plain-name rules in
-  `batch_entries`/`plain_name`/`_take`. A clip's file name is its id; its readable `<date>_NNN` name is a column;
-  `sessions.resolve_clip`/`clip_path` take either, or the number. Never `video.resolve_video` in a command.
-- OSD reader (`acroscope/osd.py`): every layout is a profile derived from Betaflight's own (#10, `acroscope/osdprofile.py`
-  over `acroscope/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm` font rendered into digit
-  templates, the DVR's grid at x 3, y -4, 24 x 36 px; STATS rows found by their labels). The six layouts Rudi has
-  flown ship in `acroscope/osd-profiles.json` (names kept: `air65f`, `air65f-b`, `otto`, `otto-bold`,
+  `ingest/intake.py` (`batch_entries`/`plain_name`/`_take`). A clip's file name is its id; its readable
+  `<date>_NNN` name is a column; `sessions.resolve_clip`/`clip_path` take either, or the number. Never
+  `video.resolve_video` in a command.
+- OSD reader (`acroscope/sources/osd.py`): every layout is a profile derived from Betaflight's own (#10,
+  `sources/osdprofile.py` over `sources/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm`
+  font rendered into digit templates, the DVR's grid at x 3, y -4, 24 x 36 px; STATS rows found by their labels). The
+  six layouts Rudi has
+  flown ship in `acroscope/sources/osd-profiles.json` (names kept: `air65f`, `air65f-b`, `otto`, `otto-bold`,
   `otto-bold-swap`, `otto-bold-v3`); a pilot's own are in the database (settings row `osd`, `osd.PROFILE_SOURCE` set
   by `cli.main` like the tricks layer); `osd.layouts()` is both, a tie keeps the shipped one. The hand-measured
   `LAYOUTS`, the learned templates and `osd-learn` are gone (2026-10-23, #64; the labels file is in the history).
@@ -35,7 +51,7 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   `~/.cache/acroscope-fonts` (`ACROSCOPE_FONTS` for a folder of them, offline), never committed; unit tests draw a
   synthetic font (`tests/osd_synthetic.py`), the OSD test servers get an empty `ACROSCOPE_FONTS`. Read cells from
   ASCII dumps, never from sheet thumbnails: a frame "at t" through the `fps` filter is about half a second after an
-  `-ss` seek to t. The aligner: length and
+  `-ss` seek to t. The aligner (`match/`: pairing, planner, automatch): length and
   total alignment, then the boot's uptime (offset can only go down along a boot; a line video = a·uptime + b per
   boot, the two clocks differ by ~0.3 %), then arms with no run derived along the line. `OSD_LAG` = 0.25 s.
 - Trick detection (`acroscope/tricks/`, #22): an engine (`segments.py` cuts an arm into windows, `features.py` measures
@@ -46,7 +62,8 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   server's logs). The pre-#22 detectors were ported window for window: on 234 real arms (eleven logs, 2026-10-07 to
   10-16) every event's tag, title, why, start and end were identical except the dives' tilt range (every frame now,
   not 40 samples) and the powerloops' inverted throttle (IMU tilt > 135, not integrated pitch, which for a loop
-  entered from a dive measured the climb). The server's `_events` cache is keyed by the shipped file's mtime and the pilot's layer. The recall work (#31, #29, #20): `acroscope
+  entered from a dive measured the climb). The suggestions cache (`analyse/events.arm_events`) is keyed by the shipped
+  file's mtime and the pilot's layer. The recall work (#31, #29, #20): `acroscope
   tricks eval <session>` scores the tricks against Rudi's tagged moments; on the eight tagged sessions of October
   2026 it went from 3 of 28 (10-14 alone) to orbits 24/25, split-S 6/6, rolls 11/13 (the two left are crashes),
   loops 3/3, barrel roll 1/1, dives 4/7; the 51 "dives" at an arm's first frame (the quad armed on the ground) and
@@ -62,12 +79,12 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   (`acroscope/static/config.html`, one file like the player, seven tabs) edits that layer whole through
   `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
   against what the server then holds.
-- Sharing (#57, `acroscope/share.py`): `acroscope share <session> <moment>` renders `shares/<token>/` (a cut of the
+- Sharing (#57, `acroscope/share/`): `acroscope share <session> <moment>` renders `shares/<token>/` (a cut of the
   clip without sound or metadata, `static/share.html` filled with the stick samples and the text) and records it in
   the `shares` table; `unshare` takes one down, `shares` lists them, `housekeeping` removes expired bundles and
   day-old previews and re-renders the page of every active share older than `share.html` (`share.refresh_pages`:
   a bundle is static, so this is how a viewer change reaches the links already out). The three commands are proxied (the clips are on the server); the share text is in
-  `server.FREE_TEXT`. The player's panel (⤴ on a moment, `index.html`) and the configuration page's shares tab use
+  `server.jobs.FREE_TEXT`. The player's panel (⤴ on a moment, `index.html`) and the configuration page's shares tab use
   the API: `POST /api/share/preview` renders into the cache's `share-preview/<id>/` (served back at
   `/share-preview/<id>/`, the viewer in an iframe), `POST /api/share` publishes (a preview whose facts match is
   moved, not cut again), `GET /api/shares`, `DELETE /api/share/<token>`; `share.resolve` is the one place the
@@ -121,6 +138,9 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   ingest end to end on a synthetic batch, the aligner on made-up data, the player in a headless browser, and the real-data pins (10-07 schammer by
   hand in `video-blackbox-index.md`; the #4 truths on 10-10 001) through the server. A pin of new behaviour is red
   until the server runs it. Red/green: write the test first for store, API, aligner and player work.
+  A branch that moves, renames or deletes a module runs its suite in a venv without the editable install
+  (`.venv`'s finder serves a module the worktree lacks from the main checkout: an old import path still works
+  there, against main's code).
 - Smoke checks with known answers through the server, seconds each: `tricks check` (the tricks file's examples, the
   10-07 pins among them); `sessions 2026-10-07` (20 arms, 15 matches, 29
   moments); `events 2026-10-07 011` (motor 1 power loss at 1:23.4, hard landing at 1:24.4); `automatch 2026-10-07 008`

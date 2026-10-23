@@ -47,7 +47,7 @@ shares/<token>/index.html, clip.mp4          a moment published on a secret link
                                              server serves this folder on a domain of its own, never acroscope itself
 ```
 
-**Ingest** (`acroscope/ingest.py`, the server runs it on complete batches, one at a time): the date and session from
+**Ingest** (`acroscope/ingest/`, the server runs it on complete batches, one at a time): the date and session from
 the sidecar (else the import time; `<date>-unsorted` when unnamed), the clips numbered `<date>_NNN` continuing the
 day's sequence over all its sessions in card order, each compressed (no-signal runs of 5 s or more cut with 1 s of
 padding: static is a flat frame that changes like noise, while a flat still picture such as dusk or a grey sky is
@@ -79,6 +79,31 @@ The cache (`ACROSCOPE_CACHE`, default `~/.cache/acroscope`) holds decoded arms (
 
 `video time = arm time + offset`. The clips have static cut out, so an offset only holds within one arm; a clip can
 have several matches.
+
+## Code layout
+
+The package follows the workflow: a package per phase, over the two layers every phase uses, under the two surfaces.
+
+```
+acroscope/
+  sources/   the raw inputs, read: blackbox (decoded into the cache), video (probes, frames, proxies), osd (the timers
+             read off the picture, and the arm runs they make), osdprofile and betaflight (a profile from a dump and
+             a font)
+  store/     the data layer: db (the SQLite database), remote (the same methods over the API), sessions (store(), the
+             resolvers, the folder scan), edits (rename, re-date, move, merge, delete), upkeep (trash, backups)
+  ingest/    1. a batch from inbox/ to numbered clips and attached logs: intake (the inbox's rules), encode (the
+             static cut), clock (re-timing), recut
+  match/     2. which arm is in which clip: pairing, planner (the session in one alignment), automatch, manual
+  analyse/   3. what happened in an arm: metrics, lanes (the player's strip and sticks), events; tricks/ beside it is
+             the trick engine
+  review/    4. moments, tags, notes
+  share/     5. a moment on a secret link
+  cli/       the agent's surface: a module of commands per phase
+  server/    the player's and a remote CLI's surface: the HTTP handler, and jobs (child processes, the background)
+  static/    the player, the configuration page, the share viewer
+```
+
+A module imports from its own layer or an earlier one, never a later one; `tests/test_layers.py` pins it.
 
 ## Install
 
@@ -264,7 +289,7 @@ pilot with another OSD needs no survey and no labels:
   cell size, on the frame scaled to 720 x 480). The goggles flown here put it at x 3, y -4, 24 x 36 px cells; other
   goggles can differ by a few pixels, and `fit` finds it on a frame.
 
-The OSDs flown on Rudi's quads ship as profiles (`acroscope/osd-profiles.json`: `air65f`, `air65f-b`, `otto` on the
+The OSDs flown on Rudi's quads ship as profiles (`acroscope/sources/osd-profiles.json`: `air65f`, `air65f-b`, `otto` on the
 stock font until 2026-10-09; `otto-bold`, `otto-bold-swap`, `otto-bold-v3` on Impact since 10-10), each from the
 dump of its day. Their fonts are fetched once into `~/.cache/acroscope-fonts`; `ACROSCOPE_FONTS` names a folder of
 `.mcm` files to use instead, for a machine without the internet. A pilot's own profiles are tried next to them on
