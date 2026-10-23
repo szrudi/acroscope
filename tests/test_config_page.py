@@ -21,14 +21,17 @@ except ImportError:
     sync_playwright = None
 
 try:
+    from tests import osd_synthetic as osyn
     from tests.synthetic import axis, make_arm, pulse
 except ImportError:
+    import osd_synthetic as osyn
     from synthetic import axis, make_arm, pulse
 
 LIBS = Path(os.environ.get("ACROSCOPE_BROWSER_LIBS", "~/.cache/acroscope-browser")).expanduser() / "usr" / "lib" / "x86_64-linux-gnu"
 PHONE = {"viewport": {"width": 412, "height": 927}, "is_mobile": True, "has_touch": True}
 DESKTOP = {"viewport": {"width": 1440, "height": 900}}
 S = "2026-10-04-motor-jitter-testing"
+OS = "2026-10-05-osd"                     # a session with a clip whose OSD is drawn in the synthetic font (the OSD tab)
 
 
 def free_port() -> int:
@@ -71,6 +74,8 @@ class ConfigPageTest(unittest.TestCase):
         (root / "data" / "blackbox").mkdir()
         (root / "data" / "blackbox" / "roll.bbl").write_bytes(b"")
         save_arm(make_arm(8, gyro=axis(0, pulse(2.0, 2.5, 500)), craft="OttO"), root / "cache", "roll")     # 250 deg: an attempt, a roll to a beginner
+        osyn.make_clip(root / "data" / "videos" / OS / "2026-10-05_001.mp4", osyn.font_chars(), {"x": 3, "y": -4, "cw": 24, "ch": 36})
+        (root / "synth.mcm").write_text(osyn.mcm_text(osyn.font_chars()))
         cls.port = free_port()
         env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"), ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="")
         cls.proc = subprocess.Popen([sys.executable, "-m", "acroscope.cli", "serve", "--host", "127.0.0.1", "--port", str(cls.port), "--no-warm"],
@@ -87,6 +92,7 @@ class ConfigPageTest(unittest.TestCase):
         from acroscope.remote import Remote
         cls.api = Remote(cls.url)
         cls.api.refresh(S, probe_videos=False)
+        cls.api.refresh(OS)
         cls.api.set_match(S, "2026-10-04_001.mp4", "roll.bbl", 1, 10.0)
         cls.api.tag(S, "2026-10-04_001.mp4", 11.5, 13.0, "a roll", ["roll"])
         cls.pw = sync_playwright().start()
@@ -131,12 +137,14 @@ class ConfigPageTest(unittest.TestCase):
 
     def test_tabs_and_the_way_in(self):
         page = self.open()
-        self.assertEqual(page.eval_on_selector_all("#tabs span", "els => els.map(e => e.dataset.tab)"), ["profile", "drones", "tricks", "settings", "tags", "shares"])
+        self.assertEqual(page.eval_on_selector_all("#tabs span", "els => els.map(e => e.dataset.tab)"), ["profile", "drones", "tricks", "settings", "tags", "shares", "osd"])
         self.assertEqual(page.get_attribute("section.on", "data-panel"), "profile")
         self.assertIn("15 of 15 tricks on", page.text_content("#status"))
-        for t in ("drones", "tricks", "settings", "tags", "shares"):
+        for t in ("drones", "tricks", "settings", "tags", "osd", "shares"):
             page.click(f"#tabs [data-tab={t}]")
             self.assertEqual(page.get_attribute("section.on", "data-panel"), t)
+            if t == "osd":
+                page.wait_for_selector("#oDump")                         # its panel loads the profiles first
             self.assertTrue(page.eval_on_selector(f"section[data-panel={t}]", "e => e.innerHTML.length > 100"), t)
         self.assertEqual(page.evaluate("() => location.hash"), "#shares")
         tags = self.open("/config#tags")
@@ -160,6 +168,13 @@ class ConfigPageTest(unittest.TestCase):
         page.click("#tabs [data-tab=drones]")
         self.assertFalse(page.evaluate("() => document.documentElement.scrollWidth > innerWidth"))
         self.assertTrue(page.is_visible("#crafts [data-craft=OttO]"))
+        # seven tabs side by side on the phone: none wraps or spills (the labels shrink)
+        boxes = page.eval_on_selector_all("#tabs span", "els => els.map(e => { const r = e.getBoundingClientRect(); return [r.left, r.right, r.height, e.scrollWidth <= e.clientWidth + 1]; })")
+        self.assertTrue(all(b[3] for b in boxes), boxes)
+        self.assertTrue(all(a[1] <= b[0] + 0.5 for a, b in zip(boxes, boxes[1:])), boxes)
+        page.click("#tabs [data-tab=osd]")
+        page.wait_for_selector("#oDump")
+        self.assertFalse(page.evaluate("() => document.documentElement.scrollWidth > innerWidth"))
 
     # ---- profile -------------------------------------------------------------------------------------------------
 
@@ -363,6 +378,95 @@ class ConfigPageTest(unittest.TestCase):
         page.wait_for_function("() => [...document.querySelectorAll('.shrow .st')].map(e => e.textContent).sort().join() === 'expired,revoked'")
         self.assertEqual(db.share("u" * 24)["state"], "revoked")
         self.assertIsNone(page.query_selector(".shrow [data-down]"))
+
+    # ---- osd -----------------------------------------------------------------------------------------------------
+
+    def osd_doc(self) -> dict:
+        return json.loads(urllib.request.urlopen(self.url + "/api/osd/doc").read())["doc"]
+
+    def read(self, page) -> dict:
+        """What the readout says once the look at the frame is back."""
+        page.wait_for_function("() => document.querySelector('#oRead b[data-v=arm]') && !/reading/.test(document.querySelector('#oRead').textContent)", timeout=60000)
+        return {k: page.text_content(f"#oRead b[data-v={k}]") for k in ("arm", "total", "counter")}
+
+    def test_osd_profile_from_a_dump_and_a_font(self):
+        """#10: paste a dump, load a font of your own, look at a frame of a clip, fit the grid, save; the server then
+        holds the profile and the reader uses it. The clip's OSD is drawn in the synthetic font on the grid the DVR
+        flown here uses (x 3, y -4)."""
+        urllib.request.urlopen(urllib.request.Request(self.url + "/api/osd/doc", method="DELETE")).read()
+        page = self.open("/config#osd")
+        page.wait_for_selector("#oDump")
+        self.assertIn("otto-bold-v3", page.text_content("#osdPanel .hint"))        # the hand-measured layouts are named
+        self.assertTrue(page.locator("#oNew").evaluate("e => e.classList.contains('on')"))
+        page.select_option("#oSession", OS)
+        page.wait_for_function(f"() => OE.session === {OS!r} && OE.video === '2026-10-05_001.mp4'")
+        page.fill("#oT", "10.3")
+        page.dispatch_event("#oT", "change")
+        with page.expect_file_chooser() as fc:                                     # "your own .mcm…" opens the file picker
+            page.select_option("#oFont", "")
+        fc.value.set_files(str(Path(self.tmp.name) / "synth.mcm"))
+        page.wait_for_function("() => OE.mcm && OE.mcmName === 'synth'")
+        page.fill("#oDump", osyn.DUMP)
+        self.assertEqual(self.read(page), {"arm": "0:06.3", "total": "0:36", "counter": "#7"})
+        self.assertIn("timer 2: total dd:dd at column 22, row 11", page.text_content("#oDumpSum"))
+        self.assertIn("synth (yours)", page.text_content("#oFont option:checked"))
+        self.assertEqual(page.evaluate("() => OE.probe.cells.filter(c => c.kind === 'timer' && c.fmt === 'd' && c.score > .9).length"), 9)
+        # a grid off by a few pixels reads nothing; fitting it on the frame finds the DVR's again
+        page.fill("#oX", "-1")
+        page.dispatch_event("#oX", "change")
+        page.wait_for_function("() => OE.profile.grid.x === -1 && OE.probe && OE.probe.values.total !== 36", timeout=60000)
+        page.click("#oFit")
+        page.wait_for_function("() => OE.profile.grid.x === 3 && OE.profile.grid.y === -4", timeout=120000)
+        self.assertEqual(self.read(page)["total"], "0:36")
+        self.assertIn("grid fitted: x 3, y -4", page.text_content("#oSaved"))
+        # the STATS screen at 26 s: its rows found by their labels
+        page.click("[data-dt='10']")
+        page.click("[data-dt='10']")
+        page.click("[data-dt='-1']")
+        page.click("[data-dt='-1']")
+        page.click("[data-dt='-1']")
+        page.click("[data-dt='-1']")
+        page.wait_for_function("() => +OE.t === 26.3 && OE.probe && OE.probe.stats", timeout=60000)
+        self.assertEqual((page.evaluate("() => OE.probe.stats.total_arm"), page.evaluate("() => OE.probe.stats.blackbox")), (50, 42))
+        # save under a name: the server holds it, the reader takes it
+        page.fill("#oName", "synth-v3")
+        page.click("#oSave")
+        page.wait_for_function("() => /saved/.test(document.querySelector('#oSaved').textContent)")
+        doc = self.osd_doc()
+        self.assertEqual(list(doc["profiles"]), ["synth-v3"])
+        self.assertEqual(doc["profiles"]["synth-v3"]["font"]["name"], "synth")
+        self.assertEqual(doc["profiles"]["synth-v3"]["grid"]["x"], 3)
+        self.assertNotIn("pilot_name", doc["profiles"]["synth-v3"]["settings"])
+        out = self.api.cli(["osd", OS, "001"])
+        self.assertIn("layout synth-v3", out["stdout"], out["stderr"])
+        # a fresh page lists it and opens it as it was saved
+        page = self.open("/config#osd")
+        page.wait_for_selector("[data-oname=synth-v3]")
+        page.select_option("#oSession", OS)
+        page.wait_for_function(f"() => OE.video === '2026-10-05_001.mp4'")
+        page.fill("#oT", "10.3")
+        page.dispatch_event("#oT", "change")
+        page.click("[data-oname=synth-v3]")
+        self.assertEqual(self.read(page)["total"], "0:36")
+        self.assertEqual(page.input_value("#oName"), "synth-v3")
+        page.once("dialog", lambda d: d.accept())
+        page.click("#oDelete")
+        page.wait_for_function("() => !document.querySelector('[data-oname=synth-v3]')")
+        self.assertEqual(self.osd_doc()["profiles"], {})
+
+    def test_osd_refuses_what_does_not_derive(self):
+        urllib.request.urlopen(urllib.request.Request(self.url + "/api/osd/doc", method="DELETE")).read()
+        page = self.open("/config#osd")
+        page.wait_for_selector("#oDump")
+        with page.expect_file_chooser() as fc:
+            page.select_option("#oFont", "")
+        fc.value.set_files(str(Path(self.tmp.name) / "synth.mcm"))
+        page.wait_for_function("() => OE.mcm")
+        page.fill("#oDump", "set osd_vbat_pos = 2433\n")                           # no timer shown
+        page.wait_for_function("() => document.querySelector('#err').classList.contains('on')")
+        self.assertIn("no timer to read", page.text_content("#err"))
+        self.assertTrue(page.is_disabled("#oSave"))
+        self.assertEqual(self.osd_doc(), {})
 
 
 if __name__ == "__main__":

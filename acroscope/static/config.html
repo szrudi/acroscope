@@ -60,6 +60,15 @@
   body.phone main { padding:10px 10px 70px; order:1 } body.phone .tabs { order:2; position:fixed; left:0; right:0; bottom:0; padding-bottom:env(safe-area-inset-bottom); z-index:3 }
   body.phone .prm { grid-template-columns:minmax(0, 1fr) 90px; } body.phone .prm .def { grid-column:1; } body.phone .prm .act { grid-column:2; justify-content:flex-end }
   body.phone input[type=number] { width:88px; font-size:16px } body.phone select { font-size:16px }
+  .osdview { position:relative; width:100%; max-width:720px; background:#000; border:1px solid var(--line); border-radius:6px; overflow:hidden; aspect-ratio:3/2 }
+  .osdview img, .osdview canvas { position:absolute; inset:0; width:100%; height:100%; display:block }
+  .osdview .msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:13px; text-align:center; padding:20px }
+  #oRead { font:13px ui-monospace, monospace; margin:8px 0; min-height:18px } #oRead b { color:var(--fg); font-weight:600 } #oRead .dim { margin-left:10px }
+  #oWarn div { color:var(--acc); font-size:12px } #oGlyphs canvas { image-rendering:pixelated; background:#3a404b; border-radius:4px }
+  .osd-kv { grid-template-columns:70px minmax(0, 1fr); align-items:center } .osd-kv input[type=number] { width:70px } .osd-kv select { max-width:100% }
+  #oGlyphsCanvas { max-width:100% }
+  body.phone .tabs span { letter-spacing:0; font-size:11px; min-width:0 }
+  #oRank .r { display:grid; grid-template-columns:110px 60px minmax(0, 1fr); gap:8px; padding:3px 0; border-bottom:1px solid var(--line); cursor:pointer; font-size:13px } #oRank .r:hover { background:#20242b }
 </style>
 </head>
 <body>
@@ -68,7 +77,7 @@
   <span id="status"></span>
   <a class="btn" href="/" id="toPlayer">← player</a>
 </header>
-<div class="tabs" id="tabs"><span data-tab="profile">profile</span><span data-tab="drones">drones</span><span data-tab="tricks">tricks</span><span data-tab="settings">settings</span><span data-tab="tags">tags</span><span data-tab="shares">shares</span></div>
+<div class="tabs" id="tabs"><span data-tab="profile">profile</span><span data-tab="drones">drones</span><span data-tab="tricks">tricks</span><span data-tab="settings">settings</span><span data-tab="tags">tags</span><span data-tab="shares">shares</span><span data-tab="osd">osd</span></div>
 <main>
   <div id="err"></div>
   <section data-panel="profile" id="profilePanel"></section>
@@ -77,6 +86,7 @@
   <section data-panel="settings" id="settingsPanel"></section>
   <section data-panel="tags" id="tagsPanel"></section>
   <section data-panel="shares" id="sharesPanel"></section>
+  <section data-panel="osd" id="osdPanel"></section>
 </main>
 <script>
 // The configuration page (#45): profile (the preset and the numbers), drones (per craft), tricks (on/off, their
@@ -361,13 +371,210 @@ function renderTags() {
   $('#addTag').onclick = async () => { const n = $('#newTag').value.trim(); if (!n) return; await post('/api/tags', {name: n, category: $('#addTag').previousElementSibling.value}); reload(); };
 }
 
+// ---- osd: a profile derived from Betaflight's dump and font, checked on a real frame (#10)
+// OE is the profile being edited: {name, profile (settings, font with its data, grid), layout, glyphs, mcm (the text
+// of a font of the pilot's own), session, video, t, probe}. The server derives (POST /api/osd/derive), reads the frame
+// in a child (POST /api/osd/probe: probe, fit, fonts) and keeps the profiles as one document (/api/osd/doc).
+let OSD = null, ODOC = {doc: {}, etag: null}, OE = null, OSESS = null, oSeq = 0;
+const ofmt = v => v === null || v === undefined ? '–' : (() => { const m = Math.floor(v / 60), s = v - m * 60; return `${m}:${(Number.isInteger(s) ? String(s).padStart(2, '0') : s.toFixed(1).padStart(4, '0'))}`; })();
+async function loadOsd() {
+  [OSD, ODOC] = await Promise.all([api('/api/osd'), api('/api/osd/doc')]);
+  if (!OSESS) OSESS = (await api('/api/sessions')).filter(s => s.videos).map(s => s.session).sort().reverse();
+}
+function osdNew() {
+  OE = {name: '', profile: null, layout: null, glyphs: null, mcm: null, session: OE?.session || OSESS[0] || null, video: OE?.video || null, t: OE?.t ?? 30, probe: null, rank: null};
+}
+async function osdOpen(name) {
+  const p = ODOC.doc.profiles?.[name];
+  OE = {...(OE || {}), name, profile: p, layout: null, glyphs: null, mcm: null, probe: null, rank: null};
+  await osdDerive({profile: p});
+}
+async function osdDerive(body) {
+  err('');
+  const r = await api('/api/osd/derive', {method: 'POST', body: JSON.stringify({name: OE.name || 'profile', ...body})});
+  if (r.error) { err(r.error); return false; }
+  Object.assign(OE, {profile: r.profile, layout: r.layout, glyphs: r.glyphs, probe: null});
+  const rd = $('#oRead'); if (rd) rd.textContent = 'reading the frame…';     // the old reading is not this profile's
+  await renderOsd();
+  await osdProbe();
+  return true;
+}
+async function osdLook(op) {
+  if (!OE?.profile || !OE.session || !OE.video) return null;
+  return api('/api/osd/probe', {method: 'POST', body: JSON.stringify({op, profile: OE.profile, session: OE.session, video: OE.video, t: +OE.t})});
+}
+async function osdProbe() {
+  const seq = ++oSeq;
+  drawFrame();
+  if (!OE?.profile || !OE.video) return;
+  $('#oRead').textContent = 'reading the frame…';
+  const r = await osdLook('probe');
+  if (seq !== oSeq || !r) return;                     // a newer look started meanwhile
+  if (r.error) { OE.probe = null; $('#oRead').innerHTML = `<span class="bad">${esc(r.error)}</span>`; drawOverlay(); return; }
+  OE.probe = r;
+  const v = r.values;
+  $('#oRead').innerHTML = `arm <b data-v="arm">${esc(ofmt(v.arm))}</b> · total <b data-v="total">${esc(ofmt(v.total))}</b>` +
+    (OE.layout?.counter ? ` · flight <b data-v="counter">${r.counter === null ? '–' : '#' + r.counter}</b>` : '') +
+    (r.stats ? ` · STATS total arm <b data-v="stats_total">${esc(ofmt(r.stats.total_arm))}</b>, blackbox <b>${r.stats.blackbox ?? '–'} %</b>` : '') +
+    `<span class="dim">${r.cells.filter(c => c.digit).length} digits read, weakest ${Math.min(...r.cells.filter(c => c.digit).map(c => c.score), 1).toFixed(2)}</span>`;
+  drawOverlay();
+}
+function drawFrame() {
+  const img = $('#oImg');
+  if (!img) return;
+  const f = OE?.session && OE.video ? `/frame/${encodeURIComponent(OE.session)}/${encodeURIComponent(OE.video)}/${(+OE.t).toFixed(2)}` : '';
+  if (img.dataset.src !== f) { img.dataset.src = f; if (f) img.src = f; else img.removeAttribute('src'); }
+  $('#oMsg').style.display = f ? 'none' : 'flex';
+  drawOverlay();
+}
+function drawOverlay() {
+  const cv = $('#oCanvas');
+  if (!cv) return;
+  const L = OE?.layout, g = L?.grid;
+  const [W, H] = L?.frame || [720, 480];
+  cv.width = W; cv.height = H;
+  const c = cv.getContext('2d');
+  c.clearRect(0, 0, W, H);
+  if (!g) return;
+  c.strokeStyle = 'rgba(76,194,255,.22)'; c.lineWidth = 1;              // Betaflight's grid, where the profile puts it
+  const rows = L.stats_scan ? L.stats_scan.rows.length : 13;
+  for (let k = 0; k <= 30; k++) { c.beginPath(); c.moveTo(g.x + k * g.cw + .5, g.y); c.lineTo(g.x + k * g.cw + .5, g.y + rows * g.ch); c.stroke(); }
+  for (let k = 0; k <= rows; k++) { c.beginPath(); c.moveTo(g.x, g.y + k * g.ch + .5); c.lineTo(g.x + 30 * g.cw, g.y + k * g.ch + .5); c.stroke(); }
+  const [gx, gw, gy, gh] = L.glyph;
+  const col = s => s >= .7 ? '#5fd68b' : s >= .5 ? '#f5a524' : '#ff6b6b';
+  c.font = 'bold 15px ui-monospace, monospace'; c.textAlign = 'center';
+  const cells = OE.probe?.cells || L.formats.flatMap((f, row) => [...f].map((ch, k) => ({kind: 'timer', row, k, x: L.x0[row] + k * L.pitch, y: L.rows[row], fmt: ch})));
+  for (const cell of cells) {
+    if (cell.kind === 'stats') { c.strokeStyle = '#4cc2ff'; c.lineWidth = 2; c.strokeRect(cell.x + .5, cell.y + .5, cell.w, g.ch); continue; }
+    if (cell.fmt !== 'd') continue;
+    const s = cell.digit ? cell.score : 0;
+    c.strokeStyle = OE.probe ? col(s) : '#9aa3b2'; c.lineWidth = 2;
+    c.strokeRect(cell.x + gx + .5, cell.y + gy + .5, gw, gh);
+    if (OE.probe) {
+      // the read digit above the first timer row and the counter's, below the others: two rows' labels never meet
+      const above = cell.kind === 'timer' && cell.row === 0 && L.formats.length > 1;
+      c.fillStyle = 'rgba(0,0,0,.7)'; c.fillRect(cell.x + gx, above ? cell.y + gy - 18 : cell.y + gy + gh + 2, gw, 16);
+      c.fillStyle = col(s); c.fillText(cell.digit ?? '?', cell.x + gx + gw / 2, above ? cell.y + gy - 5 : cell.y + gy + gh + 15);
+    }
+  }
+}
+function drawGlyphs() {
+  const cv = $('#oGlyphsCanvas');
+  if (!cv || !OE?.glyphs) return;
+  const chars = Object.keys(OE.glyphs), z = 3;
+  cv.width = chars.length * 13 * z; cv.height = 18 * z;
+  const c = cv.getContext('2d');
+  chars.forEach((ch, i) => OE.glyphs[ch].forEach((row, y) => [...row].forEach((p, x) => {
+    if (p === '.') return;
+    c.fillStyle = p === 'w' ? '#fff' : '#000'; c.fillRect((i * 13 + x) * z, y * z, z, z);
+  })));
+}
+async function osdClips() {
+  if (!OE.session) return [];
+  const s = await api('/api/session/' + encodeURIComponent(OE.session));
+  return (s.videos || []).map(v => ({file: v.file, name: v.name || v.file, duration: v.duration}));
+}
+async function renderOsd() {
+  const box = $('#osdPanel');
+  if (!OSD) { box.innerHTML = '<p class="hint">loading…</p>'; await loadOsd(); }
+  if (!OE) osdNew();
+  const names = Object.keys(ODOC.doc.profiles || {});
+  const clips = await osdClips();
+  if (OE.session && (!OE.video || !clips.some(c => c.file === OE.video))) OE.video = clips[0]?.file || null;
+  const L = OE.layout, p = OE.profile, g = p?.grid || OSD.grid.NTSC;
+  const t = L?.derived?.timers || [];
+  box.innerHTML = `<h2>OSD profiles</h2><p class="hint">How the timers are read off your DVR footage, from what Betaflight says: the CLI's <code>diff all</code> (where the timers are and what they count), the font on the OSD chip, and where your goggles put Betaflight's grid in the picture. A profile is tried next to the layouts measured by hand (${OSD.builtin.map(esc).join(', ')}); a clip takes whichever reads it best.</p>` +
+    `<div class="row" id="oProfiles">${names.map(n => `<span class="chip ${n === OE.name && p ? 'on' : ''}" data-oname="${esc(n)}">${esc(n)}</span>`).join('')}` +
+    Object.entries(OSD.errors).map(([n, e]) => `<span class="chip bad" title="${esc(e)}">${esc(n)} ⚠</span>`).join('') +
+    `<span class="chip ${!names.includes(OE.name) ? 'on' : ''}" id="oNew">＋ new</span></div>` +
+    `<div class="kv osd-kv" style="margin-top:10px">` +
+    `<b>name</b><span class="row" style="margin:0"><input id="oName" value="${esc(OE.name)}" placeholder="e.g. otto-impact" style="width:180px"><span class="dim">lower case, digits, . _ -</span></span>` +
+    `<b>dump</b><span>${p ? `<span class="dim" id="oDumpSum">${esc(L?.derived?.version || 'firmware not named')}${L?.derived?.craft ? ' · ' + esc(L.derived.craft) : ''} · ${t.map(x => `timer ${x.n}: ${esc(x.source)} ${esc(x.format)} at column ${x.col}, row ${x.row}`).join(' · ') || 'no timer'}${L?.counter ? ' · flight counter' : ''}</span> <button class="small" id="oDumpAgain">paste another</button>` : ''}` +
+    `<textarea id="oDump" placeholder="paste the output of diff all from the Betaflight CLI (only the OSD settings are kept)" style="min-height:90px;${p ? 'display:none' : ''}"></textarea>` +
+    `<span class="row" style="${p ? 'display:none' : ''}" id="oDumpRow"><input type="file" id="oDumpFile" accept=".txt,text/plain" style="font-size:12px"></span></span>` +
+    `<b>font</b><span class="row" style="margin:0"><select id="oFont">${OSD.fonts.map(f => `<option ${f === (p?.font?.name ?? 'default') ? 'selected' : ''}>${esc(f)}</option>`).join('')}` +
+      `<option value="" ${p && !OSD.fonts.includes(p.font?.name) ? 'selected' : ''}>${p && !OSD.fonts.includes(p.font?.name) ? esc(p.font?.name) + ' (yours)' : 'your own .mcm…'}</option></select>` +
+      `<input type="file" id="oMcm" accept=".mcm" style="display:none"><button class="small" id="oRankBtn" ${p && OE.video ? '' : 'disabled'}>which font fits this frame?</button></span>` +
+    `<b>grid</b><span class="row" style="margin:0">x <input type="number" id="oX" value="${g.x}"> y <input type="number" id="oY" value="${g.y}"> cell <input type="number" id="oCw" value="${g.cw}"> × <input type="number" id="oCh" value="${g.ch}">` +
+      `<button class="small" id="oFit" ${p && OE.video ? '' : 'disabled'}>fit to this frame</button></span>` +
+    `<b>frame</b><span class="row" style="margin:0"><select id="oSession">${OSESS.map(s => `<option ${s === OE.session ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>` +
+      `<select id="oClip">${clips.map(c => `<option value="${esc(c.file)}" ${c.file === OE.video ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` +
+      ` at <input type="number" id="oT" step="0.5" min="0" value="${OE.t}"> s <button class="small" data-dt="-1">−1 s</button><button class="small" data-dt="1">+1 s</button><button class="small" data-dt="10">+10 s</button></span>` +
+    `</div><div id="oWarn">${(L?.warnings || []).map(w => `<div>${esc(w)}</div>`).join('')}</div>` +
+    `<div class="osdview"><img id="oImg" alt=""><canvas id="oCanvas"></canvas><div class="msg" id="oMsg">no clip to look at: choose a session with clips</div></div>` +
+    `<div id="oRead" class="dim">${p ? '' : 'paste a dump to see what it reads'}</div>` +
+    `<div class="row" id="oGlyphs">${OE.glyphs ? `<canvas id="oGlyphsCanvas"></canvas><span class="dim">the font's characters as the profile has them</span>` : ''}</div>` +
+    `<div id="oRank"></div>` +
+    `<div class="row"><button class="primary" id="oSave" ${p ? '' : 'disabled'}>save</button>${names.includes(OE.name) ? '<button id="oDelete">delete</button>' : ''}<span id="oSaved" class="dim"></span></div>`;
+  box.querySelectorAll('[data-oname]').forEach(el => el.onclick = () => osdOpen(el.dataset.oname));
+  $('#oNew').onclick = () => { osdNew(); renderOsd(); };
+  $('#oName').oninput = e => { OE.name = e.target.value.trim(); };
+  const font = () => { const f = $('#oFont').value; return f ? {font: f} : OE.mcm ? {font: OE.mcmName, mcm: OE.mcm} : null; };
+  const fromDump = async text => { if (!text.trim()) return; const f = font(); if (!f) { err('choose a font, or load the .mcm of your own'); return; } await osdDerive({dump: text, ...f, grid: OE.profile?.grid}); };
+  let deb;
+  $('#oDump').oninput = e => { clearTimeout(deb); deb = setTimeout(() => fromDump(e.target.value), 500); };
+  $('#oDumpFile').onchange = async e => { const f = e.target.files[0]; if (f) await fromDump(await f.text()); };
+  if ($('#oDumpAgain')) $('#oDumpAgain').onclick = () => { $('#oDump').style.display = ''; $('#oDumpRow').style.display = ''; $('#oDumpAgain').remove(); $('#oDump').focus(); };
+  $('#oFont').onchange = async e => {
+    if (!e.target.value) { $('#oMcm').click(); return; }
+    if (OE.profile) await osdDerive({profile: OE.profile, font: e.target.value});
+  };
+  $('#oMcm').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    OE.mcm = await f.text(); OE.mcmName = f.name.replace(/\.mcm$/i, '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+    if (OE.profile) await osdDerive({profile: OE.profile, font: OE.mcmName, mcm: OE.mcm});
+    else if ($('#oDump').value.trim()) await fromDump($('#oDump').value);
+  };
+  const grid = () => ({x: +$('#oX').value, y: +$('#oY').value, cw: +$('#oCw').value, ch: +$('#oCh').value});
+  ['#oX', '#oY', '#oCw', '#oCh'].forEach(id => $(id).onchange = () => OE.profile && osdDerive({profile: OE.profile, grid: grid()}));
+  $('#oSession').onchange = async e => { OE.session = e.target.value; OE.video = null; await renderOsd(); };
+  $('#oClip').onchange = e => { OE.video = e.target.value; osdProbe(); };
+  $('#oT').onchange = e => { OE.t = Math.max(0, +e.target.value || 0); osdProbe(); };
+  box.querySelectorAll('[data-dt]').forEach(b => b.onclick = () => { OE.t = Math.max(0, +OE.t + +b.dataset.dt); $('#oT').value = OE.t; osdProbe(); });
+  $('#oFit').onclick = async () => {
+    $('#oFit').disabled = true; status('fitting the grid to this frame…');
+    const r = await osdLook('fit');
+    status('');
+    if (!r || r.error) { err(r?.error || 'no frame'); $('#oFit').disabled = false; return; }
+    await osdDerive({profile: OE.profile, grid: {...OE.profile.grid, x: r.x, y: r.y}});
+    $('#oSaved').textContent = `grid fitted: x ${r.x}, y ${r.y} (score ${r.was.score} → ${r.score})`;
+  };
+  $('#oRankBtn').onclick = async () => {
+    $('#oRankBtn').disabled = true; $('#oRank').innerHTML = '<p class="hint">reading this frame with every Configurator font…</p>';
+    const r = await osdLook('fonts');
+    $('#oRankBtn').disabled = false;
+    if (!r || r.error) { $('#oRank').innerHTML = ''; err(r?.error || 'no frame'); return; }
+    $('#oRank').innerHTML = `<h2>fonts on this frame</h2>` + r.fonts.map(f => `<div class="r" data-font="${esc(f.font)}"><b>${esc(f.font)}</b><span>${f.score ?? '–'}</span><span class="dim">${f.error ? esc(f.error) : `arm ${esc(ofmt(f.values?.arm))}, total ${esc(ofmt(f.values?.total))}`}</span></div>`).join('');
+    $('#oRank').querySelectorAll('[data-font]').forEach(el => el.onclick = async () => { await osdDerive({profile: OE.profile, font: el.dataset.font}); });
+  };
+  $('#oSave').onclick = async () => {
+    err('');
+    if (!OE.name) { err('name the profile first'); $('#oName').focus(); return; }
+    const doc = clone(ODOC.doc); doc.version ??= 1; (doc.profiles ||= {})[OE.name] = OE.profile;
+    const r = await api('/api/osd/doc?etag=' + encodeURIComponent(ODOC.etag || ''), {method: 'POST', body: JSON.stringify(doc)});
+    if (r.error) { err(r.error); if (/changed since/.test(r.error)) { await loadOsd(); renderOsd(); } return; }
+    await loadOsd(); await renderOsd(); $('#oSaved').textContent = `saved: the reader tries ${OE.name} on every clip it reads from now on`;
+  };
+  if ($('#oDelete')) $('#oDelete').onclick = async () => {
+    if (!confirm(`Delete the OSD profile ${OE.name}? Clips read with it are read again with what is left.`)) return;
+    const doc = clone(ODOC.doc); delete doc.profiles[OE.name];
+    const r = await api('/api/osd/doc?etag=' + encodeURIComponent(ODOC.etag || ''), {method: 'POST', body: JSON.stringify(doc)});
+    if (r.error) { err(r.error); return; }
+    osdNew(); await loadOsd(); await renderOsd();
+  };
+  $('#oImg').onload = drawOverlay;
+  drawGlyphs();
+  drawFrame();
+  renders++;
+}
+
 // ---- tabs
 let renders = 0;                                      // counts the redraws, for the tests to wait on
 function render() {
   if (!D) return;
   renders++;
   status(`${D.tricks.filter(t => t.enabled).length} of ${D.tricks.length} tricks on · ${D.skill ? 'skill ' + D.skill : 'the default numbers'}${D.database ? ' · your layer in the database' : ''}`);
-  ({profile: renderProfile, drones: renderDrones, tricks: renderTricks, settings: renderSettings, tags: renderTags, shares: renderShares})[tab]();
+  ({profile: renderProfile, drones: renderDrones, tricks: renderTricks, settings: renderSettings, tags: renderTags, shares: renderShares, osd: renderOsd})[tab]();
 }
 function show(t) {
   tab = t;
@@ -385,7 +592,7 @@ setPhone();
 (async () => {
   status('loading…');
   const first = location.hash.slice(1);
-  tab = ['profile', 'drones', 'tricks', 'settings', 'tags', 'shares'].includes(first) ? first : (() => { try { return localStorage.getItem('acro.cfgtab'); } catch { return null; } })() || 'profile';
+  tab = ['profile', 'drones', 'tricks', 'settings', 'tags', 'shares', 'osd'].includes(first) ? first : (() => { try { return localStorage.getItem('acro.cfgtab'); } catch { return null; } })() || 'profile';
   SESS = (await api('/api/sessions')).filter(s => s.moments).map(s => ({session: s.session, moments: s.moments}));
   await load();
   show(tab);
