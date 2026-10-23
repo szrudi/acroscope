@@ -21,8 +21,10 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .. import ingest, share, tricks
 from ..analyse import metrics
+from ..match import manual
+from ..review import moments
 from ..sources import blackbox, osdprofile, video
-from ..store import sessions
+from ..store import edits, sessions
 from ..config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
 
 STATIC = Path(__file__).parent.parent / "static"
@@ -660,33 +662,33 @@ class Handler(BaseHTTPRequestHandler):
             name, what, b = parts[2], parts[3], self._body()
             with _lock:
                 if what == "moment":
-                    return self._json(sessions.tag(name, b["video"], float(b["start"]), float(b["end"]), b.get("title", ""),
+                    return self._json(moments.tag(name, b["video"], float(b["start"]), float(b["end"]), b.get("title", ""),
                                                    [t for t in b.get("tags", []) if t], b.get("note", ""), b.get("metrics"), b.get("id")))
                 if what == "note":
-                    sessions.set_note(name, b.get("note", ""), b.get("video"))
+                    moments.set_note(name, b.get("note", ""), b.get("video"))
                     return self._json({"ok": True})
                 if what == "match":                     # resolves the clip and the log like the CLI does
-                    return self._json(sessions.set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", ""))[0])
+                    return self._json(manual.set_match(name, b["video"], b["bbl"], int(b["arm"]), float(b["offset"]), b.get("note", ""))[0])
                 if what == "blackbox":
                     if b.get("add") and not sessions.store().exists(name):     # attaching makes no session
                         raise FileNotFoundError(f"{name}: no such session")
                     for f in b.get("add", []):
-                        sessions.attach(name, f)
+                        manual.attach(name, f)
                     for f in b.get("remove", []):
-                        sessions.detach(name, f)
+                        manual.detach(name, f)
                     return self._json(sessions.load(name)["blackbox"])
                 if what == "purge":
-                    return self._json(sessions.purge(name, b.get("video"), float(b.get("days") or 0)))
+                    return self._json(edits.purge(name, b.get("video"), float(b.get("days") or 0)))
                 if what == "rename":
-                    return self._json(sessions.rename_session(name, b["name"]))
+                    return self._json(edits.rename_session(name, b["name"]))
                 if what == "date":
-                    return self._json(sessions.set_date(name, b["date"]))
+                    return self._json(edits.set_date(name, b["date"]))
                 if what == "move-log":
-                    return self._json(sessions.move_log(name, b["bbl"], b["to"]))
+                    return self._json(manual.move_log(name, b["bbl"], b["to"]))
                 if what == "move":
-                    return self._json(sessions.move_clip(name, b["video"], b["to"]))
+                    return self._json(edits.move_clip(name, b["video"], b["to"]))
                 if what == "merge":
-                    return self._json(sessions.merge_sessions(name, b["into"]))
+                    return self._json(edits.merge_sessions(name, b["into"]))
             if what == "refresh":                      # walks the mount: outside the lock, it can take a while
                 return self._json(sessions.refresh(name, probe_videos=b.get("probe", True)))
             return self._json({"error": "not found"}, 404)
@@ -704,14 +706,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parts[:2] == ["api", "session"] and len(parts) == 5 and parts[3] == "moment":
                 with _lock:
-                    ok = sessions.untag(parts[2], parts[4])
+                    ok = moments.untag(parts[2], parts[4])
                 return self._json({"removed": ok})
             if parts[:2] == ["api", "session"] and len(parts) == 4 and parts[3] == "clip":
                 with _lock:
-                    return self._json(sessions.delete_clip(parts[2], q["video"]))
+                    return self._json(edits.delete_clip(parts[2], q["video"]))
             if parts[:2] == ["api", "session"] and len(parts) == 4 and parts[3] == "match":
                 with _lock:
-                    n = sessions.unmatch(parts[2], q["video"], int(q["arm"]) if q.get("arm") else None)
+                    n = manual.unmatch(parts[2], q["video"], int(q["arm"]) if q.get("arm") else None)
                 return self._json({"removed": n})
             if parts[:2] == ["api", "tags"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})

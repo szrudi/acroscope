@@ -11,9 +11,10 @@ from pathlib import Path
 
 from .. import ingest, share, tricks
 from ..analyse import metrics
-from ..review import xspf
+from ..match import manual
+from ..review import moments, xspf
 from ..sources import betaflight, blackbox, osd, osdprofile, video
-from ..store import sessions
+from ..store import edits, sessions, upkeep
 from ..config import CACHE_DIR, DATA_DIR, DB_PATH, SERVER_URL, TAGS
 from ..store.remote import RemoteError
 
@@ -117,16 +118,16 @@ def cmd_scan(a):
 
 
 def cmd_note(a):
-    sessions.set_note(_session(a.session), a.text, a.clip)
+    moments.set_note(_session(a.session), a.text, a.clip)
     out({"ok": True})
 
 
 def cmd_attach(a):
-    out(sessions.attach(_session(a.session), a.bbl))
+    out(manual.attach(_session(a.session), a.bbl))
 
 
 def cmd_detach(a):
-    out(sessions.detach(_session(a.session), a.bbl))
+    out(manual.detach(_session(a.session), a.bbl))
 
 
 def cmd_purge(a):
@@ -136,7 +137,7 @@ def cmd_purge(a):
         print(f"{len(gone)} clip(s) marked missing in {s}; add --yes to remove those missing for more than {a.days} days, "
               f"or name one clip", file=sys.stderr)
         return out([{"video": v["file"], "missing_since": v["missing_since"]} for v in gone])
-    out(sessions.purge(s, a.clip, a.days))
+    out(edits.purge(s, a.clip, a.days))
 
 
 def cmd_import_json(a):
@@ -146,15 +147,15 @@ def cmd_import_json(a):
 def cmd_session(a):
     s = _session(a.session)
     if a.action == "rename":
-        r = sessions.rename_session(s, a.arg)
+        r = edits.rename_session(s, a.arg)
     elif a.action == "date":
-        r = sessions.set_date(s, a.arg)
+        r = edits.set_date(s, a.arg)
     elif a.action == "move":
-        r = sessions.move_clip(s, a.arg, a.to)
+        r = edits.move_clip(s, a.arg, a.to)
     elif a.action == "merge":
-        r = sessions.merge_sessions(s, a.arg)
+        r = edits.merge_sessions(s, a.arg)
     elif a.action == "delete":
-        return out(sessions.delete_clip(s, a.arg))
+        return out(edits.delete_clip(s, a.arg))
     out({"session": r["session"], "videos": len(r["videos"]), "matches": len(r["matches"]), "moments": len(r["moments"])})
 
 
@@ -197,10 +198,10 @@ def cmd_housekeeping(a):
     if sessions.remote():
         sys.exit("housekeeping runs on the server")
     out({"originals_removed": ingest.cleanup_originals(log=lambda m: print(m, file=sys.stderr)),
-         "trash_emptied": ingest.cleanup_trash(log=lambda m: print(m, file=sys.stderr)),
+         "trash_emptied": upkeep.cleanup_trash(log=lambda m: print(m, file=sys.stderr)),
          "shares_taken_down": share.cleanup_expired(log=lambda m: print(m, file=sys.stderr)),
          "shares_refreshed": share.refresh_pages(log=lambda m: print(m, file=sys.stderr)),
-         "backup": str(ingest.backup_db() or "")})
+         "backup": str(upkeep.backup_db() or "")})
 
 
 def cmd_tags(a):
@@ -308,12 +309,12 @@ def cmd_decode(a):
 
 def cmd_match(a):
     session = _session(a.session)
-    vid = sessions.set_match(session, a.video, a.bbl, a.arm, a.offset, a.note or "", boot=a.boot)[0]["video"]
+    vid = manual.set_match(session, a.video, a.bbl, a.arm, a.offset, a.note or "", boot=a.boot)[0]["video"]
     out([m for m in sessions.load(session)["matches"] if m["video"] == vid])
 
 
 def cmd_unmatch(a):
-    out({"removed": sessions.unmatch(_session(a.session), a.video, a.arm)})
+    out({"removed": manual.unmatch(_session(a.session), a.video, a.arm)})
 
 
 def cmd_metrics(a):
@@ -609,11 +610,11 @@ def cmd_tag(a):
         m, arm = _arm_for(sd, sessions.resolve_clip(s, a.video), start)
         if arm:
             snap = metrics.summary(arm, start - m["offset"], end - m["offset"])
-    out(sessions.tag(s, a.video, start, end, a.title, tags, a.note or "", snap, a.id))
+    out(moments.tag(s, a.video, start, end, a.title, tags, a.note or "", snap, a.id))
 
 
 def cmd_untag(a):
-    out({"removed": sessions.untag(_session(a.session), a.id)})
+    out({"removed": moments.untag(_session(a.session), a.id)})
 
 
 def cmd_moments(a):

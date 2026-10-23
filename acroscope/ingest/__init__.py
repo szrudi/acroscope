@@ -36,13 +36,12 @@ from ..sources import blackbox, osd, video
 from ..store import sessions
 from ..config import BLACKBOX_DIR, CACHE_DIR, DATA_DIR, H264_ARGS, VIDEOS_DIR
 
+
 INBOX_DIR = DATA_DIR / "inbox"
 ORIGINALS_DIR = DATA_DIR / "originals"
-STATE_DIR = DATA_DIR / "state"
 ORIGINAL_DAYS = 90         # an original is kept this long after its compressed clip verified (Rudi, 2026-10-18: the
                            # cutting still changes, and a clip is recut from its original; it was 7, then 60; 90 keeps
                            # October's into January, past December's dev time)
-TRASH_DAYS = 7             # a deleted clip waits this long in trash/<date>/ (sessions.delete_clip)
 RATE = 2                   # no-signal analysis samples per second
 THRESHOLD = 35             # luma range (16x12 frame, 10th-90th percentile) below this = flat: static, or a dark/flat picture
 CHANGE = 8.0               # and frame-to-frame change (mean |difference|, 64x48) above this = static (snow 15-21; a flat
@@ -618,34 +617,3 @@ def cleanup_originals(log=print) -> list[str]:
         gone.append(original)
         log(f"original removed: {original}")
     return gone
-
-
-def cleanup_trash(root: Path | None = None, today: str | None = None, days: int = TRASH_DAYS, log=print) -> list[str]:
-    """Delete the trash/<date>/ folders older than `days` (what sessions.delete_clip put there). Returns the dates."""
-    root = root or DATA_DIR / "trash"
-    today_d = datetime.fromisoformat(today).date() if today else now().date()
-    gone = []
-    for d in sorted(root.iterdir()) if root.is_dir() else []:
-        try:
-            day = datetime.fromisoformat(d.name).date()
-        except ValueError:
-            continue                                   # not one of ours
-        if d.is_dir() and (today_d - day).days > days:
-            shutil.rmtree(d)
-            gone.append(d.name)
-            log(f"trash emptied: {d.name}")
-    return gone
-
-
-def backup_db(keep: int = 7) -> Path | None:
-    """A consistent copy of the database into the data dir's state/, so clips and index restore together."""
-    db = sessions.store()
-    if not hasattr(db, "backup_to"):
-        return None
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    dst = STATE_DIR / f"acroscope-{now().strftime('%Y-%m-%d')}.db"
-    db.backup_to(dst)
-    old = sorted(STATE_DIR.glob("acroscope-*.db"))[:-keep]
-    for p in old:
-        p.unlink()
-    return dst

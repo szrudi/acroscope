@@ -1,6 +1,7 @@
 """One-off import of the VLC moment playlists (videos/<session>/moments.xspf) into the session file."""
 import xml.etree.ElementTree as ET
 
+from . import moments
 from ..store import sessions
 from ..config import VIDEOS_DIR
 
@@ -24,5 +25,5 @@ def import_session(session: str) -> list[dict]:
         # titles are "10-07 powerloop 1": strip the date prefix
         if len(title) > 6 and title[2] == "-" and title[:2].isdigit() and title[5] == " ":
             title = title[6:]
-        added.append(sessions.tag(session, loc, start, end, title, []))
+        added.append(moments.tag(session, loc, start, end, title, []))
     return added

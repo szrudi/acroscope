@@ -8,8 +8,10 @@ from pathlib import Path
 from unittest import mock
 
 from acroscope import cli
+from acroscope.match import manual
+from acroscope.review import moments
 from acroscope.sources import blackbox, osd, video
-from acroscope.store import sessions
+from acroscope.store import edits, sessions
 from acroscope.store.db import Db
 
 
@@ -18,22 +20,22 @@ class _Scratch(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.saved = (sessions._store, sessions.VIDEOS_DIR, video.VIDEOS_DIR, sessions.DATA_DIR, blackbox.BLACKBOX_DIR)
+        self.saved = (sessions._store, sessions.VIDEOS_DIR, edits.VIDEOS_DIR, video.VIDEOS_DIR, edits.DATA_DIR, blackbox.BLACKBOX_DIR)
         sessions._store = Db(root / "t.db")
-        sessions.DATA_DIR = root
-        sessions.VIDEOS_DIR = video.VIDEOS_DIR = root / "videos"
+        edits.DATA_DIR = root
+        sessions.VIDEOS_DIR = edits.VIDEOS_DIR = video.VIDEOS_DIR = root / "videos"
         sessions.VIDEOS_DIR.mkdir()
         blackbox.BLACKBOX_DIR = root / "blackbox"                     # no real logs get attached by date
 
     def tearDown(self):
-        sessions._store, sessions.VIDEOS_DIR, video.VIDEOS_DIR, sessions.DATA_DIR, blackbox.BLACKBOX_DIR = self.saved
+        sessions._store, sessions.VIDEOS_DIR, edits.VIDEOS_DIR, video.VIDEOS_DIR, edits.DATA_DIR, blackbox.BLACKBOX_DIR = self.saved
         self.tmp.cleanup()
 
     def session_with_clip(self, name, file="2026-10-09_001.mp4"):
         (sessions.VIDEOS_DIR / name).mkdir()
         (sessions.VIDEOS_DIR / name / file).write_bytes(b"")
         sessions.refresh(name, probe_videos=False)
-        sessions.tag(name, file, 1, 2, "keep me", [])
+        moments.tag(name, file, 1, 2, "keep me", [])
         return file
 
 
@@ -74,16 +76,16 @@ class EditGuardsTest(_Scratch):
         f = self.session_with_clip(S)
         (sessions.VIDEOS_DIR / S / f).unlink()                     # the file is gone (or the mount is half there)
         with self.assertRaises(ValueError):
-            sessions.merge_sessions(S, S)
+            edits.merge_sessions(S, S)
         self.assertEqual(len(sessions.load(S)["moments"]), 1)
 
     def test_rename_checks_every_target_before_moving(self):
         S = "2026-10-09-h"
         self.session_with_clip(S)
-        (sessions.DATA_DIR / "originals" / S).mkdir(parents=True)              # so the old code moved videos/ first, then failed here
-        (sessions.DATA_DIR / "originals" / "2026-10-10-taken").mkdir(parents=True)
+        (edits.DATA_DIR / "originals" / S).mkdir(parents=True)              # so the old code moved videos/ first, then failed here
+        (edits.DATA_DIR / "originals" / "2026-10-10-taken").mkdir(parents=True)
         with self.assertRaises(ValueError):
-            sessions.rename_session(S, "2026-10-10-taken")
+            edits.rename_session(S, "2026-10-10-taken")
         self.assertTrue((sessions.VIDEOS_DIR / S).is_dir())         # videos/ was not moved on its own
         self.assertTrue(sessions.store().exists(S))
 
@@ -93,8 +95,8 @@ class EditGuardsTest(_Scratch):
         import shutil
         shutil.rmtree(sessions.VIDEOS_DIR)                          # what an unmounted bind mount looks like
         sessions.VIDEOS_DIR.mkdir()
-        for call in (lambda: sessions.move_clip(S, f, "2026-10-09-l"), lambda: sessions.rename_session(S, "2026-10-09-l"),
-                     lambda: sessions.merge_sessions(S, "2026-10-09-l")):
+        for call in (lambda: edits.move_clip(S, f, "2026-10-09-l"), lambda: edits.rename_session(S, "2026-10-09-l"),
+                     lambda: edits.merge_sessions(S, "2026-10-09-l")):
             with self.assertRaises(ValueError):
                 call()
         self.assertEqual([v["file"] for v in sessions.load(S)["videos"]], [f])
@@ -122,7 +124,7 @@ class EditGuardsTest(_Scratch):
         (sessions.VIDEOS_DIR / S).mkdir()
         sessions.store().attach(S, "x.bbl")                          # logs only: no clip whose move would check the name
         with self.assertRaises(ValueError):
-            sessions.merge_sessions(S, "../../x")
+            edits.merge_sessions(S, "../../x")
         self.assertTrue(sessions.store().exists(S))
         self.assertFalse(sessions.store().exists("../../x"))
 
@@ -130,7 +132,7 @@ class EditGuardsTest(_Scratch):
         S = "2026-10-09-d"
         self.session_with_clip(S)
         sessions.store().attach(S, "deleted.bbl")                    # attached once, the file removed since
-        self.assertEqual(sessions.detach(S, "deleted.bbl"), [])
+        self.assertEqual(manual.detach(S, "deleted.bbl"), [])
 
     def test_detach_drops_that_logs_matches_here_only(self):
         """A log out of a session takes its matches there with it (they would point at a log the session no longer
@@ -141,7 +143,7 @@ class EditGuardsTest(_Scratch):
         sessions.store().set_match(S, f, "a.bbl", 1, 5.0)
         sessions.store().set_match(S, f, "b.bbl", 1, 90.0)          # the same arm number in the other log
         sessions.store().set_match(T, g, "a.bbl", 2, 7.0)
-        self.assertEqual(sessions.detach(S, "a.bbl"), ["b.bbl"])
+        self.assertEqual(manual.detach(S, "a.bbl"), ["b.bbl"])
         self.assertEqual([(m["bbl"], m["arm"]) for m in sessions.load(S)["matches"]], [("b.bbl", 1)])
         self.assertEqual([(m["bbl"], m["arm"]) for m in sessions.load(T)["matches"]], [("a.bbl", 2)])
 
@@ -154,9 +156,9 @@ class EditGuardsTest(_Scratch):
         log = "BTFL_BLACKBOX_LOG_OTTOJR_20261015_094754_BETAFPVG473_V2.bbl"
         (blackbox.BLACKBOX_DIR / log).write_bytes(b"H Product:Blackbox flight data recorder")
         self.assertEqual(sessions.refresh(S, probe_videos=False)["blackbox"], [log])
-        sessions.detach(S, log)
+        manual.detach(S, log)
         self.assertEqual(sessions.refresh(S, probe_videos=False)["blackbox"], [])
-        sessions.attach(S, log)
+        manual.attach(S, log)
         sessions.store().set_blackbox(S, [])                          # emptied some other way: the date rule is back
         self.assertEqual(sessions.refresh(S, probe_videos=False)["blackbox"], [log])
 
@@ -171,10 +173,10 @@ class EditGuardsTest(_Scratch):
         sessions.refresh(S, probe_videos=False)
         sessions.store().set_match(S, f, log, 1, 3.0)
         with self.assertRaises(ValueError):                           # a target that does not exist: nothing moves
-            sessions.move_log(S, log, "2026-10-14-typo")
+            manual.move_log(S, log, "2026-10-14-typo")
         self.assertEqual(sessions.load(S)["blackbox"], [log])
         self.assertFalse(sessions.store().exists("2026-10-14-typo"))
-        sessions.move_log(S, log, T)
+        manual.move_log(S, log, T)
         self.assertEqual((sessions.load(S)["blackbox"], sessions.load(S)["matches"], sessions.load(T)["blackbox"]), ([], [], [log]))
         self.assertEqual(sessions.refresh(S, probe_videos=False)["blackbox"], [])
 
@@ -191,14 +193,14 @@ class EditGuardsTest(_Scratch):
         self.session_with_clip(A, "2026-10-15_001.mp4")
         log = self.log_of()
         sessions.refresh(A, probe_videos=False)
-        sessions.detach(A, log)
-        sessions.rename_session(A, "2026-10-15-a2")
+        manual.detach(A, log)
+        edits.rename_session(A, "2026-10-15-a2")
         self.assertEqual(sessions.refresh("2026-10-15-a2", probe_videos=False)["blackbox"], [])
         (sessions.VIDEOS_DIR / B).mkdir()
         (sessions.VIDEOS_DIR / B / "2026-10-15_002.mp4").write_bytes(b"")
         sessions.store().ensure_session(B)
         sessions.store().upsert_video(B, "2026-10-15_002.mp4")
-        sessions.merge_sessions("2026-10-15-a2", B)
+        edits.merge_sessions("2026-10-15-a2", B)
         self.assertEqual(sessions.refresh(B, probe_videos=False)["blackbox"], [])
 
     def test_move_log_guards(self):
@@ -210,19 +212,19 @@ class EditGuardsTest(_Scratch):
         log = self.log_of()
         sessions.refresh(S, probe_videos=False)
         sessions.store().set_match(S, f, log, 1, 3.0)
-        sessions.move_log(S, log, S)
+        manual.move_log(S, log, S)
         self.assertEqual((sessions.load(S)["blackbox"], len(sessions.load(S)["matches"])), ([log], 1))
         with self.assertRaisesRegex(ValueError, "no log"):
-            sessions.move_log(S, "other.bbl", T)
+            manual.move_log(S, "other.bbl", T)
         with self.assertRaisesRegex(ValueError, "no such session"):
-            sessions.move_log("2026-10-15-nope", log, T)
+            manual.move_log("2026-10-15-nope", log, T)
         sessions.refresh(T, probe_videos=False)                       # T has the same-date log too
-        sessions.detach(T, log)
-        sessions.move_log(S, log, T)
+        manual.detach(T, log)
+        manual.move_log(S, log, T)
         self.assertEqual(sessions.load(T)["blackbox"], [log])
         self.assertEqual(sessions.store().detached(T), set())
         sessions.store().attach(S, log)
-        sessions.move_log(S, log, T)                                  # T has it already: once
+        manual.move_log(S, log, T)                                  # T has it already: once
         self.assertEqual(sessions.load(T)["blackbox"], [log])
 
     def test_detach_from_an_unknown_session(self):
@@ -234,7 +236,7 @@ class EditGuardsTest(_Scratch):
         self.session_with_clip(B, "2026-10-09_002.mp4")
         sessions.store().attach(A, "x.bbl")
         sessions.store().set_note(A, "from a")
-        s = sessions.merge_sessions(A, B)
+        s = edits.merge_sessions(A, B)
         self.assertEqual((s["blackbox"], s["note"], len(s["videos"]), len(s["moments"])), (["x.bbl"], "from a", 2, 2))
         self.assertFalse(sessions.store().exists(A))
         self.assertFalse((sessions.VIDEOS_DIR / A).exists())
@@ -249,7 +251,7 @@ class EditGuardsTest(_Scratch):
         self.session_with_clip(B, "2026-10-09_002.mp4")
 
         def probe_while_merging(path):
-            sessions.merge_sessions(A, B)
+            edits.merge_sessions(A, B)
             return {"duration": 12.5, "codec": "h264"}
         with mock.patch.object(video, "probe", probe_while_merging):
             sessions.refresh(A)
@@ -265,33 +267,33 @@ class EditGuardsTest(_Scratch):
         for f in ("2026-10-09_001.mp4", "2026-10-09_002.mp4", "2026-10-09_003.mp4"):
             self.session_with_clip(A, f) if f.endswith("1.mp4") else (sessions.VIDEOS_DIR / A / f).write_bytes(b"")
         sessions.refresh(A, probe_videos=False)
-        (sessions.DATA_DIR / "originals" / A).mkdir(parents=True)
-        (sessions.DATA_DIR / "originals" / A / "VID1.mov").write_bytes(b"a's")
+        (edits.DATA_DIR / "originals" / A).mkdir(parents=True)
+        (edits.DATA_DIR / "originals" / A / "VID1.mov").write_bytes(b"a's")
         sessions.store().set_video_fields(A, "2026-10-09_001.mp4", original=f"originals/{A}/VID1.mov")
         self.session_with_clip(B, "2026-10-09_002.mp4")                         # the same file id: a clash on disk
-        (sessions.DATA_DIR / "originals" / B).mkdir(parents=True)
-        (sessions.DATA_DIR / "originals" / B / "VID1.mov").write_bytes(b"b's")  # rename() would replace it silently
+        (edits.DATA_DIR / "originals" / B).mkdir(parents=True)
+        (edits.DATA_DIR / "originals" / B / "VID1.mov").write_bytes(b"b's")  # rename() would replace it silently
         sessions.store().upsert_video(B, "2026-10-09_003.mp4")                   # a row only (file gone): a clash in the db
         before = (sorted(p.name for p in (sessions.VIDEOS_DIR / A).iterdir()), sessions.load(A), sessions.load(B))
         with self.assertRaises(ValueError) as cm:
-            sessions.merge_sessions(A, B)
+            edits.merge_sessions(A, B)
         for clash in ("2026-10-09_002.mp4", "VID1.mov", "2026-10-09_003.mp4"):
             self.assertIn(clash, str(cm.exception))
         self.assertEqual((sorted(p.name for p in (sessions.VIDEOS_DIR / A).iterdir()), sessions.load(A), sessions.load(B)), before)
-        self.assertEqual((sessions.DATA_DIR / "originals" / B / "VID1.mov").read_bytes(), b"b's")
-        self.assertTrue((sessions.DATA_DIR / "originals" / A / "VID1.mov").exists())
+        self.assertEqual((edits.DATA_DIR / "originals" / B / "VID1.mov").read_bytes(), b"b's")
+        self.assertTrue((edits.DATA_DIR / "originals" / A / "VID1.mov").exists())
 
     def test_move_clip_does_not_replace_an_original(self):
         A, B = "2026-10-09-a", "2026-10-09-b"
         self.session_with_clip(A, "2026-10-09_001.mp4")
         self.session_with_clip(B, "2026-10-09_002.mp4")
         for s, data in ((A, b"a's"), (B, b"b's")):
-            (sessions.DATA_DIR / "originals" / s).mkdir(parents=True)
-            (sessions.DATA_DIR / "originals" / s / "VID1.mov").write_bytes(data)
+            (edits.DATA_DIR / "originals" / s).mkdir(parents=True)
+            (edits.DATA_DIR / "originals" / s / "VID1.mov").write_bytes(data)
         sessions.store().set_video_fields(A, "2026-10-09_001.mp4", original=f"originals/{A}/VID1.mov")
         with self.assertRaisesRegex(ValueError, "VID1.mov"):
-            sessions.move_clip(A, "001", B)
-        self.assertEqual((sessions.DATA_DIR / "originals" / B / "VID1.mov").read_bytes(), b"b's")
+            edits.move_clip(A, "001", B)
+        self.assertEqual((edits.DATA_DIR / "originals" / B / "VID1.mov").read_bytes(), b"b's")
         self.assertTrue((sessions.VIDEOS_DIR / A / "2026-10-09_001.mp4").exists())
 
 

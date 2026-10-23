@@ -13,6 +13,7 @@ from pathlib import Path
 
 from acroscope import ingest
 from acroscope.sources import blackbox
+from acroscope.store import upkeep
 from acroscope.store.db import Db
 
 
@@ -113,7 +114,7 @@ class IngestTest(_Scratch):
             (t / day / "2026-10-11-x").mkdir(parents=True)
             (t / day / "2026-10-11-x" / "c1.mp4").write_bytes(b"x")
         (t / "not-a-date").mkdir()
-        gone = ingest.cleanup_trash(root=t, today="2026-10-11", days=7, log=lambda m: None)
+        gone = upkeep.cleanup_trash(root=t, today="2026-10-11", days=7, log=lambda m: None)
         self.assertEqual(gone, ["2026-10-01"])
         self.assertEqual(sorted(p.name for p in t.iterdir()), ["2026-10-05", "2026-10-11", "not-a-date"])
 
