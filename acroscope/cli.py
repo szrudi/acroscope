@@ -877,11 +877,6 @@ def cmd_osd_profile(a):
             print(f"  {c['kind']:7} {'row ' + str(c['row']) if c['row'] is not None else '':6} x {c['x']:3} y {c['y']:3}: {c['digit'] or '?'}  score {c['score']:.2f}  margin {c['margin']:.2f}")
 
 
-def cmd_osd_learn(a):
-    labels = json.load(open(a.labels))
-    out(osd.learn(labels))
-
-
 def cmd_serve(a):
     from .server import serve
     serve(a.host, a.port, warm=not a.no_warm)
@@ -1040,8 +1035,6 @@ def parser() -> argparse.ArgumentParser:
     q.add_argument("name"); q.add_argument("session"); q.add_argument("clip"); q.add_argument("time")
     q.add_argument("--fit", action="store_true", help="the grid that reads that frame best"); q.add_argument("--fonts", action="store_true", help="the Configurator fonts ranked on it")
     q.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-    p = sp.add_parser("osd-learn", help="rebuild the OSD digit templates from a labels file")
-    p.add_argument("labels", nargs="?", default="scripts/osd-labels.json"); p.set_defaults(f=cmd_osd_learn)
     p = sp.add_parser("serve", help="run the player (http)"); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8070)
     p.add_argument("--no-warm", action="store_true", help="don't decode/probe everything in the background at start"); p.set_defaults(f=cmd_serve)
     return ap

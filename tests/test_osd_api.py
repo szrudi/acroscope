@@ -34,9 +34,10 @@ class OsdApiTest(unittest.TestCase):
         syn.make_clip(root / "data" / "videos" / S / "2026-10-04_001.mp4", cls.chars, {"x": 3, "y": -4, "cw": 24, "ch": 36})
         (root / "data" / "blackbox").mkdir(parents=True)
         cls.port = free_port()
-        # a proxy nobody listens on: no font is fetched from here, and a fetch fails the way it does with no way out
+        (root / "fonts").mkdir()                    # no Configurator font: the shipped profiles stay out, nothing is fetched
+        # and a proxy nobody listens on, should anything try: a fetch fails the way it does with no way out
         cls.env = dict(os.environ, ACROSCOPE_DB=str(root / "t.db"), ACROSCOPE_DATA=str(root / "data"), ACROSCOPE_CACHE=str(root / "cache"), ACROSCOPE_URL="",
-                       https_proxy="http://127.0.0.1:9", HTTPS_PROXY="http://127.0.0.1:9")
+                       ACROSCOPE_FONTS=str(root / "fonts"), https_proxy="http://127.0.0.1:9", HTTPS_PROXY="http://127.0.0.1:9")
         cls.proc = subprocess.Popen([sys.executable, "-m", "acroscope.cli", "serve", "--host", "127.0.0.1", "--port", str(cls.port), "--no-warm"],
                                     env=cls.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.url = f"http://127.0.0.1:{cls.port}"

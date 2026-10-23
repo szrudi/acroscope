@@ -23,9 +23,9 @@ transparent (the camera picture shows through). Betaflight's fonts map ASCII to 
 import base64
 import os
 import re
+import time
 import urllib.request
-
-from .config import cache
+from pathlib import Path
 
 COLS = 30
 ROWS = {"NTSC": 13, "PAL": 16}
@@ -167,14 +167,22 @@ def unpack_font(data: str) -> list[list[str]]:
 
 
 class FontUnavailable(ValueError):
-    """A Configurator font that could not be fetched (no way out to the internet, the repository down)."""
+    """A Configurator font that could not be had (no way out to the internet, the repository down, not in
+    ACROSCOPE_FONTS): a ValueError, so a client is told to upload the .mcm instead."""
 
 
-FETCH_TIMEOUT = 10              # seconds per font: a server with no way out says so soon
+# Where fetched fonts are kept: a folder of its own, not the cache (a test's or a scratch run's throwaway cache would
+# fetch them again). ACROSCOPE_FONTS names a folder of .mcm files to use as they are, never fetched into (a machine
+# without the internet: drop default.mcm, impact.mcm there).
+FONT_DIR = os.environ.get("ACROSCOPE_FONTS")
+FONT_CACHE = Path("~/.cache/acroscope-fonts").expanduser() / FONT_COMMIT[:12]
+FETCH_TIMEOUT = 10                # seconds per font: a server with no way out says so soon
+FETCH_RETRY = 600                 # seconds before a font that could not be fetched is tried again
+_failed: dict[str, tuple[float, str]] = {}
 
 
-def _font_path(name: str):
-    return cache("fonts", FONT_COMMIT[:12], f"{name}.mcm")
+def _font_path(name: str) -> Path:
+    return (Path(FONT_DIR).expanduser() if FONT_DIR is not None else FONT_CACHE) / f"{name}.mcm"
 
 
 def have_font(name: str) -> bool:
@@ -182,12 +190,16 @@ def have_font(name: str) -> bool:
 
 
 def fetch_font(name: str) -> str:
-    """The .mcm text of a Configurator font by name (FONTS), from the cache or fetched once. A cached file that does
-    not parse (a write cut short) is fetched again; a fetch that fails is FontUnavailable (a ValueError: the client
-    is told to upload the .mcm instead)."""
+    """The .mcm text of a Configurator font by name (FONTS): from ACROSCOPE_FONTS, else from the font cache, else
+    fetched once into it. A cached file that does not parse (a write cut short) is fetched again; a fetch that fails
+    is FontUnavailable, and is not tried again for FETCH_RETRY s."""
     if name not in FONTS:
         raise ValueError(f"{name}: not a Configurator font ({', '.join(FONTS)}); upload the .mcm of your own font instead")
     p = _font_path(name)
+    if FONT_DIR is not None:
+        if not p.is_file():
+            raise FontUnavailable(f"{name}.mcm is not in ACROSCOPE_FONTS ({FONT_DIR}); upload its .mcm instead")
+        return p.read_text()
     if p.is_file():
         text = p.read_text(errors="replace")
         try:
@@ -195,13 +207,17 @@ def fetch_font(name: str) -> str:
             return text
         except ValueError:
             pass                                              # broken in the cache: fetched again below
+    if name in _failed and time.time() - _failed[name][0] < FETCH_RETRY:
+        raise FontUnavailable(_failed[name][1])
     try:
         with urllib.request.urlopen(FONT_URL.format(commit=FONT_COMMIT, name=name), timeout=FETCH_TIMEOUT) as r:
             text = r.read().decode("ascii")
         parse_mcm(text)                                       # a captive page or a cut download is not a font
     except (OSError, ValueError) as e:                        # URLError, HTTPError, a timeout; UnicodeDecodeError is a ValueError
-        raise FontUnavailable(f"the font {name} could not be fetched from the Betaflight Configurator's repository ({e}); "
-                              "upload its .mcm instead") from None
+        _failed[name] = (time.time(), f"the font {name} could not be fetched from the Betaflight Configurator's repository ({e}); "
+                                      "upload its .mcm instead")
+        raise FontUnavailable(_failed[name][1]) from None
+    p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f".{p.name}.{os.getpid()}")              # whole or not at all: another reader never sees half a font
     tmp.write_text(text)
     os.replace(tmp, p)

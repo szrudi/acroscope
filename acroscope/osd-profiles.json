@@ -1,0 +1,89 @@
+{
+ "version": 1,
+ "about": "The OSD layouts flown on Rudi's quads, as Betaflight has them: the settings of each day's `diff all` that place and format the timers (tests/data/osd-dumps holds the dumps' OSD lines), the font on the OSD chip, and where the DVR flown here puts the grid. They replaced the layouts measured by hand and the templates learned from labelled frames (#10). The fonts are fetched by name (betaflight.fetch_font).",
+ "profiles": {
+  "air65f": {
+   "note": "AIR65 F until 2026-10-04: one timer on the bottom row, the total armed time (dump of 2026-09-23)",
+   "settings": {
+    "osd_tim_1_pos": "386",
+    "osd_tim_2_pos": "2454",
+    "osd_displayport_device": "MAX7456",
+    "vcd_video_system": "NTSC",
+    "craft_name": "AIR65 F"
+   },
+   "font": {
+    "name": "default"
+   }
+  },
+  "air65f-b": {
+   "note": "the same one column further right, 2026-10-04 005 on (dump of 2026-10-04 15:51)",
+   "settings": {
+    "osd_tim_1_pos": "386",
+    "osd_tim_2_pos": "2455",
+    "osd_displayport_device": "MAX7456",
+    "vcd_video_system": "NTSC",
+    "craft_name": "AIR65 F"
+   },
+   "font": {
+    "name": "default"
+   }
+  },
+  "otto": {
+   "note": "2026-10-05 to 10-09: the arm timer above the total, both MM:SS (dump of 2026-10-05)",
+   "settings": {
+    "osd_tim1": "2562",
+    "osd_tim_1_pos": "2390",
+    "osd_tim_2_pos": "2422",
+    "osd_displayport_device": "MAX7456",
+    "vcd_video_system": "NTSC",
+    "craft_name": "AIR65 F"
+   },
+   "font": {
+    "name": "default"
+   }
+  },
+  "otto-bold": {
+   "note": "2026-10-10 001: Impact, the arm timer with tenths above the total (no dump of that day: the settings that make it)",
+   "settings": {
+    "osd_tim1": "2594",
+    "osd_tim_1_pos": "2422",
+    "osd_tim_2_pos": "2454",
+    "osd_displayport_device": "MAX7456",
+    "vcd_video_system": "NTSC",
+    "craft_name": "Otto"
+   },
+   "font": {
+    "name": "impact"
+   }
+  },
+  "otto-bold-swap": {
+   "note": "2026-10-10 from 004: the total on top, the arm timer with hundredths below it further left (no dump of that day)",
+   "settings": {
+    "osd_tim1": "2578",
+    "osd_tim_1_pos": "2451",
+    "osd_tim_2_pos": "2422",
+    "osd_displayport_device": "MAX7456",
+    "vcd_video_system": "NTSC",
+    "craft_name": "Otto"
+   },
+   "font": {
+    "name": "impact"
+   }
+  },
+  "otto-bold-v3": {
+   "note": "2026-10-10 evening on, both quads: the total on top, the arm timer with tenths below from column 21, the flight counter top right (dump of 2026-10-11)",
+   "settings": {
+    "osd_tim1": "2594",
+    "osd_tim_1_pos": "2452",
+    "osd_tim_2_pos": "2422",
+    "osd_total_flights_pos": "2072",
+    "osd_displayport_device": "MAX7456",
+    "vcd_video_system": "NTSC",
+    "craft_name": "Otto"
+   },
+   "font": {
+    "name": "impact"
+   }
+  }
+ }
+}

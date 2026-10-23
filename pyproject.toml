@@ -20,4 +20,4 @@ acroscope = "acroscope.cli:main"
 include = ["acroscope*"]
 
 [tool.setuptools.package-data]
-acroscope = ["static/*", "static/brand/*", "tricks/*.toml"]
+acroscope = ["static/*", "static/brand/*", "tricks/*.toml", "osd-profiles.json"]

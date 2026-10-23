@@ -1,7 +1,8 @@
-"""OSD profiles derived from Betaflight's dump and font (#10 step 1): the dump's encodings, the font file, the layout
-derived against the layouts measured by hand on the same days, and the reader on synthetic frames drawn with a
-made-up font (tests/osd_synthetic.py; the Configurator's fonts are GPL-3.0 and fetched at run time, never in here).
-The real footage is in the proof on the PR and the real-data pins (tests/test_realdata.py)."""
+"""OSD profiles derived from Betaflight's dump and font (#10): the dump's encodings, the font file, the shipped
+profiles against the layouts once measured by hand (HAND), and the reader on synthetic frames drawn with a made-up
+font (tests/osd_synthetic.py; the Configurator's fonts are GPL-3.0 and fetched at run time, never in here: in this
+module every Configurator font is the synthetic one). The real footage is in the proofs on PRs #63 and #64, and in
+the real-data pins (tests/test_realdata.py)."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,32 @@ except ImportError:
 
 DUMPS = Path(__file__).parent / "data" / "osd-dumps"
 REAL_FETCH = betaflight.fetch_font
+_fonts = None
+
+
+def setUpModule():
+    """No network here: a Configurator font by any name is the synthetic font."""
+    global _fonts
+    _fonts = mock.patch.object(betaflight, "fetch_font", lambda name: syn.mcm_text(syn.font_chars()))
+    _fonts.start()
+
+
+def tearDownModule():
+    _fonts.stop()
+
+
+# The layouts as they were measured by hand on Rudi's footage (osd.LAYOUTS until 2026-10-23, glyph surveys of
+# 2026-10-09 and 10-10): the cell origin x0 and row y each survey chose, the glyph box (x, w, y, h) of the font it
+# was measured on, the formats, which row was the arm timer. The record the shipped profiles are proved against.
+SMALL, BOLD = (4, 10, 3, 18), (1, 18, 1, 22)
+HAND = {
+    "otto": {"x0": [559, 559], "rows": [362, 398], "formats": ["dd:dd", "dd:dd"], "glyph": SMALL, "cumulative": False, "arm_row": 0},
+    "air65f": {"x0": [559], "rows": [434], "formats": ["dd:dd"], "glyph": SMALL, "cumulative": True, "arm_row": 0},
+    "air65f-b": {"x0": [583], "rows": [434], "formats": ["dd:dd"], "glyph": SMALL, "cumulative": True, "arm_row": 0},
+    "otto-bold": {"x0": [558, 558], "rows": [401, 437], "formats": ["dd:dd.d", "dd:dd"], "glyph": BOLD, "cumulative": False, "arm_row": 0},
+    "otto-bold-swap": {"x0": [558, 486], "rows": [401, 437], "formats": ["dd:dd", "dd:dd.dd"], "glyph": BOLD, "cumulative": False, "arm_row": 1},
+    "otto-bold-v3": {"x0": [558, 510], "rows": [401, 437], "formats": ["dd:dd", "dd:dd.d"], "glyph": BOLD, "cumulative": False, "arm_row": 1},
+}
 
 
 def synth_profile(**grid) -> dict:
@@ -71,7 +98,37 @@ class FontTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             betaflight.parse_mcm("MAX7456\n" + "0101\n" * 100)
         with self.assertRaises(ValueError):
-            betaflight.fetch_font("comic-sans")                              # not a Configurator name: never a URL
+            REAL_FETCH("comic-sans")                                         # not a Configurator name: never a URL
+
+    def test_fonts_from_a_folder_or_fetched_once(self):
+        mcm = syn.mcm_text(syn.font_chars())
+        refuse = mock.patch("urllib.request.urlopen", side_effect=AssertionError("no network here"))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "impact.mcm").write_text(mcm)
+            with mock.patch.object(betaflight, "FONT_DIR", tmp), refuse:          # ACROSCOPE_FONTS: that folder, nothing fetched
+                self.assertEqual(REAL_FETCH("impact"), mcm)
+                with self.assertRaisesRegex(betaflight.FontUnavailable, "not in ACROSCOPE_FONTS"):
+                    REAL_FETCH("default")
+
+        class Answer:                                                            # what urlopen hands back
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return self.body.encode()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(betaflight, "FONT_DIR", None), \
+                mock.patch.object(betaflight, "FONT_CACHE", Path(tmp)), mock.patch.object(betaflight, "_failed", {}):
+            with mock.patch("urllib.request.urlopen", return_value=Answer("<html>rate limited</html>")):
+                with self.assertRaisesRegex(betaflight.FontUnavailable, "could not be fetched"):
+                    REAL_FETCH("bold")
+            self.assertFalse((Path(tmp) / "bold.mcm").exists())                 # a broken download is not kept
+            with mock.patch("urllib.request.urlopen", side_effect=AssertionError("tried again at once")):
+                with self.assertRaises(betaflight.FontUnavailable):
+                    REAL_FETCH("bold")                                           # nor fetched again straight away
+            with mock.patch("urllib.request.urlopen", return_value=Answer(mcm)):
+                self.assertEqual(REAL_FETCH("clarity"), mcm)
+            self.assertEqual((Path(tmp) / "clarity.mcm").read_text(), mcm)       # kept: the next one reads it
+            with refuse:
+                self.assertEqual(REAL_FETCH("clarity"), mcm)
 
     def test_render_follows_the_font(self):
         # a cell rendered from the font correlates with itself drawn on a frame, and not with another digit
@@ -86,24 +143,27 @@ class FontTest(unittest.TestCase):
 
 
 class DeriveAgainstHandTest(unittest.TestCase):
-    """The proof in the unit suite: the dump of a day derives the layout measured by hand for that day's clips. The
-    hand layouts place their cells by their own glyph box, so a cell is compared by its centre: the hand glyph box's
-    centre against the derived cell's (within 4 px, the bold font sitting a little low in its cell)."""
+    """The proof in the unit suite: the dump of a day derives the layout measured by hand for that day's clips, and
+    the shipped profiles are those dumps. The hand layouts placed their cells by their own glyph box, so a cell is
+    compared by its centre: the hand glyph box's centre against the derived cell's (within 4 px, the bold font
+    sitting a little low in its cell)."""
 
     def check(self, dump: str, hand: str, extra: str = ""):
         p = osdprofile.make((DUMPS / dump).read_text() + extra, mcm=syn.mcm_text(syn.font_chars()), font="synth")
         lay = osdprofile.derive(p, "derived")
-        H = osd.LAYOUTS[hand]
+        self.compare(lay, hand)
+        return lay
+
+    def compare(self, lay: dict, hand: str):
+        H = HAND[hand]
         self.assertEqual(lay["formats"], H["formats"])
         self.assertEqual(lay["cumulative"], H["cumulative"])
-        self.assertEqual(lay.get("arm_row", 0), H.get("arm_row", 0))
+        self.assertEqual(lay.get("arm_row", 0), H["arm_row"])
         gx, gw, gy, gh = H["glyph"]
         for row in range(len(H["formats"])):
-            hx = (H["x0"][row] if isinstance(H["x0"], list) else H["x0"]) + gx + gw / 2
-            hy = H["rows"][row] + gy + gh / 2
+            hx, hy = H["x0"][row] + gx + gw / 2, H["rows"][row] + gy + gh / 2
             self.assertLessEqual(abs(lay["x0"][row] + 12 - hx), 4, f"{hand} row {row}: x {lay['x0'][row] + 12} vs {hx}")
             self.assertLessEqual(abs(lay["rows"][row] + 18 - hy), 4, f"{hand} row {row}: y {lay['rows'][row] + 18} vs {hy}")
-        return lay
 
     def test_air65f_single_total(self):
         lay = self.check("2026-09-23-air65f.txt", "air65f")
@@ -124,6 +184,19 @@ class DeriveAgainstHandTest(unittest.TestCase):
         # 10-10's two layouts have no dump of their own: the settings that make them, derived the same way
         self.check("2026-10-11-otto.txt", "otto-bold", "set osd_tim_1_pos = 2422\nset osd_tim_2_pos = 2454\n")
         self.check("2026-10-11-otto.txt", "otto-bold-swap", "set osd_tim1 = 2578\nset osd_tim_1_pos = 2451\nset osd_tim_2_pos = 2422\n")
+
+    def test_the_shipped_profiles(self):
+        """Every layout once measured by hand ships as a profile of the same name: derived as the hand one was laid
+        out, its settings those of the day's dump, its font the one flown then."""
+        shipped = osd.shipped()
+        self.assertEqual(sorted(shipped), sorted(HAND))
+        dumps = {"air65f": "2026-09-23-air65f.txt", "air65f-b": "2026-10-04-air65f.txt", "otto": "2026-10-05-air65f.txt", "otto-bold-v3": "2026-10-11-otto.txt"}
+        for name, p in shipped.items():
+            self.compare(osdprofile.derive(p, name), name)
+            self.assertEqual(p["font"]["name"], "default" if name in ("otto", "air65f", "air65f-b") else "impact", name)
+            if name in dumps:
+                day = osdprofile.osd_settings(betaflight.parse_dump((DUMPS / dumps[name]).read_text()))
+                self.assertEqual({k: day.get(k) for k in p["settings"]}, p["settings"], name)
 
 
 class DeriveTest(unittest.TestCase):
@@ -213,24 +286,52 @@ class ProbeTest(unittest.TestCase):
 
 
 class RegistryTest(unittest.TestCase):
-    """The derived profiles next to the hand-measured layouts: what detect_layout chooses from, and the cache key."""
+    """The shipped profiles and the pilot's: what detect_layout chooses from, and the cache key."""
 
     def tearDown(self):
         osd.PROFILE_SOURCE = None
 
     def test_layouts_and_stamp(self):
         osd.PROFILE_SOURCE = None
-        self.assertEqual(set(osd.layouts()), set(osd.LAYOUTS))
+        self.assertEqual(sorted(osd.layouts()), sorted(HAND))
+        self.assertTrue(all(L["origin"] == "shipped" for L in osd.layouts().values()))
         before = osd._templates_stamp()
         doc = {"version": 1, "profiles": {"synth": synth_profile()}}
         osd.PROFILE_SOURCE = lambda: (doc, "t")
         self.assertIn("synth", osd.layouts())
+        self.assertEqual(osd.layouts()["synth"]["origin"], "yours")
         self.assertNotEqual(osd._templates_stamp(), before)                  # a profile changed: every reading again
         self.assertIs(osd._load_templates("synth"), osd.layouts()["synth"]["tpl"])
+        # a stored profile under a shipped name (the store refuses one; an old document might hold it) is not the reader's
+        clash = {"version": 1, "profiles": {"otto": synth_profile()}}
+        osd.PROFILE_SOURCE = lambda: (clash, "t")
+        self.assertEqual(osd.layouts()["otto"]["origin"], "shipped")
+        self.assertEqual(osd.layouts()["otto"]["formats"], HAND["otto"]["formats"])
         bad = {"version": 1, "profiles": {"broken": {"settings": {}, "font": {"data": synth_profile()["font"]["data"]}}}}
         osd.PROFILE_SOURCE = lambda: (bad, "t")
         self.assertNotIn("broken", osd.layouts())
         self.assertIn("broken", osd.derived_errors())
+
+    def test_a_font_not_to_be_had(self):
+        # offline: the shipped layouts on the Impact font are left out and said why; once it can be had, they are back
+        osd.PROFILE_SOURCE = None
+        def fetch(name):
+            if name == "impact":
+                raise OSError("the font impact could not be fetched")
+            return syn.mcm_text(syn.font_chars())
+        with mock.patch.object(betaflight, "fetch_font", fetch):
+            osd._derived["key"] = None
+            self.assertEqual(sorted(osd.layouts()), ["air65f", "air65f-b", "otto"])
+            self.assertIn("could not be fetched", osd.derived_errors()["otto-bold-v3"])
+            stamp = osd._templates_stamp()
+        with mock.patch.object(osd, "RETRY_DERIVE", 0), mock.patch.object(osd, "SOURCE_EVERY", 0):
+            self.assertEqual(sorted(osd.layouts()), sorted(HAND))
+            self.assertNotEqual(osd._templates_stamp(), stamp)                # the readings without it are not reused
+        with mock.patch.object(betaflight, "fetch_font", lambda n: (_ for _ in ()).throw(OSError("offline"))):
+            osd._derived["key"] = None
+            with self.assertRaisesRegex(ValueError, "no OSD layout to read with: .*offline"):
+                osd.detect_layout(Path("clip.mp4"))                          # nothing to read with: said, not guessed
+        osd._derived["key"] = None
 
     def test_read_frame_with_the_arm_timer_alone(self):
         s = (DUMPS / "2026-10-11-otto.txt").read_text() + "set osd_tim2 = 2560\n"
@@ -243,28 +344,27 @@ class RegistryTest(unittest.TestCase):
         crop = bytes(full[(y + j) * 720 + x + i] for j in range(h) for i in range(w))
         self.assertEqual(osd.read_frame(crop, lay["tpl"], "armonly")[:2], (6.3, None))
 
-    def test_a_tie_keeps_the_hand_layout(self):
-        doc = {"version": 1, "profiles": {"zz-derived": synth_profile()}}
-        osd.PROFILE_SOURCE = lambda: (doc, "t")
+    def test_a_tie_keeps_the_shipped_layout(self):
         same = [(i * 2.0, i * 2.0, 1.0) for i in range(30)]
         frames = lambda path, fps, layout=None: ((i * 2.0, layout) for i in range(30))
         seq = iter(range(10 ** 6))                 # both layouts read the very same counting timers
-        with mock.patch.object(osd, "LAYOUTS", {"otto": {}}), mock.patch.object(osd, "_frames", frames), \
+        two = {"otto": {"origin": "shipped"}, "zz-mine": {"origin": "yours"}}
+        with mock.patch.object(osd, "layouts", lambda: two), mock.patch.object(osd, "_frames", frames), \
                 mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
                 mock.patch.object(osd, "read_frame", lambda buf, tpl, name: same[next(seq) % 30]):
             self.assertEqual(osd.detect_layout(Path("clip.mp4")), "otto")
         # and when nothing counts at 1 s/s (a clock off the clip's), the tie at the other rate goes the same way
         fast = [(round(i * 4.4, 1), round(i * 4.4, 1), 1.0) for i in range(30)]
         seq = iter(range(10 ** 6))
-        with mock.patch.object(osd, "LAYOUTS", {"otto": {}}), mock.patch.object(osd, "_frames", frames), \
+        with mock.patch.object(osd, "layouts", lambda: two), mock.patch.object(osd, "_frames", frames), \
                 mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \
                 mock.patch.object(osd, "read_frame", lambda buf, tpl, name: fast[next(seq) % 30]):
             self.assertEqual(osd.detect_layout(Path("clip.mp4")), "otto")
 
 
 class ClipTest(unittest.TestCase):
-    """A whole synthetic clip through the reader the way automatch reads it: the derived profile is detected among
-    the hand layouts, and the arm run comes out where it was drawn."""
+    """A whole synthetic clip through the reader the way automatch reads it: the profile is detected, and the arm
+    run comes out where it was drawn."""
 
     def test_clip(self):
         chars = syn.font_chars()
@@ -272,7 +372,9 @@ class ClipTest(unittest.TestCase):
         doc = {"version": 1, "profiles": {"synth": p}}
         with tempfile.TemporaryDirectory() as tmp:
             clip = syn.make_clip(Path(tmp) / "videos" / "s" / "c.mp4", chars, osdprofile.derive(p)["grid"])
-            with mock.patch.object(osd, "PROFILE_SOURCE", lambda: (doc, "t")), mock.patch("acroscope.config.CACHE_DIR", Path(tmp) / "cache"):
+            # without the shipped profiles: here they would be the synthetic font at the same cells, and win the tie
+            with mock.patch.object(osd, "PROFILE_SOURCE", lambda: (doc, "t")), mock.patch("acroscope.config.CACHE_DIR", Path(tmp) / "cache"), \
+                    mock.patch.object(osd, "SHIPPED", Path(tmp) / "none.json"):
                 self.assertEqual(osd.detect_layout(clip), "synth")
                 rt = osd.read_timers(clip, 2.0, layout="synth")
                 runs = osd.video_arms(rt)
@@ -422,17 +524,20 @@ class ReviewTest(unittest.TestCase):
             def __enter__(self): return self
             def __exit__(self, *a): return False
             def read(self): return self.body
-        with tempfile.TemporaryDirectory() as tmp, mock.patch("acroscope.config.CACHE_DIR", Path(tmp)):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(betaflight, "FONT_CACHE", Path(tmp)), \
+                mock.patch.object(betaflight, "FONT_DIR", None), mock.patch.object(betaflight, "_failed", {}):
             import urllib.error
             with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no route to host")):
                 with self.assertRaises(betaflight.FontUnavailable) as e:
                     REAL_FETCH("impact")
             self.assertIsInstance(e.exception, ValueError)                    # a 400 with what to do, not a 500
             self.assertIn("upload its .mcm instead", str(e.exception))
+            betaflight._failed.clear()                                          # each step its own fetch (no retry wait)
             with mock.patch("urllib.request.urlopen", return_value=Answer("<html>Wi-Fi login ✓</html>".encode())):
                 with self.assertRaises(betaflight.FontUnavailable):
                     REAL_FETCH("impact")                                     # a captive page: not a font, not kept
             self.assertFalse(betaflight.have_font("impact"))
+            betaflight._failed.clear()
             with mock.patch("urllib.request.urlopen", return_value=Answer(mcm.encode())):
                 self.assertEqual(REAL_FETCH("impact"), mcm)
             self.assertTrue(betaflight.have_font("impact"))
@@ -473,7 +578,7 @@ class ReviewTest(unittest.TestCase):
         # a stored profile named like a built-in layout (an old document) is not the reader's
         doc = {"version": 1, "profiles": {"otto": synth_profile()}}
         osd.PROFILE_SOURCE = lambda: (doc, "t14")
-        self.assertIs(osd.layouts()["otto"], osd.LAYOUTS["otto"])
+        self.assertEqual(osd.layouts()["otto"]["origin"], "shipped")
         with self.assertRaises(ValueError):                                     # True is not a pixel (it is 1)
             osdprofile.check_profiles({"profiles": {"mine": {**synth_profile(), "grid": {**synth_profile()["grid"], "x": True}}}})
         # a profile kept as it was is not checked again: one broken since does not block saving the others
