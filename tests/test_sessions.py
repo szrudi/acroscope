@@ -8,9 +8,9 @@ from pathlib import Path
 from unittest import mock
 
 from acroscope import cli
-from acroscope.match import manual
+from acroscope.match import automatch, manual
 from acroscope.review import moments
-from acroscope.sources import blackbox, osd, video
+from acroscope.sources import blackbox, video
 from acroscope.store import edits, sessions
 from acroscope.store.db import Db
 
@@ -328,7 +328,7 @@ class AutomatchExitTest(_Scratch):
             return {"clip": clip, "matches": []}
         out, err = io.StringIO(), io.StringIO()
         # SERVER_URL pinned empty: an unset ACROSCOPE_URL means the URL file, and cli.main would proxy this to it
-        with mock.patch.object(sessions, "SERVER_URL", ""), mock.patch.object(osd, "automatch", fake), \
+        with mock.patch.object(sessions, "SERVER_URL", ""), mock.patch.object(automatch, "automatch", fake), \
                 redirect_stdout(out), redirect_stderr(err):
             try:
                 cli.main(["automatch", self.S, *args, "--json"])

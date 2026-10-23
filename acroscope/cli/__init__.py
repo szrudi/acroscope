@@ -12,7 +12,7 @@ from pathlib import Path
 from .. import ingest, share, tricks
 from ..analyse import metrics
 from ..ingest import recut
-from ..match import manual
+from ..match import automatch, manual, pairing, planner
 from ..review import moments, xspf
 from ..sources import betaflight, blackbox, osd, osdprofile, video
 from ..store import edits, sessions, upkeep
@@ -733,7 +733,7 @@ def cmd_automatch(a):
     plan = None
     if clips and (len(clips) > 1 or not a.videos):
         try:
-            plan = osd.session_plan(s, a.fps)
+            plan = planner.session_plan(s, a.fps)
         except Exception as e:  # noqa: BLE001  (no log, a log still syncing: clip by clip, as before)
             print(f"{s}: no session plan ({type(e).__name__}: {e}), clip by clip", file=sys.stderr)
     for c in clips:
@@ -744,7 +744,7 @@ def cmd_automatch(a):
                 # ambiguous in the plan (a runner-up within a second hands its arms to another clip): its own pass in a
                 # window over both alignments decides it, but only with more than lengths to go by, a boot fit over two
                 # arms or more (the gaps between its runs against the arms' uptimes); else nothing is written (#41)
-                r = osd.automatch(s, c, write=False, fps=a.fps, overwrite=a.overwrite, pending=pending, windows=p["windows"])
+                r = automatch.automatch(s, c, write=False, fps=a.fps, overwrite=a.overwrite, pending=pending, windows=p["windows"])
                 fits = r.get("boot_fits") or {}
                 settled = bool(r["matches"]) and bool(fits) and all(f.get("n", 0) >= 2 and not f.get("rejected") for f in fits.values())
                 if not settled:
@@ -752,7 +752,7 @@ def cmd_automatch(a):
                           f"{'written' if a.write else 'proposed'}, left for a hand match", file=sys.stderr)
                     results.append(dict(r, ambiguous=True, matches=[]))
                     continue
-            r = osd.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending, windows=p["windows"] if p else None)
+            r = automatch.automatch(s, c, write=a.write, fps=a.fps, overwrite=a.overwrite, pending=pending, windows=p["windows"] if p else None)
             if settled:
                 r = dict(r, ambiguous=True)
         except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
@@ -778,7 +778,7 @@ def cmd_automatch(a):
             print(f"   arm {m['arm']:2} @ +{m['offset']:7.2f}  {how}" + ("" if not a.write else ("  written" if m.get("written") else "  kept existing")))
         for b, f in sorted(r.get("boot_fits", {}).items()):
             if f.get("rejected"):
-                print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms) explains no clock (beyond {100 * osd.MAX_CLOCK:g} %"
+                print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms) explains no clock (beyond {100 * pairing.MAX_CLOCK:g} %"
                       " or offsets apart: a cut in the clip, or a wrong pair): nothing placed or derived from it, check its matches by hand")
             elif f["a"] != 1.0:
                 print(f"   boot {b}: video = {f['a']:.5f} x uptime + {f['b']:.2f} ({f['n']} arms; {100 * (f['a'] - 1):+.2f} % clock difference)")

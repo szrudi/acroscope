@@ -1,10 +1,11 @@
-"""osd.automatch over a scratch database with the readings and the log stubbed: what the other clips' matches
+"""automatch.automatch over a scratch database with the readings and the log stubbed: what the other clips' matches
 leave for a clip (#9). No video, no log."""
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from acroscope.match import automatch, planner
 from acroscope.sources import blackbox, osd
 from acroscope.store import sessions
 from acroscope.store.db import Db
@@ -59,7 +60,7 @@ class AutomatchTest(unittest.TestCase):
             self.db.detach("2026-10-03", BBL)
             return {"layout": "air65f", "rows": []}
         with mock.patch.object(osd, "read_timers", timers):
-            r = osd.automatch("2026-10-03", "2026-10-03_001.mp4", write=True)
+            r = automatch.automatch("2026-10-03", "2026-10-03_001.mp4", write=True)
         self.assertEqual(self.arms(r), [2, 6])                        # proposed all the same
         self.assertEqual((self.db.load("2026-10-03")["blackbox"], self.db.load("2026-10-03")["matches"]), ([], []))
 
@@ -69,7 +70,7 @@ class AutomatchTest(unittest.TestCase):
             self.db.set_match("2026-10-03", "2026-10-03_001.mp4", BBL, 2, 99.0, "by hand")
             return {"layout": "air65f", "rows": []}
         with mock.patch.object(osd, "read_timers", timers):
-            osd.automatch("2026-10-03", "2026-10-03_001.mp4", write=True)
+            automatch.automatch("2026-10-03", "2026-10-03_001.mp4", write=True)
         m = {m["arm"]: m for m in self.db.load("2026-10-03")["matches"]}
         self.assertEqual((m[2]["offset"], m[2]["note"]), (99.0, "by hand"))
         self.assertIn(6, m)
@@ -86,39 +87,39 @@ class AutomatchTest(unittest.TestCase):
             return out
         load.n = 0
         with mock.patch.object(self.db, "load", load):
-            osd.automatch("2026-10-03", "2026-10-03_001.mp4", write=True)
+            automatch.automatch("2026-10-03", "2026-10-03_001.mp4", write=True)
         self.assertEqual((self.db.load("2026-10-03")["blackbox"], self.db.load("2026-10-03")["matches"]), ([], []))
         self.assertEqual(self.db.detached("2026-10-03"), {BBL})
 
     def test_the_plan_window_and_this_runs_picks_combine(self):
         """The plan's window and the bounds from the other clips' matches: the narrower of each end wins."""
         pending = [{"session": "2026-10-03", "video": "x.mp4", "name": "2026-10-03_000", "bbl": BBL, "arm": 1}]
-        r = osd.automatch("2026-10-03", "2026-10-03_001.mp4", pending=pending, windows={BBL: (2, None)})
+        r = automatch.automatch("2026-10-03", "2026-10-03_001.mp4", pending=pending, windows={BBL: (2, None)})
         self.assertEqual(self.arms(r), [5, 6])                                    # the plan's lo 2 over the pick's 1
         self.db.set_match("2026-10-03", "2026-10-03_002.mp4", BBL, 6, 5.0)
-        r = osd.automatch("2026-10-03", "2026-10-03_001.mp4", windows={BBL: (None, 4)})
+        r = automatch.automatch("2026-10-03", "2026-10-03_001.mp4", windows={BBL: (None, 4)})
         self.assertEqual(r["arm_window"], (None, 4))                              # the plan's hi 4 under the match's 6
 
     def test_a_plan_window_narrowed_by_this_runs_picks(self):
         """With the plan's window (one arm of slack into the neighbours), what the clips before this one took in the
         same run still bounds it: a clip before took arm 3, so this clip's 10 s run is arm 5, not arm 2."""
         pending = [{"session": "2026-10-03", "video": "x.mp4", "name": "2026-10-03_000", "bbl": BBL, "arm": 3}]
-        r = osd.automatch("2026-10-03", "2026-10-03_001.mp4", pending=pending, windows={BBL: (None, None)})
+        r = automatch.automatch("2026-10-03", "2026-10-03_001.mp4", pending=pending, windows={BBL: (None, None)})
         self.assertEqual(self.arms(r), [5, 6])
 
     def test_alone_the_lengths_decide(self):
-        self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
+        self.assertEqual(self.arms(automatch.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
 
     def test_taken_in_another_session_and_bounded_by_later_clips(self):
         self.db.set_match("2026-10-02", "2026-10-02_001.mp4", BBL, 2, 50.0)     # arm 2 is the day before's
         self.db.set_match("2026-10-03", "2026-10-03_002.mp4", BBL, 6, 5.0)      # arm 6 is in the next clip
-        r = osd.automatch("2026-10-03", "2026-10-03_001.mp4")
+        r = automatch.automatch("2026-10-03", "2026-10-03_001.mp4")
         self.assertEqual(self.arms(r), [5])
         self.assertEqual(tuple(r["arm_window"]), (2, 6))
 
     def test_proposals_earlier_in_the_run_count(self):
         pending = [{"session": "2026-10-02", "video": "2026-10-02_002.mp4", "name": "2026-10-02_002", "bbl": BBL, "arm": 5}]
-        self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_001.mp4", pending=pending)), [6])
+        self.assertEqual(self.arms(automatch.automatch("2026-10-03", "2026-10-03_001.mp4", pending=pending)), [6])
 
     def test_flash_full_in_this_clip(self):
         # the first run's disarm shows BLACKBOX 100 %: nothing after it is in the log, and that run can only be the
@@ -127,33 +128,33 @@ class AutomatchTest(unittest.TestCase):
         self.index = FULL
         self.db.set_match("2026-10-02", "2026-10-02_001.mp4", BBL, 1, 5.0)
         self.stats["2026-10-03_001.mp4"] = [{"total_arm": 10, "blackbox": 100}, {"total_arm": 50, "blackbox": 100}]
-        r = osd.automatch("2026-10-03", "2026-10-03_001.mp4")
+        r = automatch.automatch("2026-10-03", "2026-10-03_001.mp4")
         self.assertEqual(self.arms(r), [])
         self.assertEqual(r["flash_full"]["clip"], "2026-10-03_001")
         # a log that did not end full: the STATS screen says nothing about it
         self.index = INDEX
-        self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
+        self.assertEqual(self.arms(automatch.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
 
     def test_flash_full_in_an_earlier_clip(self):
         # the flash filling up (55 %, then 100 %) in the clip before
         self.index = FULL
         self.stats["2026-10-03_001.mp4"] = [{"total_arm": 10, "blackbox": 55}, {"total_arm": 50, "blackbox": 100}]
-        r = osd.automatch("2026-10-03", "2026-10-03_002.mp4")
+        r = automatch.automatch("2026-10-03", "2026-10-03_002.mp4")
         self.assertEqual(self.arms(r), [])
         self.assertEqual(r["flash_full"]["clip"], "2026-10-03_001")
         # an earlier clip below 100 % leaves the log open
         self.stats["2026-10-03_001.mp4"] = [{"total_arm": 10, "blackbox": 55}, {"total_arm": 50, "blackbox": 66}]
-        self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_002.mp4")), [2, 6])
+        self.assertEqual(self.arms(automatch.automatch("2026-10-03", "2026-10-03_002.mp4")), [2, 6])
 
     def test_a_full_flash_before_the_erase_is_not_this_log(self):
         # 10-07 001-003: 001 shows the previous fill at 100 %, the flash is erased in 003, and this log starts
         # after it. A 100 % with neither a lower reading nor an arm of the log before it says nothing.
         self.index = FULL
         self.stats["2026-10-03_001.mp4"] = [{"total_arm": 10, "blackbox": 100}, {"total_arm": 50, "blackbox": 100}]
-        r = osd.automatch("2026-10-03", "2026-10-03_002.mp4")
+        r = automatch.automatch("2026-10-03", "2026-10-03_002.mp4")
         self.assertEqual(self.arms(r), [2, 6])
         self.assertIsNone(r["flash_full"])
-        self.assertEqual(self.arms(osd.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
+        self.assertEqual(self.arms(automatch.automatch("2026-10-03", "2026-10-03_001.mp4")), [2, 6])
 
 
 
@@ -172,7 +173,7 @@ class SessionPlanTest(unittest.TestCase):
     order, so the whole session is one monotone alignment: 009 -> 7 costs 0.7 s more and lets ten clips fit."""
 
     def plan(self, runs, arms):
-        return osd.plan_session_pairs([{"clip": c, "length": l} for c, l in runs], [{"length": l} for l in arms])
+        return planner.plan_session_pairs([{"clip": c, "length": l} for c, l in runs], [{"length": l} for l in arms])
 
     def test_the_day_aligns_in_order(self):
         pairs, ambiguous = self.plan(DAY_RUNS, DAY_ARMS)
@@ -196,7 +197,7 @@ class SessionPlanTest(unittest.TestCase):
     def test_the_cumulative_total_decides_between_equal_lengths(self):
         """On a cumulative-timer OSD a run shows the boot's flying time before it; with two arms of one length, the one
         at that place in its boot is the run's (as in a clip's own alignment)."""
-        pairs, _ = osd.plan_session_pairs([{"clip": "001", "length": 30.0, "total_before": 0.0}],
+        pairs, _ = planner.plan_session_pairs([{"clip": "001", "length": 30.0, "total_before": 0.0}],
                                           [{"length": 30.0, "cum_before": 0.0}, {"length": 30.0, "cum_before": 60.0}])
         self.assertEqual(pairs, [(0, 0)])                                     # by length alone a tie, which takes the later
 
@@ -270,7 +271,7 @@ class SessionAutomatchTest(unittest.TestCase):
         with its boot fit, settles it, so a clip's window reaches one arm (PLAN_SLACK) into each neighbour's."""
         self.ARMS[:] = [10.0, 20.0, 30.0, 40.0, 50.0]
         self.RUNS.update({"2026-10-05_001.mp4": 10.0, "2026-10-05_002.mp4": 30.0, "2026-10-05_003.mp4": 50.0})
-        w = {f[-7:-4]: p["windows"][BBL] for f, p in osd.session_plan(self.S).items()}
+        w = {f[-7:-4]: p["windows"][BBL] for f, p in planner.session_plan(self.S).items()}
         self.assertEqual(w, {"001": (None, 4), "002": (None, None), "003": (2, None)})
 
     def test_a_hand_match_is_a_fixed_point(self):
@@ -290,13 +291,13 @@ class SessionAutomatchTest(unittest.TestCase):
         self.assertEqual(self.arms(), {"001": 1, "002": 2, "003": 3})
 
     def test_one_clip_named_alone_is_not_planned(self):
-        with mock.patch.object(osd, "session_plan", side_effect=AssertionError("planned")):
+        with mock.patch.object(planner, "session_plan", side_effect=AssertionError("planned")):
             out, err = self.run_cli("001")
         self.assertNotIn("session plan", err)
         self.assertIn("1 matched", out)
 
     def test_no_plan_falls_back_clip_by_clip(self):
-        with mock.patch.object(osd, "session_plan", side_effect=RuntimeError("no")):
+        with mock.patch.object(planner, "session_plan", side_effect=RuntimeError("no")):
             out, err = self.run_cli("--write")
         self.assertIn("no session plan", err)
         self.assertEqual(self.arms(), {"001": 3})                                    # the old cascade, said so
@@ -341,7 +342,7 @@ class AmbiguousButSettledTest(unittest.TestCase):
         self.calls, self.fits = [], {}
         files = [f"{self.S}_00{n}.mp4" for n in (1, 2, 3, 4)]
 
-        def automatch(session, clip, write=False, **k):
+        def fake_automatch(session, clip, write=False, **k):
             self.calls.append((clip[-7:-4], write))
             return {"clip": clip, "name": clip[:-4], "readable": 1, "readings": 1, "video_arms": [{}], "unmatched_video_arms": [],
                     "arm_window": k.get("windows", {}).get(BBL, (None, None)), "flash_full": None,
@@ -349,7 +350,7 @@ class AmbiguousButSettledTest(unittest.TestCase):
                                                                        "log_length": 10}]}
         plan = {f: {"windows": {BBL: (None, None)}, "ambiguous": True, "planned": []} for f in files}
         for p in [mock.patch.object(sessions, "_store", self.db), mock.patch.object(sessions, "SERVER_URL", ""),
-                  mock.patch.object(osd, "automatch", automatch), mock.patch.object(osd, "session_plan", lambda s, fps=2.0: plan)]:
+                  mock.patch.object(automatch, "automatch", fake_automatch), mock.patch.object(planner, "session_plan", lambda s, fps=2.0: plan)]:
             p.start()
             self.addCleanup(p.stop)
         self.db.ensure_session(self.S)
@@ -410,7 +411,7 @@ class SessionPlanOrderTest(unittest.TestCase):
             self.runs[f] = r
 
     def planned(self):
-        return {f[-7:-4]: p["planned"] for f, p in osd.session_plan(self.S).items()}
+        return {f[-7:-4]: p["planned"] for f, p in planner.session_plan(self.S).items()}
 
     def test_logs_in_dump_order(self):
         early, late = "BTFL_BLACKBOX_LOG_X_20261006_090000_V2.bbl", "BTFL_BLACKBOX_LOG_X_20261006_180000_V2.bbl"
@@ -504,7 +505,7 @@ class SessionPlanOrderTest(unittest.TestCase):
         self.db.ensure_session("2026-10-06-other")
         self.db.upsert_video("2026-10-06-other", f"{self.S}_001.mp4", 300.0, name=f"{self.S}_001")
         self.db.set_match("2026-10-06-other", f"{self.S}_001.mp4", BBL, 1, 5.0)
-        self.assertEqual(osd.session_plan(self.S), {})
+        self.assertEqual(planner.session_plan(self.S), {})
 
     def test_an_unreadable_or_unprobed_clip_drops_out_alone(self):
         self.logs = {BBL: [60.0, 30.0]}

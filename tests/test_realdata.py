@@ -9,6 +9,7 @@ import unittest
 
 from acroscope import tricks
 from acroscope.analyse import metrics
+from acroscope.match import pairing
 from acroscope.sources import blackbox, osd
 from acroscope.store import sessions
 from acroscope.config import BLACKBOX_DIR, SERVER_URL, VIDEOS_DIR
@@ -92,7 +93,7 @@ class RealDataTest(unittest.TestCase):
                 logs.append({"index": a["index"], "length": a["length"], "cum_before": round(cum.get(k, 0.0), 1),
                              "boot": k, "uptime_start": a["uptime_start"]})
                 cum[k] = cum.get(k, 0.0) + a["length"]
-        pairs = osd.consistent_pairs(runs, logs, osd.align(runs, logs))
+        pairs = pairing.consistent_pairs(runs, logs, pairing.align(runs, logs))
         # arm 16 (2.1 s, 30 s further on in the boot than the stray run) must not be taken
         self.assertEqual(sorted(logs[li]["index"] for _, li in pairs), [14, 15, 17])
 
@@ -102,7 +103,7 @@ class RealDataTest(unittest.TestCase):
         three read arms stay, nothing is derived."""
         res = cli_json("automatch", "2026-10-07", "008", "--json")
         self.assertEqual(sorted(m["arm"] for m in res["matches"]), [14, 15, 17])
-        self.assertTrue(all(f.get("rejected") for f in res["boot_fits"].values() if abs(f["a"] - 1) > osd.MAX_CLOCK))
+        self.assertTrue(all(f.get("rejected") for f in res["boot_fits"].values() if abs(f["a"] - 1) > pairing.MAX_CLOCK))
 
 
 @unittest.skipUnless(REMOTE, "the 10-10 clips live on the server only")
