@@ -1,0 +1,37 @@
+# Betaflight / STM32G47X (G473) 2026.6.0-alpha May 15 2026 / 06:14:55 (e92c10887) MSP API: 1.48
+# the OSD lines of a diff all (the rest of the quad's setup left out)
+set osd_rssi_alarm = 0
+set osd_rssi_dbm_alarm = -99
+set osd_cap_alarm = 0
+set osd_alt_alarm = 0
+set osd_tim1 = 2562
+set osd_vbat_pos = 2433
+set osd_rssi_pos = 226
+set osd_link_quality_pos = 2369
+set osd_rssi_dbm_pos = 2401
+set osd_tim_1_pos = 2390
+set osd_tim_2_pos = 2422
+set osd_remaining_time_estimate_pos = 33
+set osd_flymode_pos = 2061
+set osd_throttle_pos = 312
+set osd_vtx_channel_pos = 2049
+set osd_crosshairs_pos = 2253
+set osd_current_pos = 384
+set osd_mah_drawn_pos = 386
+set osd_craft_name_pos = 395
+set osd_home_dist_pos = 98
+set osd_flight_dist_pos = 130
+set osd_warnings_pos = 2345
+set osd_avg_cell_voltage_pos = 44
+set osd_pit_ang_pos = 97
+set osd_rol_ang_pos = 65
+set osd_disarmed_pos = 267
+set osd_esc_tmp_pos = 163
+set osd_esc_rpm_pos = 150
+set osd_core_temp_pos = 2071
+set osd_log_status_pos = 2456
+set osd_stick_overlay_left_pos = 2176
+set osd_stick_overlay_right_pos = 2197
+set osd_displayport_device = MAX7456
+set vcd_video_system = NTSC
+set craft_name = AIR65 F

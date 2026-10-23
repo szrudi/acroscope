@@ -1,6 +1,7 @@
 """Read the OSD timers off the footage and match clips to arms automatically.
 
-Two OSD layouts have been flown (LAYOUTS). The current one puts two timers bottom right: the top one is the time
+The layouts flown here were measured by hand (LAYOUTS); a pilot's own are derived from Betaflight's dump and font
+(osdprofile, #10), stored in the database and added to these (layouts()). The current one puts two timers bottom right: the top one is the time
 since arming (resets every arm), the bottom one the total armed time on the pack. The older one (AIR65 F until
 2026-10-04) has a single timer on the bottom row: the total on the pack. The font is fixed and so are the cell
 positions per layout (measured on the 720x480 DVR frames), so each digit cell is classified against templates
@@ -76,24 +77,67 @@ STATS_SCORE = 0.6     # a STATS digit correlates 0.73-0.97 with its template; th
                       # STATS screen 0.25-0.5
 
 
+# The derived layouts (osdprofile): () -> (the stored profiles document, updated_at), set by the server and the local
+# CLI like tricks.LAYER_SOURCE, so this module never opens a database itself; tests set it explicitly.
+PROFILE_SOURCE = None
+_derived: dict = {"key": None, "layouts": {}, "errors": {}}
+
+
+def _profiles_doc():
+    return PROFILE_SOURCE()[0] if PROFILE_SOURCE else None
+
+
+def layouts() -> dict:
+    """Every layout the reader knows: the hand-measured LAYOUTS, then the derived profiles (a profile that does not
+    derive any more is left out and named in derived_errors())."""
+    from . import osdprofile
+    doc = _profiles_doc()
+    key = osdprofile.fingerprint(doc)
+    if _derived["key"] != key:
+        out, errors = {}, {}
+        for name, p in ((doc or {}).get("profiles") or {}).items():
+            try:
+                out[name] = osdprofile.derive(p, name)
+            except (ValueError, KeyError) as e:
+                errors[name] = str(e)
+        _derived.update(key=key, layouts=out, errors=errors)
+    return {**LAYOUTS, **{k: v for k, v in _derived["layouts"].items() if k not in LAYOUTS}}
+
+
+def derived_errors() -> dict:
+    layouts()
+    return dict(_derived["errors"])
+
+
+def _layout(name: str) -> dict:
+    L = LAYOUTS.get(name) or layouts().get(name)
+    if L is None:
+        raise ValueError(f"{name}: no such OSD layout (a profile removed since this clip was read?)")
+    return L
+
+
+def _frame_w(layout: str) -> int:
+    return _layout(layout).get("frame", [720])[0]
+
+
 def _x0(layout: str, row: int) -> int:
-    x = LAYOUTS[layout]["x0"]
+    x = _layout(layout)["x0"]
     return x[row] if isinstance(x, list) else x
 
 
 def _crop(layout: str) -> tuple[int, int, int, int]:
     """x, y, w, h of the strip holding every timer row of a layout (even height: ffmpeg pads odd crops)."""
-    L = LAYOUTS[layout]
+    L = _layout(layout)
     gx, gw, gy, gh = L["glyph"]
     left = min(_x0(layout, r) for r in range(len(L["formats"])))
     right = max(_x0(layout, r) + len(f) * L["pitch"] + 2 for r, f in enumerate(L["formats"]))
     h = L["rows"][-1] + gy + gh + 2 - L["rows"][0]
-    w = min(right, 720) - left
+    w = min(right, _frame_w(layout)) - left
     return left, L["rows"][0], w + w % 2, h + h % 2
 
 
 def digit_cols(layout: str, row: int) -> list[int]:
-    return [i for i, ch in enumerate(LAYOUTS[layout]["formats"][row]) if ch == "d"]
+    return [i for i, ch in enumerate(_layout(layout)["formats"][row]) if ch == "d"]
 
 
 def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None = None, layout: str = "otto"):
@@ -105,7 +149,8 @@ def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None 
     cmd += ["-i", str(path)]
     if end is not None:
         cmd += ["-t", f"{end - start:.3f}"]
-    cmd += ["-vf", f"fps={fps},crop={w}:{h}:{x}:{y}", "-pix_fmt", "gray", "-f", "rawvideo", "-"]
+    fr = _layout(layout).get("frame")          # a derived layout is on the frame scaled to its grid's size (the hand ones on 720 x 480 as recorded)
+    cmd += ["-vf", (f"scale={fr[0]}:{fr[1]}," if fr else "") + f"fps={fps},crop={w}:{h}:{x}:{y}", "-pix_fmt", "gray", "-f", "rawvideo", "-"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     n = w * h
     i = 0
@@ -120,7 +165,7 @@ def _frames(path: Path, fps: float = 2.0, start: float = 0.0, end: float | None 
 
 def _cell(buf: bytes, col: int, row: int, layout: str = "otto", dx: int = 0, dy: int = 0) -> list[float]:
     """Normalised pixel vector of one digit glyph (the layout's glyph box), shifted by (dx, dy); [] when blank."""
-    L = LAYOUTS[layout]
+    L = _layout(layout)
     left, _, w, _ = _crop(layout)
     return _glyph(buf, w, (_x0(layout, row) - left) + col * L["pitch"] + dx, (L["rows"][row] - L["rows"][0]) + dy, L["glyph"])
 
@@ -140,16 +185,22 @@ def _glyph(buf: bytes, w: int, x: int, y: int, glyph: tuple) -> list[float]:
 
 
 def _templates_stamp() -> str:
-    """Size and mtime of the templates file: new templates (osd-learn) mean new readings, in every cache keyed on it."""
+    """Size and mtime of the templates file, and the derived profiles' fingerprint: new templates (osd-learn) or a
+    profile changed mean new readings, in every cache keyed on it."""
+    from . import osdprofile
     tst = TEMPLATES.stat() if TEMPLATES.exists() else None
-    return f"{tst.st_size}-{int(tst.st_mtime)}" if tst else "none"
+    learned = f"{tst.st_size}-{int(tst.st_mtime)}" if tst else "none"
+    doc = _profiles_doc()
+    return learned if not doc or not doc.get("profiles") else f"{learned}-p{osdprofile.fingerprint(doc)}"
 
 
 def _template_key(layout: str) -> str:
-    return LAYOUTS[layout].get("templates", layout)
+    return _layout(layout).get("templates", layout)
 
 
 def _load_templates(layout: str = "otto") -> dict[str, list[float]]:
+    if "tpl" in _layout(layout):                       # a derived layout renders its own from the font
+        return _layout(layout)["tpl"]
     all_ = json.loads(TEMPLATES.read_text()) if TEMPLATES.exists() else {}
     return all_.get(_template_key(layout), {})
 
@@ -203,11 +254,18 @@ def stats_value(cells: list[tuple[str | None, float]], kind: str) -> float | Non
     return v if v <= 100 else None
 
 
-def read_stats_frame(buf: bytes, layout: str, templates: dict, w: int = 720) -> dict:
+def read_stats_frame(buf: bytes, layout, templates: dict, w: int = 720) -> dict:
     """{total_arm, blackbox} off a full 720x480 gray frame, from the first of the layout's STATS geometries that
-    reads both; both None when the frame shows no STATS screen."""
-    g = LAYOUTS[layout]["glyph"]
-    for S in LAYOUTS[layout].get("stats", []):
+    reads both; both None when the frame shows no STATS screen. A derived layout finds its rows by their labels
+    (osdprofile.stats_rows): which stats are on, and so where Betaflight centres them, is not counted."""
+    L = layout if isinstance(layout, dict) else _layout(layout)
+    g = L["glyph"]
+    geometries = L.get("stats", [])
+    if L.get("stats_scan"):
+        from . import osdprofile
+        rows = osdprofile.stats_rows(buf, L)
+        geometries = [{"x0": L["stats_scan"]["x0"], **rows}] if len(rows) == 2 else []
+    for S in geometries:
         ta = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["total_arm"], g, templates) for c in (0, 1, 3, 4)], "mmss")
         bb = stats_value([_score_at(buf, w, S["x0"] + 24 * c, S["blackbox"], g, templates) for c in (0, 1, 2)], "pct") if ta is not None else None
         if ta is not None and bb is not None:
@@ -215,9 +273,9 @@ def read_stats_frame(buf: bytes, layout: str, templates: dict, w: int = 720) -> 
     return {"total_arm": None, "blackbox": None}
 
 
-def _gray_frame(path: Path, t: float) -> bytes:
+def _gray_frame(path: Path, t: float, size=(720, 480)) -> bytes:
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{max(t, 0):.3f}", "-i", str(path), "-frames:v", "1",
-           "-vf", "scale=720:480", "-pix_fmt", "gray", "-f", "rawvideo", "-"]
+           "-vf", f"scale={size[0]}:{size[1]}", "-pix_fmt", "gray", "-f", "rawvideo", "-"]
     return subprocess.run(cmd, capture_output=True).stdout
 
 
@@ -225,7 +283,8 @@ def read_stats(path: Path, runs: list[dict], layout: str) -> list[dict]:
     """The STATS screen after each run's disarm: [{total_arm, blackbox}] per run (None where not read). Sampled at
     1-4 s after the run's last reading (the screen stays up until the sticks move); the most common full reading
     wins. Cached per clip and run end."""
-    if not LAYOUTS[layout].get("stats"):
+    L = _layout(layout)
+    if not L.get("stats") and not L.get("stats_scan"):
         return [{} for _ in runs]
     st = path.stat()
     cp = video.cache("osd", path.parent.name, f"{path.name}.{st.st_size}.{int(st.st_mtime)}.stats.v{OSD_VERSION}-{_templates_stamp()}.json")
@@ -235,7 +294,8 @@ def read_stats(path: Path, runs: list[dict], layout: str) -> list[dict]:
     for v in runs:
         key = f"{layout}@{v['end']}"
         if key not in cache:
-            reads = [read_stats_frame(_gray_frame(path, v["end"] + dt), layout, tpl) for dt in (1.0, 2.0, 3.0, 4.0)]
+            size = L.get("frame", [720, 480])
+            reads = [read_stats_frame(_gray_frame(path, v["end"] + dt, size), layout, tpl, size[0]) for dt in (1.0, 2.0, 3.0, 4.0)]
             full = [(r["total_arm"], r["blackbox"]) for r in reads if r["total_arm"] is not None and r["blackbox"] is not None]
             ta, bb = max(full, key=full.count) if full else (None, None)
             cache[key] = {"total_arm": ta, "blackbox": bb}
@@ -262,9 +322,10 @@ def _value(digits: list) -> float | None:
 def read_frame(buf: bytes, templates: dict, layout: str = "otto") -> tuple[float | None, float | None, float]:
     """(arm timer seconds, total seconds, min confidence) from one crop; None when a timer is not readable. With
     the single cumulative timer the arm timer is always None. Which row is which is the layout's `arm_row`."""
+    L = _layout(layout)
     out = []
     conf = 1.0
-    for row in range(len(LAYOUTS[layout]["formats"])):
+    for row in range(len(L["formats"])):
         digits = []
         for col in digit_cols(layout, row):
             d, c = _classify(buf, col, row, layout, templates)
@@ -272,9 +333,11 @@ def read_frame(buf: bytes, templates: dict, layout: str = "otto") -> tuple[float
             if d is not None:
                 conf = min(conf, c)
         out.append(_value(digits))
-    if LAYOUTS[layout]["cumulative"]:
+    if L["cumulative"]:
         return None, out[0], conf
-    a = LAYOUTS[layout].get("arm_row", 0)
+    if len(out) == 1:                      # an arm timer and no total (a derived layout can be that)
+        return out[0], None, conf
+    a = L.get("arm_row", 0)
     return out[a], out[1 - a], conf
 
 
@@ -293,18 +356,21 @@ def detect_layout(path: Path, fps: float = 0.5) -> str:
         s, tol = step * rate, 0.6 * max(1.0, rate)
         return sum(1 for a, b in zip(vals, vals[1:]) if a is not None and b is not None and s - tol <= b - a <= s + tol)
     reads = {}
-    for name in LAYOUTS:
+    for name in layouts():
         tpl = _load_templates(name)   # layouts sharing templates are told apart by where the digits are
         if tpl:
             reads[name] = [read_frame(buf, tpl, name) for _, buf in _frames(path, fps, layout=name)]
 
     def score(name, rate):
         return counting([r[1] for r in reads[name]], rate) + counting([r[0] for r in reads[name]], rate)
-    best = max(((score(n, 1.0), n) for n in reads), default=(0, "otto"))
+    # a tie goes to the hand-measured layout (then by name): a derived profile that reads a clip as well as the
+    # layout it was read with so far changes nothing about that clip
+    rank = lambda n: (n in LAYOUTS, n)
+    best = max(((score(n, 1.0), rank(n), n) for n in reads), default=(0, (True, "otto"), "otto"))[::2]
     if best[0] < MIN_COUNTING:
         # nothing counts on at 1 s/s: a clip whose clock runs off the OSD's (2026-10-14 007, a 2.2x mis-stamped frame
         # rate, where the right layout won 2 to 0 by chance); the layout counting at its own steady rate wins
-        best = max(((max(score(n, r) for r in RATES), n) for n in reads), default=(0, "otto"))
+        best = max(((max(score(n, r) for r in RATES), rank(n), n) for n in reads), default=(0, (True, "otto"), "otto"))[::2]
     return best[1] if best[0] > 0 else "otto"
 
 
@@ -416,7 +482,7 @@ def arms_from_cumulative(rows: list[dict], min_readings: int = 3) -> list[dict]:
 
 def video_arms(rt: dict, fps: float = 2.0) -> list[dict]:
     """The arm runs of a read_timers() result, by its layout (each method has its own minimum of readings)."""
-    if LAYOUTS[rt["layout"]]["cumulative"]:
+    if _layout(rt["layout"])["cumulative"]:
         return arms_from_cumulative(rt["rows"])
     return arms_from_timers(rt["rows"], fps)
 
@@ -939,7 +1005,7 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
                 m["written"] = sessions.store().add_match_if_attached(session, m["video"], m["bbl"], m["arm"], m["offset"], m["note"], replace=overwrite)
     return {"clip": path.name, "name": name, "layout": rt["layout"], "readings": len(rows), "boot_fits": fits,
             "bbl": bbl, "arm_window": bounds.get(bbl, (None, None)), "flash_full": full,
-            "readable": sum(1 for r in rows if (r["top"] if not LAYOUTS[rt["layout"]]["cumulative"] else r["bottom"]) is not None),
+            "readable": sum(1 for r in rows if (r["top"] if not _layout(rt["layout"])["cumulative"] else r["bottom"]) is not None),
             "video_arms": varms, "matches": matches, "unmatched_video_arms": unmatched}
 
 
