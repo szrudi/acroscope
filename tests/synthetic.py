@@ -7,7 +7,7 @@ right side down, pitch + = nose down, yaw + = nose left."""
 import array
 import math
 
-from acroscope.blackbox import Arm
+from acroscope.sources.blackbox import Arm
 
 RATE = 400
 

@@ -11,8 +11,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from acroscope.db import Db
-from acroscope import blackbox, ingest
+from acroscope import ingest
+from acroscope.sources import blackbox
+from acroscope.store.db import Db
 
 
 MIDDLE = {
@@ -544,7 +545,7 @@ ingest.fix_clock = fix""")
 
     def run_patched(self, batch: str, patch: str):
         """process_batch in a child with `patch` applied first (a crash is os._exit: no except or finally runs)."""
-        code = f"from acroscope import ingest, db\nimport os, sqlite3\n{patch}\ningest.process_batch({batch!r})"
+        code = f"from acroscope import ingest\nfrom acroscope.store import db\nimport os, sqlite3\n{patch}\ningest.process_batch({batch!r})"
         return subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True)
 
     def test_a_crash_anywhere_is_finished_by_the_retry(self):

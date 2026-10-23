@@ -2,7 +2,7 @@
 import unittest
 from pathlib import Path
 
-from acroscope import osd
+from acroscope.sources import osd
 
 
 def logs_of(boot_arms):
@@ -101,7 +101,7 @@ class DetectLayoutRateTest(unittest.TestCase):
 
     def detect(self, readings):
         from unittest import mock
-        from acroscope import osd
+        from acroscope.sources import osd
         frames = lambda path, fps, layout=None: ((i * 2.0, layout) for i in range(len(readings["A"])))
         seq = {n: iter(r) for n, r in readings.items()}
         with mock.patch.object(osd, "layouts", lambda: {"A": {}, "B": {}}), mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), \

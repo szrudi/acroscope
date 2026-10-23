@@ -7,8 +7,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from acroscope import blackbox, cli, osd, sessions, video
-from acroscope.db import Db
+from acroscope import cli
+from acroscope.sources import blackbox, osd, video
+from acroscope.store import sessions
+from acroscope.store.db import Db
 
 
 class _Scratch(unittest.TestCase):

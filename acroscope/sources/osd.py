@@ -22,8 +22,9 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import blackbox, sessions, video
-from .config import VIDEOS_DIR
+from . import blackbox, video
+from ..store import sessions
+from ..config import VIDEOS_DIR
 
 # A layout (osdprofile.derive): x0 per timer row and the pitch of the character cells, the y of each row, the format
 # of each row ("dd:dd" = MM:SS, "dd:dd.d" = with tenths, "dd:dd.dd" = with hundredths; any other character is a cell

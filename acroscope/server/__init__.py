@@ -19,10 +19,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import blackbox, ingest, metrics, osdprofile, sessions, share, tricks, video
-from .config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
+from .. import ingest, share, tricks
+from ..analyse import metrics
+from ..sources import blackbox, osdprofile, video
+from ..store import sessions
+from ..config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
 
-STATIC = Path(__file__).parent / "static"
+STATIC = Path(__file__).parent.parent / "static"
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 _lock = threading.Lock()
 _busy: set[str] = set()          # blackbox files being decoded / sessions being probed right now
@@ -72,7 +75,7 @@ def _check_proxied(args: list[str]) -> None:
     tags) may hold a '/' ("725 deg/s", #32): the command is parsed with the CLI's own parser to tell which is which."""
     if not args or args[0] not in PROXIED:
         raise ValueError(f"not a command a client may run here: {args[:1]}")
-    from . import cli
+    from .. import cli
     try:
         ns = cli.parser().parse_args(args)
     except SystemExit:                                   # argparse's own error (or --help): not a command to run
@@ -165,7 +168,7 @@ def osd_probe(body: dict) -> dict:
         raise FileNotFoundError(f"{name}/{path.name}: no such clip")
     req = {"op": op, "profile": body["profile"], "path": str(path), "times": [float(t)]}
     try:
-        r = subprocess.run([sys.executable, "-m", "acroscope.osdprofile"], input=json.dumps(req), capture_output=True, text=True,
+        r = subprocess.run([sys.executable, "-m", "acroscope.sources.osdprofile"], input=json.dumps(req), capture_output=True, text=True,
                            timeout=OSD_PROBE_TIMEOUT, env=dict(os.environ, ACROSCOPE_URL=""))
     except subprocess.TimeoutExpired:
         raise ValueError(f"the OSD look ({op}) took longer than {OSD_PROBE_TIMEOUT} s: try one frame with fewer fonts, or upload the .mcm") from None

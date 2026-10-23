@@ -9,7 +9,9 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from acroscope import blackbox, sessions, tricks
+from acroscope import tricks
+from acroscope.sources import blackbox
+from acroscope.store import sessions
 from acroscope.tricks.library import SHIPPED, Library, LibraryError
 
 try:

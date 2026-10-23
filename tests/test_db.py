@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from acroscope.db import Db
+from acroscope.store.db import Db
 
 
 class DbTest(unittest.TestCase):

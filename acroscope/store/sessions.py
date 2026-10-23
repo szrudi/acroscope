@@ -13,8 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import blackbox, video
-from .config import DATA_DIR, DB_PATH, SERVER_URL, VIDEOS_DIR
+from ..sources import blackbox, video
+from ..config import DATA_DIR, DB_PATH, SERVER_URL, VIDEOS_DIR
 from .db import now
 
 VIDEO_EXT = (".mp4", ".mov", ".mkv")

@@ -19,8 +19,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..blackbox import Arm
 from . import expr, features, segments
+from ..sources.blackbox import Arm
 from .library import SHIPPED, Library, LibraryError, Trick
 
 __all__ = ["check", "describe", "detect", "evaluate", "explain", "export_toml", "import_table", "library", "merge_tables", "Library", "LibraryError", "SHIPPED"]
@@ -81,7 +81,7 @@ def describe(lib: Library, craft: str | None = None) -> dict:
     """The library in force as the player and `tricks --json` see it: every param with its default and where its
     value came from, the presets, the crafts (declared, and seen in the logs), the segments, the tricks with their
     definitions and sources, the feature names per segment kind."""
-    from .. import blackbox
+    from ..sources import blackbox
     eff = lib.for_craft(craft)
     sources = lib.param_sources(craft)
     shipped = lib.layers[0][1] if lib.layers else {}
@@ -533,7 +533,7 @@ def check(lib: Library | None = None, only: list[str] | None = None, craft: str 
     makes under that file's own numbers: the shipped examples run on the shipped file alone, a layer's on the files
     up to and including it (`craft`: each one's section for that craft), so the pilot's preset, params or a trick
     switched off fail no shipped example."""
-    from .. import blackbox
+    from ..sources import blackbox
     lib = lib or library()
     results = []
     arms: dict[tuple, list | None] = {}

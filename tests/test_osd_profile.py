@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from acroscope import betaflight, osd, osdprofile
+from acroscope.sources import betaflight, osd, osdprofile
 
 try:
     from tests import osd_synthetic as syn

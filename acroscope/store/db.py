@@ -551,7 +551,7 @@ class Db:
         write is refused when the stored document is not that one any more: two writers never lose each other's
         changes silently."""
         if etag is not None:
-            from .tricks import layer_etag
+            from ..tricks import layer_etag
             row = self.setting(key)
             if layer_etag(row["value"] if row else None) != etag:
                 raise ValueError(f"{key}: changed since you loaded it; load it again and redo the change")

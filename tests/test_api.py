@@ -13,8 +13,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from acroscope import blackbox
-from acroscope.remote import Remote, RemoteError
+from acroscope.sources import blackbox
+from acroscope.store.remote import Remote, RemoteError
 
 
 def free_port() -> int:
@@ -396,7 +396,8 @@ class ApiTest(unittest.TestCase):
         import io
         from contextlib import redirect_stdout
         from unittest import mock
-        from acroscope import cli, sessions
+        from acroscope import cli
+        from acroscope.store import sessions
         self.r.refresh("2026-10-07-s", probe_videos=False)
         self.r.attach("2026-10-07-s", "dump #2.bbl")
         with tempfile.TemporaryDirectory() as tmp:
@@ -423,7 +424,8 @@ class ApiTest(unittest.TestCase):
         import io
         from contextlib import redirect_stdout
         from unittest import mock
-        from acroscope import cli, sessions
+        from acroscope import cli
+        from acroscope.store import sessions
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "logs").mkdir()
             (Path(tmp) / "logs" / "L_20261007.bbl").write_bytes(LOG_BYTES)

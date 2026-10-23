@@ -24,8 +24,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from acroscope import cli, ingest, sessions, video  # noqa: E402
-from acroscope.config import DATA_DIR, VIDEOS_DIR  # noqa: E402
+from acroscope import cli, ingest
+from acroscope.sources import video
+from acroscope.store import sessions
+from acroscope.config import DATA_DIR, VIDEOS_DIR
 
 MOV = VIDEOS_DIR / "mov"
 

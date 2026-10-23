@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from acroscope import blackbox, osd, sessions
-from acroscope.db import Db
+from acroscope.sources import blackbox, osd
+from acroscope.store import sessions
+from acroscope.store.db import Db
 
 BBL = "L.bbl"
 # one boot, arms 1-6; arms 2 and 5 are about the same length, which is all the cumulative timer has to go on

@@ -7,7 +7,10 @@ metrics, the OSD reader and the aligner against regressions."""
 import json
 import unittest
 
-from acroscope import blackbox, metrics, osd, sessions, tricks
+from acroscope import tricks
+from acroscope.analyse import metrics
+from acroscope.sources import blackbox, osd
+from acroscope.store import sessions
 from acroscope.config import BLACKBOX_DIR, SERVER_URL, VIDEOS_DIR
 
 BBL = "BTFL_BLACKBOX_LOG_AIR65_F_20261007_212530_BETAFPVG473_V2.bbl"
@@ -131,7 +134,7 @@ class DerivedProfileTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from pathlib import Path
-        from acroscope import osdprofile
+        from acroscope.sources import osdprofile
         try:
             cls.v3 = osdprofile.make((Path(__file__).parent / "data" / "osd-dumps" / "2026-10-11-otto.txt").read_text(), font="impact")
         except OSError as e:                                           # the font is fetched from the Configurator's repository

@@ -1,8 +1,8 @@
 """One-off import of the VLC moment playlists (videos/<session>/moments.xspf) into the session file."""
 import xml.etree.ElementTree as ET
 
-from . import sessions
-from .config import VIDEOS_DIR
+from ..store import sessions
+from ..config import VIDEOS_DIR
 
 NS = {"x": "http://xspf.org/ns/0/", "vlc": "http://www.videolan.org/vlc/playlist/ns/0/"}
 

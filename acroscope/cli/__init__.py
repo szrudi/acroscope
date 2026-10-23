@@ -9,9 +9,13 @@ import json
 import sys
 from pathlib import Path
 
-from . import betaflight, blackbox, ingest, metrics, osd, osdprofile, sessions, share, tricks, video, xspf
-from .config import CACHE_DIR, DATA_DIR, DB_PATH, SERVER_URL, TAGS
-from .remote import RemoteError
+from .. import ingest, share, tricks
+from ..analyse import metrics
+from ..review import xspf
+from ..sources import betaflight, blackbox, osd, osdprofile, video
+from ..store import sessions
+from ..config import CACHE_DIR, DATA_DIR, DB_PATH, SERVER_URL, TAGS
+from ..store.remote import RemoteError
 
 
 def parse_time(s: str) -> float:
@@ -445,7 +449,7 @@ def cmd_tricks(a):
                 print(f"  note      {t.note}")
         return
     if what == "features":
-        from .tricks import features, segments
+        from ..tricks import features, segments
         kinds = args or list(segments.KINDS)
         if a.json:
             return out({k: features.vocabulary(k) for k in kinds})
@@ -878,7 +882,7 @@ def cmd_osd_profile(a):
 
 
 def cmd_serve(a):
-    from .server import serve
+    from ..server import serve
     serve(a.host, a.port, warm=not a.no_warm)
 
 
@@ -1056,6 +1060,3 @@ def main(argv=None):
         print(f"acroscope: {e}", file=sys.stderr)
         sys.exit(1)
 
-
-if __name__ == "__main__":
-    main()

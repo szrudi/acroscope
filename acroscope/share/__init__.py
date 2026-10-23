@@ -32,8 +32,9 @@ from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import blackbox, sessions, video
-from .config import CACHE_DIR, SHARE_PUSH, SHARE_REVOKE, SHARE_URL, SHARES_DIR, VIDEOS_DIR
+from ..sources import blackbox, video
+from ..store import sessions
+from ..config import CACHE_DIR, SHARE_PUSH, SHARE_REVOKE, SHARE_URL, SHARES_DIR, VIDEOS_DIR
 
 TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
 TOKEN_LEN = 24
@@ -46,8 +47,8 @@ DEFAULT_EXPIRY = "30d"     # a secret link is not private: it is forwarded, prev
 STEP = 0.02                # the sticks every 20 ms, as the player's overlay
 PREVIEW_KEEP = 86400       # seconds a preview nobody published stays in the cache
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
-TEMPLATE = Path(__file__).parent / "static" / "share.html"
-BRAND = Path(__file__).parent / "static" / "brand"          # the mark and the favicon go into the page inline: nothing to fetch
+TEMPLATE = Path(__file__).parent.parent / "static" / "share.html"
+BRAND = Path(__file__).parent.parent / "static" / "brand"          # the mark and the favicon go into the page inline: nothing to fetch
 PREVIEW_DIR = CACHE_DIR / "share-preview"
 ROOT_PAGE = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow">'
              '<title>acroscope</title></head><body>Nothing here.</body></html>\n')
