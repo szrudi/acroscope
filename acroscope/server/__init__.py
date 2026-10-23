@@ -298,7 +298,7 @@ class Handler(BaseHTTPRequestHandler):
                         if (q.get("video") and m["video"] != q["video"]) or not jobs.indexed(m["bbl"]):
                             continue
                         for e in events.arm_events(m["bbl"], m["arm"], tricks.fingerprint()):
-                            rows.append({**e, "video": m["video"], "start": round(e["arm_from"] + m["offset"], 2), "end": round(e["arm_to"] + m["offset"], 2)})
+                            rows.append(events.on_clip(e, m))
                     return self._json(rows)
                 if parts[3] == "series":
                     s = sessions.load(name)

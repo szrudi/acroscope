@@ -376,6 +376,67 @@ class AmbiguousButSettledTest(unittest.TestCase):
         self.assertEqual(err.getvalue().count("left for a hand match"), 3)
 
 
+class RunTest(unittest.TestCase):
+    """automatch.run, the session's automatch that the CLI's command (and through it the player's button) goes
+    through: what it hands back, what it says, and when. The clip's pass and the plan are stubbed."""
+    S = "2026-10-09"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Db(Path(self.tmp.name) / "t.db")
+        self.calls, self.pending = [], []
+
+        def fake_automatch(session, clip, write=False, **k):
+            self.calls.append(clip[-7:-4])
+            self.pending.append([(p["video"][-7:-4], p["arm"]) for p in k.get("pending", [])])   # what it was handed, then
+            return {"clip": clip, "name": clip[:-4], "matches": [{"bbl": BBL, "arm": int(clip[-5])}]}
+        for p in [mock.patch.object(sessions, "_store", self.db), mock.patch.object(sessions, "SERVER_URL", ""),
+                  mock.patch.object(automatch, "automatch", fake_automatch),
+                  mock.patch.object(planner, "session_plan", lambda s, fps=2.0: {})]:
+            p.start()
+            self.addCleanup(p.stop)
+        self.db.ensure_session(self.S)
+        for n in (1, 2, 3):
+            f = f"{self.S}_00{n}.mp4"
+            self.db.upsert_video(self.S, f, 300.0, name=f[:-4])
+
+    def test_every_clip_and_each_one_as_it_is_made(self):
+        said, seen = [], []
+        res = automatch.run(self.S, log=said.append, each=lambda r: seen.append((r["clip"][-7:-4], list(self.calls))))
+        self.assertEqual(self.calls, ["001", "002", "003"])
+        self.assertEqual(seen, [("001", ["001"]), ("002", ["001", "002"]), ("003", ["001", "002", "003"])])   # not at the end
+        self.assertEqual([r["clip"][-7:-4] for r in res["results"]], ["001", "002", "003"])
+        self.assertEqual((res["errors"], said), ([], []))
+
+    def test_an_unknown_clip_is_an_error_of_its_own(self):
+        said = []
+        res = automatch.run(self.S, ["002", "nope"], log=said.append)
+        self.assertEqual(self.calls, ["002"])
+        self.assertEqual([r["clip"][-7:-4] for r in res["results"]], ["002"])
+        self.assertEqual([e["clip"] for e in res["errors"]], ["nope"])
+        self.assertEqual(len(said), 1)
+        self.assertTrue(said[0].startswith("nope: "), said)
+
+    def test_the_next_clips_see_the_picks_unless_written(self):
+        """Without --write the picks are only proposed, so each clip's pass is handed the ones before it, as they
+        would stand once written; with --write they are in the store already and nothing is handed on."""
+        automatch.run(self.S, log=lambda m: None)
+        self.assertEqual(self.pending, [[], [("001", 1)], [("001", 1), ("002", 2)]])
+        self.pending.clear()
+        automatch.run(self.S, write=True, log=lambda m: None)
+        self.assertEqual(self.pending, [[], [], []])
+
+    def test_nothing_to_do_when_every_clip_has_a_match(self):
+        self.db.set_blackbox(self.S, [BBL])
+        for n in (1, 2, 3):
+            self.db.set_match(self.S, f"{self.S}_00{n}.mp4", BBL, n, 1.0)
+        said = []
+        self.assertIsNone(automatch.run(self.S, unmatched=True, log=said.append))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(said, [f"{self.S}: every clip has a match, nothing to do"])
+
+
 class SessionPlanOrderTest(unittest.TestCase):
     """The plan's two orders: logs by their dump time (not by when they were attached), and a match already in the
     session as a fixed point that the clips after it align past."""

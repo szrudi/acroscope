@@ -141,3 +141,85 @@ def automatch(session: str, clip: str, write: bool = False, fps: float = 2.0, ov
             "bbl": bbl, "arm_window": bounds.get(bbl, (None, None)), "flash_full": full,
             "readable": sum(1 for r in rows if (r["top"] if not osd._layout(rt["layout"])["cumulative"] else r["bottom"]) is not None),
             "video_arms": varms, "matches": matches, "unmatched_video_arms": unmatched}
+
+
+def run(s: str, clips: list[str] | None = None, write: bool = False, fps: float = 2.0, overwrite: bool = False,
+        unmatched: bool = False, log=print, each=None) -> dict | None:
+    """Automatch a session's clips: every probed one, or the `clips` named (file, readable name or number). The
+    session is planned whole first (#26), so each clip's arms come from one alignment of the session, not from the
+    picks of the clips before it; one clip named alone stays bounded by the others' matches. A clip ambiguous in the
+    plan is written only when its own pass settles it (#41). With `unmatched` (the player's automatch button), never a
+    clip with a match or a missing one. `log` gets what goes wrong as it happens, `each` every clip's result as it
+    is made (not one ambiguous and left alone). {results, errors}, or None when `unmatched` leaves nothing to do."""
+    named = bool(clips)
+    loaded = sessions.load(s)
+    clips = list(clips) if named else [v["file"] for v in loaded["videos"] if v.get("duration")]     # in name order: chronological
+    results, pending, errors = [], [], []
+    if named:                  # named clips by their file first: the plan and every check below go by file (#41)
+        resolved = []
+        for c in clips:
+            try:
+                resolved.append(sessions.resolve_clip(s, c))
+            except Exception as e:  # noqa: BLE001  (an unknown name: an error for that clip, the others go on)
+                errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
+                log(f"{c}: {errors[-1]['error']}")
+        clips = resolved
+    if unmatched and clips:  # the player's automatch button: never a clip with a match (by hand or not), never a missing one
+        matched = {m["video"] for m in loaded["matches"] if m["bbl"] in loaded["blackbox"]}   # a match to a log taken out is none
+        gone = {v["file"] for v in loaded["videos"] if v.get("missing_since")}
+        picked = []
+        for f in clips:
+            c = f
+            if f in gone:
+                if named:                # named: the file is what was asked for
+                    errors.append({"clip": c, "error": "file missing, nothing to read"})
+                    log(f"{c}: {errors[-1]['error']}")
+                continue
+            if f in matched:
+                if named:
+                    log(f"{c}: has a match, skipped (--unmatched)")
+                continue
+            picked.append(f)
+        clips = picked
+        if not clips and not errors:
+            log(f"{s}: every clip has a match, nothing to do")
+            return None
+    elif not clips:
+        log(f"{s}: no probed clips, nothing to match")
+    # a session's worth of clips is planned whole first (#26): each clip's arms come from one alignment of the session,
+    # not from the picks of the clips before it; one clip named alone stays bounded by the others' matches
+    plan = None
+    if clips and (len(clips) > 1 or not named):
+        try:
+            plan = planner.session_plan(s, fps)
+        except Exception as e:  # noqa: BLE001  (no log, a log still syncing: clip by clip, as before)
+            log(f"{s}: no session plan ({type(e).__name__}: {e}), clip by clip")
+    for c in clips:
+        p = (plan or {}).get(c)
+        settled = False
+        try:
+            if p and p["ambiguous"]:
+                # ambiguous in the plan (a runner-up within a second hands its arms to another clip): its own pass in a
+                # window over both alignments decides it, but only with more than lengths to go by, a boot fit over two
+                # arms or more (the gaps between its runs against the arms' uptimes); else nothing is written (#41)
+                r = automatch(s, c, write=False, fps=fps, overwrite=overwrite, pending=pending, windows=p["windows"])
+                fits = r.get("boot_fits") or {}
+                settled = bool(r["matches"]) and bool(fits) and all(f.get("n", 0) >= 2 and not f.get("rejected") for f in fits.values())
+                if not settled:
+                    log(f"{c}: ambiguous in the session plan and only lengths to go by: nothing "
+                        f"{'written' if write else 'proposed'}, left for a hand match")
+                    results.append(dict(r, ambiguous=True, matches=[]))
+                    continue
+            r = automatch(s, c, write=write, fps=fps, overwrite=overwrite, pending=pending, windows=p["windows"] if p else None)
+            if settled:
+                r = dict(r, ambiguous=True)
+        except Exception as e:  # noqa: BLE001  (a clip still syncing, no log, ...)
+            errors.append({"clip": c, "error": f"{type(e).__name__}: {e}"})
+            log(f"{c}: {errors[-1]['error']}")
+            continue
+        results.append(r)
+        if not write:              # the next clips see these as taken, as they would once written
+            pending += [{"session": s, "video": r["clip"], "name": r["name"], "bbl": m["bbl"], "arm": m["arm"]} for m in r["matches"]]
+        if each:
+            each(r)
+    return {"results": results, "errors": errors}

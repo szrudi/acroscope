@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from .. import tricks
-from ..analyse import metrics
+from ..analyse import events, metrics
 from ..sources import blackbox
 from ..store import sessions
 from .common import _arm_for, _session, fmt_time, out, parse_time
@@ -66,10 +66,7 @@ def cmd_events(a):
                         arms.append((None, blackbox.load_arm(b, r["index"])))
     for m, arm in arms:
         for e in tricks.detect(arm):
-            r = {"bbl": arm.bbl[25:40], "arm": arm.index, **e}
-            if m:
-                r["video"], r["start"], r["end"] = m["video"], round(e["arm_from"] + m["offset"], 2), round(e["arm_to"] + m["offset"], 2)
-            rows.append(r)
+            rows.append({"bbl": arm.bbl[25:40], "arm": arm.index, **(events.on_clip(e, m) if m else e)})
     if a.json:
         return out(rows)
     for r in rows:
