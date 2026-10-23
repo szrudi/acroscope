@@ -48,9 +48,27 @@ def check_grid(g: dict) -> dict:
     """A grid of whole pixels in sensible ranges (GRID_RANGE): a frame of 100000 x 100000 is nobody's DVR."""
     for k, (lo, hi) in GRID_RANGE.items():
         v = g.get(k)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != int(v) or not lo <= v <= hi:
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v != int(v) or not lo <= v <= hi:
             raise ValueError(f"grid {k} = {v!r}: whole pixels from {lo} to {hi}")
     return {k: int(g[k]) for k in GRID_RANGE}
+
+
+def check_types(profile) -> None:
+    """A profile's shape, before anything reads it (a request's or a stored one): ValueError naming what is wrong, so
+    a client's bad input is a 400 and a broken stored profile is one named error, never a crash."""
+    if not isinstance(profile, dict):
+        raise ValueError("a profile is {settings, font, grid}")
+    if not isinstance(profile.get("settings", {}), dict) or \
+            any(not isinstance(k, str) or isinstance(v, bool) or not isinstance(v, (str, int, float)) for k, v in profile.get("settings", {}).items()):
+        raise ValueError("settings: the dump's `set name = value` lines, {name: value}")
+    f = profile.get("font", {})
+    if not isinstance(f, dict) or any(not isinstance(f.get(k, ""), str) for k in ("name", "data")):
+        raise ValueError("font: {name, data}, both text")
+    if not isinstance(profile.get("grid", {}), dict):
+        raise ValueError("grid: {x, y, cw, ch, w, h}")
+    for k in ("version", "note"):
+        if profile.get(k) is not None and not isinstance(profile[k], str):
+            raise ValueError(f"{k}: text")
 
 
 def _norm(v: list[float]) -> list[float]:
@@ -99,7 +117,8 @@ def _font(profile: dict):
 def derive(profile: dict, name: str = "profile") -> dict:
     """A layout for the OSD reader from a profile {settings, font, grid}: the shape of osd.LAYOUTS, with its own
     digit templates (`tpl`), the STATS labels to find the STATS rows by (`stats_scan`), the flight counter's cells
-    (`counter`) and what it was derived from (`derived`, `warnings`)."""
+    (`counter`) and what it was derived from (`derived`, `warnings`). ValueError when it cannot be read with."""
+    check_types(profile)
     el = betaflight.osd_elements(profile.get("settings") or {})
     grid = check_grid({**default_grid(el["video_system"]), **(profile.get("grid") or {})})
     chars = _font(profile)
@@ -190,6 +209,10 @@ def check_profiles(doc) -> dict:
             raise ValueError(f"{name!r}: a profile name is lower case letters, digits, '.', '_' and '-' (40 at most), and not a built-in layout's")
         if not isinstance(p, dict) or not isinstance(p.get("settings"), dict):
             raise ValueError(f"{name}: a profile has the dump's settings")
+        try:
+            check_types(p)
+        except ValueError as e:
+            raise ValueError(f"{name}: {e}") from None
         if not (p.get("font") or {}).get("data"):
             raise ValueError(f"{name}: a stored profile carries its font (font.data), so reading never fetches anything")
         try:
@@ -228,8 +251,8 @@ def describe(doc) -> dict:
     for name, p in ((doc or {}).get("profiles") or {}).items():
         try:
             lay = derive(p, name)
-        except (ValueError, KeyError) as e:
-            errors[name] = str(e)
+        except Exception as e:  # noqa: BLE001  (a broken stored profile is listed, never the page's 500)
+            errors[name] = str(e) or type(e).__name__
             continue
         out[name] = {"font": (p.get("font") or {}).get("name"), "version": p.get("version"), "note": p.get("note", ""),
                      "grid": lay["grid"], "layout": _public(lay)}

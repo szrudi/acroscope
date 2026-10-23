@@ -150,7 +150,8 @@ def osd_probe(body: dict) -> dict:
     """The configuration page's OSD look at one frame (#10): read it with a profile, fit the grid on it, or rank the
     fonts. Pure Python for seconds, so in a child (osdprofile.main), never in this thread; the clip is resolved
     here, by name, like everything a client names."""
-    if not isinstance(body, dict) or not isinstance(body.get("profile"), dict) or not isinstance(body.get("session"), str):
+    if not isinstance(body, dict) or not isinstance(body.get("profile"), dict) or not isinstance(body.get("session"), str) \
+            or not isinstance(body.get("video", ""), (str, int)):
         raise ValueError("a look takes {profile, session, video, t, op: probe|fit|fonts}")
     op = body.get("op", "probe")
     if op not in ("probe", "fit", "fonts"):
@@ -180,6 +181,14 @@ def osd_derive(body: dict) -> dict:
     layout (no templates), glyphs}."""
     if not isinstance(body, dict):
         raise ValueError("derive takes {dump | settings | profile, font | mcm, grid}")
+    for k in ("dump", "mcm", "font", "name", "note", "version"):
+        if body.get(k) is not None and not isinstance(body[k], str):
+            raise ValueError(f"{k}: text")
+    for k in ("settings", "profile", "grid"):
+        if body.get(k) is not None and not isinstance(body[k], dict):
+            raise ValueError(f"{k}: an object")
+    if body.get("profile") is not None:
+        osdprofile.check_types(body["profile"])
     grid = body.get("grid") if isinstance(body.get("grid"), dict) else None
     if isinstance(body.get("profile"), dict) and not body.get("font") and not body.get("mcm"):
         prof = {**body["profile"], "grid": {**(body["profile"].get("grid") or {}), **(grid or {})}}

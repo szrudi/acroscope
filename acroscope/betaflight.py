@@ -104,13 +104,23 @@ def video_system(settings: dict) -> str:
     return v if v in ROWS else "NTSC"
 
 
+def osd_profile(settings: dict) -> int:
+    """The OSD profile in use (`osd_profile`, 1-3, Betaflight's default 1): which profile bit makes an element shown."""
+    n = _int(settings, "osd_profile", 1)
+    if not 1 <= n <= 3:
+        raise ValueError(f"osd_profile = {n}: 1 to 3")
+    return n
+
+
 def osd_elements(settings: dict) -> dict:
-    """What the OSD reader uses from a dump: the two timers (where and what), the flight counter, the grid."""
+    """What the OSD reader uses from a dump: the two timers (where and what), the flight counter, the grid, as the
+    OSD profile in use shows them."""
     vs = video_system(settings)
-    out = {"video_system": vs, "rows": ROWS[vs], "cols": COLS, "timers": [], "counter": element(settings, "total_flights"),
-           "displayport": settings.get("osd_displayport_device"), "craft": settings.get("craft_name")}
+    prof = osd_profile(settings)
+    out = {"video_system": vs, "rows": ROWS[vs], "cols": COLS, "timers": [], "counter": element(settings, "total_flights", prof),
+           "displayport": settings.get("osd_displayport_device"), "craft": settings.get("craft_name"), "osd_profile": prof}
     for n in (1, 2):
-        e = element(settings, f"tim_{n}")
+        e = element(settings, f"tim_{n}", prof)
         if e:
             out["timers"].append({"n": n, **e, **timer(settings, n)})
     out["timers"].sort(key=lambda t: (t["row"], t["col"]))
