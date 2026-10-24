@@ -9,6 +9,17 @@ agree that your contribution is licensed under the same **AGPL-3.0-or-later** (i
 Keep PRs focused, describe what and why, and don't squash — the trail of how a change was reached is
 part of the record.
 
+### AI-assisted code
+
+Acroscope is developed with AI (Claude Code), and you are welcome to use it too. The bar stays the same
+though: a PR should be high-quality code that has already been through several rounds of review and
+iteration on your side, with tests, until you would stand behind every line of it as your own.
+
+Don't open a PR with what an AI produced on the first ask and wait for me to work on it further. If I
+find a very low-effort PR, I'll close it with an "AI slop" comment.
+
+I'm flattered if you want to contribute, so let's keep good standards.
+
 ## Trick-data contributions (footage + blackbox + labels)  —  DRAFT, under review
 
 To improve trick detection, pilots can submit flight data: DVR footage, Betaflight blackbox logs, and
