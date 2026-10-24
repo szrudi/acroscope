@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "acroscope"
 version = "0.1.0"
+license = { text = "AGPL-3.0-or-later" }
 description = "FPV trick-learning tool: find, measure and tag tricks and crashes in DVR footage with blackbox data"
 requires-python = ">=3.11"
 dependencies = ["orangebox>=0.5.0"]
