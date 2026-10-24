@@ -473,5 +473,4 @@ Acroscope is free software, licensed under the GNU Affero General Public License
 version as a network service, you must offer users the source of your modified version.
 
 Contributing is covered in `CONTRIBUTING.md`: code contributions are under the same AGPL-3.0-or-later,
-and contributed flight data (footage, blackbox, labels) is covered by a separate contribution grant
-(used to improve Acroscope, not published as raw content).
+and contributed trick data (footage, blackbox logs, labels) is under CC BY 4.0.

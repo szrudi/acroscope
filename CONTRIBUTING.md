@@ -28,20 +28,16 @@ I'm flattered if you want to contribute, so let's keep good standards.
 To improve trick detection, pilots will be able to submit flight data: DVR footage, Betaflight blackbox logs and
 their own labels ("clean roll", "sloppy", "not a loop").
 
-By submitting trick data you:
+Trick data is contributed under the Creative Commons Attribution 4.0 International licence
+([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). Anyone, the project included, may use, share and adapt
+it for any purpose, including training detection rules and AI/ML models, as long as they give credit.
 
-- confirm you made the recording and own it (or otherwise have the right to submit it), and that it contains no one
-  else's personal data without their consent;
-- grant the Acroscope project a non-exclusive, worldwide, royalty-free licence to store, process and analyse your
-  submission, including with automated and AI/ML tools, for the sole purpose of developing and improving Acroscope
-  and its trick detection.
+By submitting trick data you confirm that you made the recording or otherwise have the right to license it under
+CC BY 4.0, and that it contains no one else's personal data without their consent.
 
-The project will:
+Credit is whatever you give with the submission: a name, a handle or a pseudonym, and optionally a link. If you give
+none, your contribution is not credited to anyone by name. You can also ask later to have your name taken off
+(CC BY 4.0, section 3(a)(3)).
 
-- not publish or redistribute your raw footage or logs; only derived, aggregated improvements (detection rules,
-  metrics, models) are shared;
-- credit you as a trick contributor (a handle and an optional link) only if you opt in;
-- remove your submission on request.
-
-You keep all other rights to your content. This is not a public licence like CC-BY: the project gets permission to
-use your data to improve the tool, not to republish it.
+The licence cannot be withdrawn, so look at a recording before you submit it. On request the project can delete its
+own copy, but copies others have already made stay licensed.
