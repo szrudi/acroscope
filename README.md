@@ -468,8 +468,8 @@ regenerate the PNGs; `scripts/brand.py` generates the geometry.
 
 ## License
 
-Acroscope is free software, licensed under the **GNU Affero General Public License v3.0 or later**
-(AGPL-3.0-or-later) — see `LICENSE`. You may use, study, share and modify it; if you run a modified
+Acroscope is free software, licensed under the GNU Affero General Public License v3.0 or later
+(AGPL-3.0-or-later, see `LICENSE`). You may use, study, share and modify it; if you run a modified
 version as a network service, you must offer users the source of your modified version.
 
 Contributing is covered in `CONTRIBUTING.md`: code contributions are under the same AGPL-3.0-or-later,
