@@ -19,7 +19,7 @@ tests, until you would stand behind every line of it as your own.
 Don't open a PR with what an AI produced on the first ask and wait for me to work on it further. If I find a very
 low-effort PR, I'll close it with an "AI slop" comment.
 
-I'm flattered if you want to contribute, so let's keep good standards.
+I'm flattered that you want to contribute, but let's keep good standards.
 
 ## Trick data (footage, blackbox logs, labels)
 
