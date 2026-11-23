@@ -116,6 +116,14 @@ def _under(root: Path, *parts: str) -> Path:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def handle(self):
+        """A client that went away is no error: one that resets a connection it kept open and no longer wants (a phone
+        does, to an idle one), or leaves in the middle of an answer. There is nobody to answer and nothing to log."""
+        try:
+            super().handle()
+        except ConnectionError:
+            pass
+
     def log_message(self, fmt, *args):  # quieter: only non-200s
         if args and str(args[1]) not in ("200", "201", "204", "206", "304"):     # 201, 204: the drop's, one per piece
             super().log_message(fmt, *args)

@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -536,6 +537,22 @@ class InProcessTest(unittest.TestCase):
                 status, h, body = self.c.request("PATCH", up, b"0123456789", {**self.octets, "Upload-Offset": "0"})
             self.assertEqual((status, h.get("connection"), json.loads(body)), (500, "close", {"error": said}))
         self.assertEqual(self.c.patch(up, 0, b"0123456789"), 10)
+
+    def test_a_client_that_drops_an_idle_connection_is_no_error(self):
+        """A phone resets a connection it kept open and no longer wants (seen on the first upload from a real one:
+        six tracebacks in the server's log for six such resets). Between two requests that is nothing: no error to
+        handle, nothing to log, and the server goes on answering."""
+        errors = []
+        self.srv.handle_error = lambda request, client: errors.append(client)
+        for path in ("/api/store", "/drop/device"):
+            s = socket.create_connection(self.srv.server_address)
+            s.sendall(f"GET {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {self.dev['token']}\r\n\r\n".encode())
+            self.assertEqual(s.recv(4096)[:15], b"HTTP/1.1 200 OK")              # answered, and the connection is kept
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            s.close()                                                        # a reset, not a goodbye
+        time.sleep(0.5)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.c.request("GET", "/drop/device")[0], 200)
 
     def test_a_drop_without_an_address_of_its_own_says_none(self):
         """The drop is reached where the server is, unless `ACROSCOPE_DROP_URL` says it has a host of its own."""
