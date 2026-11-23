@@ -14,7 +14,7 @@ object Auto {
     fun next(result: UploadResult): Next = when (result) {
         is UploadResult.Done -> Next.DONE
         UploadResult.Stopped, is UploadResult.Unreachable -> Next.LATER
-        is UploadResult.Refused -> if (result.status == 507 || result.status == 423 || result.status >= 500) Next.LATER else Next.PILOT
+        is UploadResult.Refused -> if (result.status == 423 || result.status >= 500) Next.LATER else Next.PILOT   // busy, no room (507), a bad moment
         UploadResult.NotPaired, is UploadResult.Broken -> Next.PILOT
     }
 
