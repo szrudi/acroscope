@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import jobs
+from . import drop, jobs
 from .. import ingest, share, tricks
 from ..analyse import events, lanes, metrics
 from ..match import manual
@@ -117,7 +117,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):  # quieter: only non-200s
-        if args and str(args[1]) not in ("200", "206", "304"):
+        if args and str(args[1]) not in ("200", "201", "204", "206", "304"):     # 201, 204: the drop's, one per piece
             super().log_message(fmt, *args)
 
     # ---- helpers
@@ -197,10 +197,27 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or b"{}")
 
     # ---- routes
+    def _drop(self) -> bool:
+        """A request under /drop/ (the door a paired device uploads through, #75) goes to its own routes, which ask
+        for the device's token; True when this was one."""
+        parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/") if p]
+        if parts[:1] != ["drop"]:
+            return False
+        drop.handle(self, parts[1:])
+        return True
+
     def do_HEAD(self):
         self.do_GET()
 
+    def do_PATCH(self):                         # only the drop has these two
+        if not self._drop():
+            self.send_error(501, f"Unsupported method ({self.command!r})")
+
+    do_OPTIONS = do_PATCH
+
     def do_GET(self):
+        if self._drop():
+            return
         u = urlparse(self.path)
         parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -233,6 +250,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
             if parts == ["api", "inbox"]:
                 return self._json(ingest.list_inbox())
+            if parts == ["api", "devices"]:                             # what may upload through the drop; never a token
+                return self._json({"devices": sessions.store().devices()})
             if parts[:2] == ["api", "cli"] and len(parts) == 3:
                 j = jobs.job(parts[2])
                 return self._json(j if j else {"error": f"no job {parts[2]} (finished and fetched, or the server restarted)"}, 200 if j else 404)
@@ -332,6 +351,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def do_POST(self):
+        if self._drop():
+            return
         u = urlparse(self.path)
         parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
         q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}   # an empty etag= is a stale page, not none
@@ -349,6 +370,11 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:2] == ["api", "inbox"] and len(parts) == 4 and parts[3] == "retry":
                 sessions.store().set_batch(parts[2], status="pending", error=None)
                 return self._json({"ok": True})
+            if parts == ["api", "devices"]:                             # pair a device: its token is in this answer only
+                b = self._body()
+                if not isinstance(b, dict):
+                    return self._json({"error": "a device has a name: {name}"}, 400)
+                return self._json(sessions.store().add_device(b.get("name")))
             if parts == ["api", "tags"]:
                 b = self._body()
                 return self._json(sessions.store().set_tag(b["name"], b["category"], b.get("color")))
@@ -461,6 +487,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def do_DELETE(self):
+        if self._drop():
+            return
         u = urlparse(self.path)
         parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -478,6 +506,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"removed": n})
             if parts[:2] == ["api", "tags"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})
+            if parts[:2] == ["api", "devices"] and len(parts) == 3:    # revoked: its token stops, what it had staged goes
+                device = ingest.drop.device_ok(parts[2])
+                revoked = sessions.store().revoke_device(device)
+                ingest.drop.forget(device)
+                return self._json({"revoked": revoked})
             if parts == ["api", "tricks", "layer"]:
                 return self._json({"removed": sessions.store().delete_setting(tricks.LAYER_KEY)})
             if parts == ["api", "osd", "doc"]:
