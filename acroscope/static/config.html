@@ -54,6 +54,8 @@
   .shrow .what { min-width:0 } .shrow .what b { font-weight:500 } .shrow .what .dim { display:block; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   .shrow .act { display:flex; gap:6px; align-items:center; white-space:nowrap }
   body.phone .shrow { grid-template-columns:72px minmax(0, 1fr) } body.phone .shrow .act { grid-column:2 }
+  .pair { border:1px solid var(--acc); border-radius:8px; padding:8px 12px; margin:8px 0 12px } .pair input { flex:1; min-width:0; font:12px ui-monospace, monospace }
+  #dvName { flex:1; min-width:0; max-width:320px }
   .list .m { padding:4px 0; border-bottom:1px solid var(--line); font-size:13px } .list .m .t { color:var(--dim); font-variant-numeric:tabular-nums; margin-right:8px }
   #tagsPanel .row { gap:6px }
   body.phone header { height:auto; min-height:44px; flex-wrap:wrap; padding:6px 10px; gap:8px } body.phone header #status { width:100%; font-size:12px }
@@ -67,7 +69,7 @@
   #oWarn div { color:var(--acc); font-size:12px } #oGlyphs canvas { image-rendering:pixelated; background:#3a404b; border-radius:4px }
   .osd-kv { grid-template-columns:70px minmax(0, 1fr); align-items:center } .osd-kv input[type=number] { width:70px } .osd-kv select { max-width:100% }
   #oGlyphsCanvas { max-width:100% }
-  body.phone .tabs span { letter-spacing:0; font-size:11px; min-width:0 }
+  body.phone .tabs span { letter-spacing:0; font-size:11px; min-width:0; flex:1 1 auto }   /* each as wide as its label and a share of what is left: eight do not fit at equal widths */
   #oRank .r { display:grid; grid-template-columns:110px 60px minmax(0, 1fr); gap:8px; padding:3px 0; border-bottom:1px solid var(--line); cursor:pointer; font-size:13px } #oRank .r:hover { background:#20242b }
 </style>
 </head>
@@ -77,7 +79,7 @@
   <span id="status"></span>
   <a class="btn" href="/" id="toPlayer">← player</a>
 </header>
-<div class="tabs" id="tabs"><span data-tab="profile">profile</span><span data-tab="drones">drones</span><span data-tab="tricks">tricks</span><span data-tab="settings">settings</span><span data-tab="tags">tags</span><span data-tab="shares">shares</span><span data-tab="osd">osd</span></div>
+<div class="tabs" id="tabs"><span data-tab="profile">profile</span><span data-tab="drones">drones</span><span data-tab="tricks">tricks</span><span data-tab="settings">settings</span><span data-tab="tags">tags</span><span data-tab="shares">shares</span><span data-tab="osd">osd</span><span data-tab="devices">devices</span></div>
 <main>
   <div id="err"></div>
   <section data-panel="profile" id="profilePanel"></section>
@@ -87,10 +89,12 @@
   <section data-panel="tags" id="tagsPanel"></section>
   <section data-panel="shares" id="sharesPanel"></section>
   <section data-panel="osd" id="osdPanel"></section>
+  <section data-panel="devices" id="devicesPanel"></section>
 </main>
 <script>
 // The configuration page (#45): profile (the preset and the numbers), drones (per craft), tricks (on/off, their
-// definitions, the examples checked, the eval against a session), settings (the browser's, the raw layer), tags.
+// definitions, the examples checked, the eval against a session), settings (the browser's, the raw layer), tags,
+// shares, the OSD profiles, and the devices that upload through the drop.
 // Everything the pilot sets goes to the server as the whole layer document (POST /api/tricks/layer), shaped like
 // the tricks file's tables; the server checks it as it checks a file and refuses a bad one with the place named.
 const $ = s => document.querySelector(s);
@@ -590,13 +594,56 @@ async function renderOsd() {
   renders++;
 }
 
+// ---- devices (#75): what may upload through the drop. A token per device, said once: when it is paired
+let paired = null;                                    // the device just paired, with its token: gone when the page loads again
+function renderDevices() {
+  const box = $('#devicesPanel');
+  box.innerHTML = `<h2>devices</h2><p class="hint">a phone with the companion app uploads what it collected through this server. Each device has a token of its own, shown once, when it is paired. Revoking a device stops its token and drops what it had staged; what it already handed in stays.</p>` +
+    `<div class="row"><input id="dvName" placeholder="a name for the device" maxlength="60"><button class="primary" id="dvAdd">pair a device</button></div><div id="dvCode"></div><div id="dvList"></div>`;
+  const day = x => x ? esc(new Date(x).toLocaleDateString()) : '';
+  const code = () => {
+    if (!paired) { $('#dvCode').innerHTML = ''; return; }
+    const link = `acroscope://pair?${new URLSearchParams({url: location.origin, token: paired.token})}`;
+    $('#dvCode').innerHTML = `<div class="pair"><b>${esc(paired.name)}</b> is paired. Its code is shown this once: open it on the phone, or paste it into the app.` +
+      `<div class="row"><input id="dvLink" readonly value="${esc(link)}"><button class="small" id="dvCopy">copy</button><a class="btn" id="dvOpen" href="${esc(link)}">open in the app</a></div></div>`;
+    $('#dvCopy').onclick = async () => { try { await navigator.clipboard.writeText(link); status('code copied'); } catch { $('#dvLink').select(); } };
+  };
+  const load = async () => {
+    const r = await api('/api/devices');
+    if (r.error) { err(r.error); return; }
+    $('#dvList').innerHTML = (r.devices || []).slice().reverse().map(d => `<div class="shrow" data-device="${esc(d.id)}"><span class="st ${d.revoked_at ? 'revoked' : 'active'}">${d.revoked_at ? 'revoked' : 'paired'}</span>` +
+      `<span class="what"><b>${esc(d.name)}</b><span class="dim">since ${day(d.created_at)} · ${d.revoked_at ? 'revoked ' + day(d.revoked_at) : d.last_seen_at ? 'last seen ' + day(d.last_seen_at) : 'not seen yet'}</span></span>` +
+      `<span class="act">${d.revoked_at ? '' : `<button class="small" data-revoke="${esc(d.id)}">revoke</button>`}</span></div>`).join('') || '<p class="hint">no device paired</p>';
+    $('#dvList').querySelectorAll('[data-revoke]').forEach(b => b.onclick = async () => {
+      if (!confirm('Revoke this device? Its token stops working and what it has staged is dropped.')) return;
+      const d = await api('/api/devices/' + encodeURIComponent(b.dataset.revoke), {method: 'DELETE'});
+      if (d.error) { err(d.error); return; }
+      if (paired && paired.id === b.dataset.revoke) paired = null;
+      code();
+      await load();
+    });
+    renders++;
+  };
+  $('#dvAdd').onclick = async () => {
+    err('');
+    const d = await api('/api/devices', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: $('#dvName').value})});
+    if (d.error) { err(d.error); return; }
+    paired = d;
+    $('#dvName').value = '';
+    code();
+    await load();
+  };
+  code();
+  load();
+}
+
 // ---- tabs
 let renders = 0;                                      // counts the redraws, for the tests to wait on
 function render() {
   if (!D) return;
   renders++;
   status(`${D.tricks.filter(t => t.enabled).length} of ${D.tricks.length} tricks on · ${D.skill ? 'skill ' + D.skill : 'the default numbers'}${D.database ? ' · your layer in the database' : ''}`);
-  ({profile: renderProfile, drones: renderDrones, tricks: renderTricks, settings: renderSettings, tags: renderTags, shares: renderShares, osd: renderOsd})[tab]();
+  ({profile: renderProfile, drones: renderDrones, tricks: renderTricks, settings: renderSettings, tags: renderTags, shares: renderShares, osd: renderOsd, devices: renderDevices})[tab]();
 }
 function show(t) {
   tab = t;
@@ -614,7 +661,7 @@ setPhone();
 (async () => {
   status('loading…');
   const first = location.hash.slice(1);
-  tab = ['profile', 'drones', 'tricks', 'settings', 'tags', 'shares', 'osd'].includes(first) ? first : (() => { try { return localStorage.getItem('acro.cfgtab'); } catch { return null; } })() || 'profile';
+  tab = ['profile', 'drones', 'tricks', 'settings', 'tags', 'shares', 'osd', 'devices'].includes(first) ? first : (() => { try { return localStorage.getItem('acro.cfgtab'); } catch { return null; } })() || 'profile';
   const sessions = await api('/api/sessions');
   SESS = sessions.error ? [] : sessions.filter(s => s.moments).map(s => ({session: s.session, moments: s.moments}));
   await load();
