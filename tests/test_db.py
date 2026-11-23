@@ -191,6 +191,8 @@ class DeviceTest(unittest.TestCase):
         self.assertFalse(self.db.revoke_device("d0000000000"))
         self.assertIsNone(self.db.device_for(a["token"]))
         self.assertEqual(self.db.device_for(b["token"])["id"], b["id"])    # the other one still uploads
+        more = [self.db.add_device(f"phone {i}, in the same second") for i in range(5)]
+        self.assertEqual([x["id"] for x in self.db.devices()], [x["id"] for x in (a, b, *more)])   # in the order they were paired
         by_id = {x["id"]: x for x in self.db.devices()}
         self.assertTrue(by_id[a["id"]]["revoked_at"])                      # the row stays: what was paired, and until when
         self.assertIsNone(by_id[b["id"]]["revoked_at"])

@@ -589,7 +589,8 @@ class Db:
         return d
 
     def devices(self) -> list[dict]:
-        return [dict(r) for r in self.c.execute("SELECT id, name, created_at, last_seen_at, revoked_at FROM devices ORDER BY created_at, id")]
+        """Every device ever paired, in the order they were (the stamps are whole seconds: the rows' own order tells)."""
+        return [dict(r) for r in self.c.execute("SELECT id, name, created_at, last_seen_at, revoked_at FROM devices ORDER BY rowid")]
 
     def device_for(self, token) -> dict | None:
         """The device a token belongs to ({id, name}), noted as seen now; None for a wrong or a revoked one."""
