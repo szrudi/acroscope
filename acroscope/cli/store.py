@@ -116,6 +116,7 @@ def cmd_housekeeping(a):
          "trash_emptied": upkeep.cleanup_trash(log=lambda m: print(m, file=sys.stderr)),
          "shares_taken_down": share.cleanup_expired(log=lambda m: print(m, file=sys.stderr)),
          "shares_refreshed": share.refresh_pages(log=lambda m: print(m, file=sys.stderr)),
+         "staged_dropped": ingest.drop.expire(log=lambda m: print(m, file=sys.stderr)),
          "backup": str(upkeep.backup_db() or "")})
 
 
@@ -134,4 +135,5 @@ def add(sp) -> None:
     p = sp.add_parser("session", help="edit a session: rename <new>, date <YYYY-MM-DD>, move <clip> <to-session>, merge <into-session>, delete <clip> (into trash/ for 7 days)")
     p.add_argument("action", choices=["rename", "date", "move", "merge", "delete"]); p.add_argument("session"); p.add_argument("arg")
     p.add_argument("to", nargs="?", help="for move: the session the clip goes to"); p.set_defaults(f=cmd_session)
-    p = sp.add_parser("housekeeping", help="delete originals past their retention and back the database up into the data dir"); p.set_defaults(f=cmd_housekeeping)
+    p = sp.add_parser("housekeeping", help="delete originals past their retention, drop what a device staged and never finished, back the database up into the data dir")
+    p.set_defaults(f=cmd_housekeeping)

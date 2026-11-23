@@ -507,10 +507,7 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:2] == ["api", "tags"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})
             if parts[:2] == ["api", "devices"] and len(parts) == 3:    # revoked: its token stops, what it had staged goes
-                device = ingest.drop.device_ok(parts[2])
-                revoked = sessions.store().revoke_device(device)
-                ingest.drop.forget(device)
-                return self._json({"revoked": revoked})
+                return self._json({"revoked": ingest.drop.revoke(parts[2])})
             if parts == ["api", "tricks", "layer"]:
                 return self._json({"removed": sessions.store().delete_setting(tricks.LAYER_KEY)})
             if parts == ["api", "osd", "doc"]:

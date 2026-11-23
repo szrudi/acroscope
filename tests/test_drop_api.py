@@ -249,6 +249,11 @@ class DropApiTest(unittest.TestCase):
             status, _, body = self.c.request(method, path)
             self.assertIn(status, (404, 405, 501), (method, path))
             self.assertNotIn(b"0123456789", body)
+        # PATCH and OPTIONS exist under /drop/ only
+        for method in ("PATCH", "OPTIONS"):
+            status, h, _ = self.c.request(method, "/api/sessions", b"x" if method == "PATCH" else None)
+            self.assertEqual((status, h.get("connection")), (501, "close"), method)
+        self.assertEqual(self.api("GET", "/api/sessions")[0], 200)
         # what the server speaks, for a client that asks first
         status, h, body = self.c.request("OPTIONS", f"/drop/batches/{b}/files", tus=False)
         self.assertEqual((status, body), (204, b""))
@@ -266,6 +271,14 @@ class DropApiTest(unittest.TestCase):
         r.read()
         self.assertEqual((r.status, r.getheader("Connection")), (204, None))
         c.request("HEAD", up, headers=hdrs)                                  # on the same connection
+        r = c.getresponse()
+        r.read()
+        self.assertEqual((r.status, r.getheader("Upload-Offset")), (200, "10"))
+        c.request("HEAD", upload_url(b, "VID00002.mov"), headers=hdrs)       # a HEAD that is refused has no body either
+        r = c.getresponse()
+        r.read()
+        self.assertEqual(r.status, 404)
+        c.request("HEAD", up, headers=hdrs)
         r = c.getresponse()
         r.read()
         self.assertEqual((r.status, r.getheader("Upload-Offset")), (200, "10"))
@@ -360,9 +373,54 @@ class DropApiTest(unittest.TestCase):
         self.assertFalse((self.data / "drop" / d["id"]).exists())             # what it had staged went with it
         self.assertEqual(self.api("DELETE", f"/api/devices/{d['id']}"), (200, {"revoked": False}))
         self.assertEqual(self.api("DELETE", "/api/devices/d0000000000"), (200, {"revoked": False}))
-        self.assertEqual(self.api("DELETE", "/api/devices/..%2F..%2Fvideos")[0], 400)
+        for bad in ("videos", "D0123456789", d["id"] + "0", "d012345678%2Fx", "..%2F..%2Fvideos"):
+            self.assertEqual(self.api("DELETE", f"/api/devices/{bad}")[0], 400, bad)   # not a device's id: nothing is looked for
         self.assertTrue((self.data / "videos").is_dir())
         self.assertTrue(next(x for x in self.api("GET", "/api/devices")[1]["devices"] if x["id"] == d["id"])["revoked_at"])
+
+    def test_the_cli_pairs_and_revokes(self):
+        """`acroscope devices` on the server's own database, and from another machine as a client of the server."""
+        for env in (self.env, dict(self.env, ACROSCOPE_URL=self.url)):
+            run = lambda *args: subprocess.run([sys.executable, "-m", "acroscope.cli", "devices", *args], env=env, capture_output=True, text=True)
+            r = run("add", "cli phone")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            d = json.loads(r.stdout)
+            self.assertEqual((d["name"], set(d)), ("cli phone", {"id", "name", "token", "created_at"}))
+            self.assertIn("once", r.stderr)
+            c = DropClient(self.url, d["token"])
+            self.assertEqual(c.json("GET", "/drop/device")[1]["id"], d["id"])
+            b = batch_id()
+            c.upload(b, "VID00001.mov", CLIP)
+            listed = run()
+            line = next(x for x in listed.stdout.splitlines() if d["id"] in x)
+            self.assertRegex(line, rf"{d['id']}\s+paired\s+cli phone  \(since \d{{4}}-\d\d-\d\d, last seen \d{{4}}-\d\d-\d\d\)")
+            self.assertNotIn(d["token"], listed.stdout)
+            rows = json.loads(run("--json").stdout)
+            self.assertEqual([set(x) for x in rows if x["id"] == d["id"]], [{"id", "name", "created_at", "last_seen_at", "revoked_at"}])
+            r = run("revoke", d["id"])
+            self.assertEqual((r.returncode, json.loads(r.stdout)), (0, {"revoked": True}))
+            self.assertEqual(c.request("GET", "/drop/device")[0], 401)
+            self.assertFalse((self.data / "drop" / d["id"]).exists())          # what it had staged is gone
+            self.assertEqual(json.loads(run("revoke", d["id"]).stdout), {"revoked": False})
+            self.assertIn("revoked", next(x for x in run().stdout.splitlines() if d["id"] in x))
+            for args, why in ((("revoke", "../videos"), "not a device"), (("revoke",), "devices revoke <id>"), (("add",), "devices add <name>"), (("add", ""), "name")):
+                r = run(*args)
+                self.assertNotEqual(r.returncode, 0, args)
+                self.assertIn(why, r.stderr, args)
+            self.assertTrue((self.data / "videos").is_dir())
+
+    def test_housekeeping_drops_what_nobody_finished(self):
+        b, fresh = batch_id(), batch_id()
+        up, keep = self.c.create(b, "VID00001.mov", 10), self.c.create(fresh, "VID00001.mov", 10)
+        old = time.time() - 8 * 86400
+        stale = self.data / "drop" / self.dev["id"] / b
+        for p in (stale, *stale.rglob("*")):
+            os.utime(p, (old, old))
+        r = self.cli("housekeeping")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["staged_dropped"], [f"{self.dev['id']}/{b}"])
+        self.assertIn(b, r.stderr)
+        self.assertEqual((self.c.request("HEAD", up)[0], self.c.request("HEAD", keep)[0]), (404, 200))
 
     # ---- and then ingest ---------------------------------------------------------------------------------------------------
 
@@ -445,9 +503,11 @@ class InProcessTest(unittest.TestCase):
         with mock.patch.object(drop, "append", side_effect=OSError(errno.ENOSPC, "No space left on device")):
             status, h, body = self.c.request("PATCH", up, b"0123456789", {**self.octets, "Upload-Offset": "0"})
         self.assertEqual((status, h.get("connection"), json.loads(body)), (507, "close", {"error": "no room on the server's disk"}))
-        with mock.patch.object(drop, "append", side_effect=RuntimeError("something else")):
-            status, h, body = self.c.request("PATCH", up, b"0123456789", {**self.octets, "Upload-Offset": "0"})
-        self.assertEqual((status, h.get("connection"), json.loads(body)), (500, "close", {"error": "RuntimeError: something else"}))
+        for boom, said in ((RuntimeError("something else"), "RuntimeError: something else"),
+                           (OSError(errno.EACCES, "Permission denied"), "PermissionError: [Errno 13] Permission denied")):   # not every disk error is a full disk
+            with mock.patch.object(drop, "append", side_effect=boom):
+                status, h, body = self.c.request("PATCH", up, b"0123456789", {**self.octets, "Upload-Offset": "0"})
+            self.assertEqual((status, h.get("connection"), json.loads(body)), (500, "close", {"error": said}))
         self.assertEqual(self.c.patch(up, 0, b"0123456789"), 10)
 
     def test_the_scheme_in_any_case(self):

@@ -61,6 +61,22 @@ class UploadTest(_Drop):
         self.assertEqual(self.staged("VID00001.mov").read_bytes(), CLIP)
         self.assertEqual(self.tree(self.inbox), [])                         # nothing is in the inbox before the commit
 
+    def test_a_piece_is_copied_a_chunk_at_a_time(self):
+        """A piece may be tens of megabytes: it goes to the disk in chunks, never read into memory whole."""
+        asked = []
+
+        class Counting(io.BytesIO):
+            def read1(self, n=-1):
+                asked.append(n)
+                return super().read1(n)
+        data = bytes(range(256)) * 4
+        drop.create(DEV, B, "VID00001.mov", len(data))
+        with mock.patch.object(drop, "CHUNK", 100):
+            self.assertEqual(drop.append(DEV, B, "VID00001.mov", 0, Counting(data), len(data)), len(data))
+        self.assertEqual(asked, [100] * 10 + [24])
+        self.assertEqual(self.staged("VID00001.mov").read_bytes(), data)
+        self.assertEqual(drop.CHUNK, 1 << 20)
+
     def test_an_append_must_start_where_the_file_ends(self):
         drop.create(DEV, B, "VID00001.mov", 300)
         drop.append(DEV, B, "VID00001.mov", 0, io.BytesIO(b"a" * 100), 100)
@@ -178,6 +194,7 @@ class NamesTest(_Drop):
         before = self.tree(self.staging)
         for bad in ("../VID00001.mov", "sub/VID00001.mov", "sub\\VID00001.mov", "/etc/VID00001.mov", "..", ".", "", ".done", ".hidden.bbl", ".bbl",
                     "notes.txt", "VID00001.mov.part", "clip.mov", "import.json.bak", "IMPORT.JSON", "VID00001.mov\n", "VID\x000001.mov", "VID\t1.mov",
+                    "VID\x7f1.mov", "sub/x.bbl", "sub\\x.bbl", "x/../y.bbl", "/x.bbl",
                     "x" * 197 + ".bbl", None, 7, b"VID00001.mov"):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 drop.create(DEV, B, bad, 1)
@@ -415,14 +432,18 @@ class CommitTest(_Drop):
     def test_a_commit_cut_short_is_finished_by_the_next(self):
         """The server died between noting the batch and moving it: the device's next commit moves it."""
         man = self.whole()
+        self.put("VID00007.mov", b"other", B, OTHER)                         # another device staged under the same id meanwhile
         with mock.patch.object(drop.os, "rename", side_effect=OSError("died here")):
             with self.assertRaises(OSError):
                 drop.commit(DEV, B, man)
         self.assertEqual(self.tree(self.inbox), [])
         self.assertEqual(self.db.batch(B)["device"], DEV)
         self.assertEqual(ingest.pending(), [])                               # noted, but not in the inbox: ingest leaves it
-        with self.assertRaises(FileNotFoundError):                           # and it is still nobody else's
-            drop.commit(OTHER, B, man)
+        with self.assertRaises(drop.Conflict):                               # the id is this device's now: not the other's to finish
+            drop.commit(OTHER, B, {"files": {"VID00007.mov": 5}})
+        with self.assertRaises(FileNotFoundError):                           # nor to hear about
+            drop.commit("d9999999999", B, man)
+        self.assertEqual(self.tree(self.inbox), [])
         self.assertEqual(drop.commit(DEV, B, man)["status"], "pending")
         self.assertEqual(json.loads((self.inbox / B / ".done").read_text()), man)
         self.assertEqual(ingest.pending(), [B])

@@ -192,12 +192,8 @@ def handle(h, parts: list[str]) -> None:
     except ValueError as e:
         _send(h, 400, {"error": str(e)})
     except TimeoutError:                            # a silent sender: what came is kept, the rest is not waited for
-        h._drop_unread, h._drop_drain = 1, 0
         _send(h, 408, {"error": f"nothing came for {STALL} s"})
-    except ConnectionError:                         # the connection broke in the middle of a piece
-        h.close_connection = True
-    except Exception as e:  # noqa: BLE001
-        h._drop_drain = 0                           # whatever happened, not while more of this request is read
+    except Exception as e:  # noqa: BLE001  (a connection that broke under a piece too: its answer goes nowhere)
         full = isinstance(e, OSError) and e.errno == errno.ENOSPC
         _send(h, 507 if full else 500, {"error": "no room on the server's disk" if full else f"{type(e).__name__}: {e}"})
     finally:

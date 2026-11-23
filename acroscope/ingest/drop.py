@@ -20,7 +20,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import threading
 import time
 from pathlib import Path
@@ -291,16 +290,13 @@ def commit(device: str, batch: str, manifest: dict) -> dict:
             raise Busy(f"{batch}: a file is still arriving")
         lengths = _lengths(d)
         for name, size in want.items():
-            try:
-                st = os.lstat(files / name)
-            except FileNotFoundError:
-                raise ValueError(f"{name}: not uploaded") from None
-            if not stat.S_ISREG(st.st_mode) or name not in lengths:
+            if name not in lengths:
                 raise ValueError(f"{name}: not uploaded")
-            if st.st_size != lengths[name]:
-                raise ValueError(f"{name}: {st.st_size} of {lengths[name]} bytes are here")
-            if size != st.st_size:
-                raise ValueError(f"{name}: {st.st_size} bytes are here, the manifest says {size}")
+            here = _arrived(d, name)
+            if here != lengths[name]:
+                raise ValueError(f"{name}: {here} of {lengths[name]} bytes are here")
+            if size != here:
+                raise ValueError(f"{name}: {here} bytes are here, the manifest says {size}")
         target = ingest.INBOX_DIR / batch
         mine_unmoved = row is not None and row.get("device") == device and row["status"] == "pending"
         if os.path.lexists(target) or (row is not None and not mine_unmoved):
@@ -308,8 +304,7 @@ def commit(device: str, batch: str, manifest: dict) -> dict:
         for f in files.iterdir():
             if f.name not in want:
                 f.unlink()
-        fd = os.open(files / ".done", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-        with os.fdopen(fd, "w") as f:
+        with open(files / ".done", "w") as f:
             f.write(json.dumps({"files": want}))
             f.flush()
             os.fsync(f.fileno())
@@ -366,5 +361,12 @@ def expire(days: float = STALE_DAYS, now: float | None = None, log=print) -> lis
 
 
 def forget(device: str) -> None:
-    """Everything a device has staged, gone (it was revoked)."""
+    """Everything a device has staged, gone."""
     shutil.rmtree(DROP_DIR / device_ok(device), ignore_errors=True)
+
+
+def revoke(device: str) -> bool:
+    """A device's token stopped, and what it had staged gone with it. False when it was not paired (any more)."""
+    revoked = sessions.store().revoke_device(device_ok(device))
+    forget(device)
+    return revoked
