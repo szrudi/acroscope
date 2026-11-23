@@ -12,7 +12,7 @@ import java.nio.file.StandardCopyOption
  * before it is seen: to a new file, synced, then renamed over the old one, so a phone that dies in the middle has
  * either the state before or the state after.
  */
-class Store(private val root: File) {
+class Store(private val root: File, private val files: File = root) {
     private val file = File(root, "state.json")
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
     private val flow = MutableStateFlow(load())
@@ -20,11 +20,15 @@ class Store(private val root: File) {
     val state: StateFlow<State> get() = flow
     val now: State get() = flow.value
 
-    /** The folder a batch's files are kept in until the server has them. */
+    /** The folder a batch's files are kept in until the server has them: under `files`, which may be another
+     *  place than the state's (the roomy storage, where the state with its token stays in the app's own). */
     fun dir(batch: String): File {
         require(Names.isBatchId(batch)) { "$batch: not a batch id" }
-        return File(File(root, "batches"), batch)
+        return File(File(files, "batches"), batch)
     }
+
+    /** Bytes free where the batches are kept. */
+    val free: Long get() = generateSequence(files) { it.parentFile }.first { it.exists() }.usableSpace
 
     @Synchronized
     fun update(change: (State) -> State): State {

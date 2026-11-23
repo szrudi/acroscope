@@ -54,6 +54,12 @@ class StoreTest {
         val store = Store(root)
         assertEquals(File(root, "batches/20261212-090507-ab12cd"), store.dir(batch.id))
         for (bad in listOf("..", "../x", "b1", "")) assertFailsWith<IllegalArgumentException>(bad) { store.dir(bad) }
+        val roomy = File(root, "not/made/yet")
+        val split = Store(root, roomy)                                          // the state here, the footage on the roomy storage
+        assertEquals(File(roomy, "batches/20261212-090507-ab12cd"), split.dir(batch.id))
+        split.update { it.copy(batches = listOf(batch)) }
+        assertTrue(File(root, "state.json").exists() && !roomy.exists())
+        assertTrue(split.free > 0 && split.free == root.usableSpace)             // asked of the nearest folder that is there
     }
 
     @Test
