@@ -287,7 +287,7 @@ class ScreenTest {
         wait { seen("retry-$id") }
         assertTrue("no video stream" in text("status-$id"), text("status-$id"))
         click("retry-$id")
-        wait { "retry $id" in w.drop.calls }
+        wait { "retry $id" in w.drop.calls && w.store.now.batch(id)!!.server?.status == "pending" }   // asked, and the answer is in the store
         w.drop.statuses[id] = ServerStatus("done", "$today-park", null, listOf("${today}_001", "${today}_002"), emptyList())
         click("check")
         wait { w.store.now.batch(id)!!.stage == Stage.DONE }
