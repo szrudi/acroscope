@@ -56,7 +56,7 @@ interface Drop {
  */
 class DropClient(
     private val pairing: Pairing,
-    private val http: OkHttpClient = client(),
+    private val http: OkHttpClient = shared,
     /** Bytes in one request. What arrived of a piece cut off is kept by the server, so this only bounds a request. */
     private val piece: Long = 32L shl 20,
     private val pause: (Long) -> Unit = Thread::sleep,
@@ -67,9 +67,13 @@ class DropClient(
         /** The server lets a silent sender go after 60 s: a file busy for longer than this is held by something else. */
         private const val BUSY_TRIES = 45
 
-        fun client(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS).writeTimeout(60, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(false).build()
+        /** One HTTP client for every `DropClient`: the app makes one per call, and a client each would open a
+         *  connection each, leave it idle and drop it, where one client keeps a connection and uses it again. */
+        val shared: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS).writeTimeout(60, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(false).build()
+        }
     }
 
     private class Answer(val status: Int, val headers: Map<String, String>, val body: String)
