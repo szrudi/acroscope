@@ -22,7 +22,7 @@ class BlackboxTest {
     @Test
     fun `the used part of the flash is saved under the name the aligner reads`() {
         val progress = mutableListOf<FlashProgress>()
-        fc.temps = mutableListOf(41, 44, 43)
+        fc.temps = mutableListOf(44, 41, 43)
         val saved = box.download(dir, { progress += it })!!
         assertEquals("BTFL_BLACKBOX_LOG_OTTO_20261212_084500_BETAFPVG473_V2.bbl", saved.file.name)
         assertEquals(log.toList(), saved.file.readBytes().toList())
@@ -33,8 +33,8 @@ class BlackboxTest {
         assertTrue(progress.all { it.total == log.size.toLong() })
         // the temperature is asked about once a second, not with every piece, and the warmest is kept
         assertEquals(2, fc.asked.count { it == Msp.STATUS.toString() })
-        assertEquals(listOf(41, 41, 44), progress.map { it.temp })
-        assertEquals(44, saved.peakTemp)
+        assertEquals(listOf(44, 44, 41), progress.map { it.temp })
+        assertEquals(44, saved.peakTemp)                                          // the warmest it was, not the last reading
         assertFalse(Msp.DATAFLASH_ERASE.toString() in fc.asked)                   // saving erases nothing
     }
 
@@ -112,6 +112,24 @@ class BlackboxTest {
         assertEquals(List(4) { 1000L }, paused)                                   // asked again each second until it said ready and empty
         assertFailsWith<IllegalStateException> { box.erase() }                   // nothing saved since: nothing to erase
         assertNull(box.download(dir))                                            // and the flash is empty now
+    }
+
+    @Test
+    fun `a save that failed takes back what an earlier one allowed`() {
+        box.download(dir)!!.file.delete()
+        fc.spoil = { command, reply -> if (command == Msp.DATAFLASH_READ) Msp.frame(command, ByteArray(3), '>') else reply }
+        assertFailsWith<IOException> { box.download(dir) }
+        assertFailsWith<IllegalStateException> { box.erase() }                   // the last word on this flash was "not saved"
+        assertEquals(log.size, fc.flash.size)
+    }
+
+    @Test
+    fun `the erase is over when the flash says both ready and empty`() {
+        box.download(dir)
+        fc.halfDone = mutableListOf(true to 5000L, false to 0L)                  // answering again but not empty yet; empty but still busy
+        box.erase()
+        assertEquals(3, paused.size)
+        assertEquals(0, fc.flash.size)
     }
 
     @Test

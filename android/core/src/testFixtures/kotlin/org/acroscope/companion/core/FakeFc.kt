@@ -15,6 +15,7 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
     var busyPolls = 0                                    // summaries after an erase that still say not ready
     var silentPolls = 0                                  // summaries after an erase that get no reply at all
     var eraseNeverEnds = false
+    var halfDone = mutableListOf<Pair<Boolean, Long>>()   // summaries after an erase that say (ready, used) as given, before it is done
     var closed = false
     private var incoming = ByteArray(0)
     private var outgoing = ByteArray(0)
@@ -42,6 +43,7 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
             Msp.DATAFLASH_SUMMARY -> {
                 if (erasing) {
                     if (silentPolls > 0) { silentPolls--; return null }
+                    if (halfDone.isNotEmpty()) return halfDone.removeAt(0).let { summary(it.first, it.second) }
                     if (busyPolls > 0 || eraseNeverEnds) { busyPolls--; return summary(false, flash.size.toLong()) }
                     erasing = false
                     flash = ByteArray(0)
