@@ -35,7 +35,7 @@ class Uploader(private val store: Store, private val drop: (Pairing) -> Drop) {
         val pending = store.now.pending
         for (b in pending) for (i in b.items) {
             val f = File(store.dir(b.id), i.name)
-            if (f.length() != i.size || !f.isFile) return UploadResult.Broken("${i.name} of ${b.session} is not on the phone as it was collected")
+            if (f.length() != i.size) return UploadResult.Broken("${i.name} of ${b.session} is not on the phone as it was collected")
         }
         val total = pending.sumOf { it.bytes }
         var before = 0L

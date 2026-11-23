@@ -28,6 +28,7 @@ class Mp4Test {
         assertEquals(Mp4.Index.PRESENT, check(atom("ftyp", 12), atom("moov", 80), atom("mdat", 500)))          // faststart: the index first
         assertEquals(Mp4.Index.PRESENT, check(atom("ftyp", 12), wide("mdat", 500), atom("moov", 80)))          // a clip past 4 GB
         assertEquals(Mp4.Index.PRESENT, check(atom("ftyp", 12), atom("free", 30), atom("skip", 4), atom("mdat", 10), atom("moov", 8)))
+        assertEquals(Mp4.Index.PRESENT, check(atom("ftyp", 12), atom("mdat", 10), atom("moov", 0)))            // an index header as the file's last eight bytes
     }
 
     @Test

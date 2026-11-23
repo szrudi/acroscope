@@ -29,10 +29,12 @@ class PairingTest {
             "hello" to "code",
             "https://acroscope.example.org/config#devices" to "code",
             "acroscope://pair?url=https%3A%2F%2Fx.example.org" to "token",
-            "acroscope://pair?token=$token" to "address",
-            "acroscope://pair?url=ftp%3A%2F%2Fx.example.org&token=$token" to "address",
-            "acroscope://pair?url=not%20a%20url&token=$token" to "address",
-            "acroscope://pair?url=http%3A%2F%2Facroscope.example.org&token=$token" to "https",       // a token over plain http across the internet
+            "acroscope://pair?token=$token" to "no server address",
+            "acroscope://pair?url=ftp%3A%2F%2Fx.example.org&token=$token" to "no server address",
+            "acroscope://pair?url=not%20a%20url&token=$token" to "no server address",
+            "acroscope://pair?url=http%3A%2F%2Facroscope.example.org&token=$token" to "must be https",   // a token over plain http across the internet
+            "acroscope://pair?url=http%3A%2F%2F172.32.0.9&token=$token" to "must be https",              // just past the private 172.16 to 172.31
+            "acroscope://pair?url=http%3A%2F%2F11.0.0.1&token=$token" to "must be https",
             "acroscope://pair?url=https%3A%2F%2Fx.example.org&token=short" to "token",
             "acroscope://pair?url=https%3A%2F%2Fx.example.org&token=${token}%20x" to "token",
             "acroscope://other?url=https%3A%2F%2Fx.example.org&token=$token" to "code",

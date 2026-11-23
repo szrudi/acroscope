@@ -20,7 +20,7 @@ class Batches(private val store: Store) {
     fun edit(id: String, event: String, date: String) {
         pending(id) ?: return
         val day = try { LocalDate.parse(date) } catch (e: DateTimeParseException) { null }
-        require(day != null && day.toString() == date) { "the date is a day like 2026-12-12" }
+        require(day != null) { "the date is a day like 2026-12-12" }
         store.updateBatch(id) { it.copy(event = event.trim(), date = date) }
     }
 

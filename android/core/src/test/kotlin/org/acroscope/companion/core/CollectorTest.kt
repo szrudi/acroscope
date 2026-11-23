@@ -140,6 +140,9 @@ class CollectorTest {
         assertTrue(first.id < second.id)                                        // ingested after the first: the day's numbers follow the flying
         assertEquals(movie(111).toList(), File(store.dir(second.id), "VID00001.mov").readBytes().toList())
         assertEquals(movie(100).toList(), File(store.dir(first.id), "VID00001.mov").readBytes().toList())
+        // and what comes after goes on in the newer batch, though the older one has no clip of that name either
+        collector.collect(card(Clip("VID00003.mov", movie(333), modified = 7000)), free = Long.MAX_VALUE)
+        assertEquals(listOf(2, 3), store.now.batches.map { it.items.size })
     }
 
     @Test
@@ -176,7 +179,8 @@ class CollectorTest {
         assertEquals(emptyList(), out.items)
         assertTrue("VID00001.mov" in out.error!!, out.error)
         assertEquals(emptyList(), store.now.seen)
-        assertEquals(emptyList(), store.now.batches.flatMap { store.dir(it.id).list()?.toList() ?: emptyList() })
+        assertEquals(emptyList(), store.now.batches)
+        assertTrue(File(root, "batches").list().isNullOrEmpty())                 // not even the folder the batch would have had
     }
 
     @Test
@@ -250,6 +254,8 @@ class CollectorTest {
         // no time known: now; no craft name on the quad: left out; no board line: UNKNOWN
         val bare = "H Product:Blackbox flight data recorder by Nicholas Sherlock\nH Craft name:\n"
         assertEquals("BTFL_BLACKBOX_LOG_20261212_090507_UNKNOWN.bbl", collector.addLog("LOG00001.BBL", null) { ByteArrayInputStream(log(10, bare)) }.name)
+        now = now.plusSeconds(5)
+        assertEquals("BTFL_BLACKBOX_LOG_OTTO_20261212_090512_BETAFPVG473_V2.bbl", collector.addLog("btfl_002.bbl", 0) { ByteArrayInputStream(log(20)) }.name)   // a picker that says 0 knows no time
     }
 
     @Test
@@ -259,8 +265,8 @@ class CollectorTest {
             val e = assertFailsWith<IllegalArgumentException>(name) { collector.addLog(name, null) { ByteArrayInputStream(bytes) } }
             assertTrue("log" in e.message!!, e.message)
         }
-        assertEquals(emptyList(), store.now.batches.flatMap { it.items })
-        assertEquals(emptyList(), store.now.batches.flatMap { store.dir(it.id).list()?.toList() ?: emptyList() })
+        assertEquals(emptyList(), store.now.batches)
+        assertTrue(File(root, "batches").list().isNullOrEmpty())
     }
 
     @Test
