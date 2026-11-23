@@ -117,6 +117,7 @@ class CollectorTest {
         assertEquals(listOf("park" to listOf("VID00001.mov", "VID00003.mov"), "home" to listOf("VID00002.mov"), "park" to listOf("VID00004.mov")),
             store.now.batches.map { it.event to it.items.map { i -> i.name } })
         assertEquals(listOf("2026-12-12", "2026-12-12", "2026-12-13"), store.now.batches.map { it.date })
+        assertEquals(listOf("park", "home"), store.now.settings.recentEvents)                // what was flown, the latest first, each once
         assertEquals(3, store.now.batches.map { it.id }.toSet().size)
         // a batch that went up takes no more: the next collect of the same event and day starts one
         store.updateBatch(store.now.batches.last().id) { it.copy(stage = Stage.COMMITTED) }
@@ -198,6 +199,17 @@ class CollectorTest {
         val out = collector.collect(card(Clip("VID00001.mov", movie(100)), Clip("VID00002.mov", movie(100))), free = Long.MAX_VALUE, stop = { asked++ > 0 })
         assertEquals(listOf("VID00001.mov"), out.items.map { it.name })
         assertEquals("stopped", out.error)
+    }
+
+    @Test
+    fun `only so many event names are remembered, and none for a collect without one`() {
+        for (i in 1..14) {
+            event("event $i")
+            collector.collect(card(Clip("VID000%02d.mov".format(i), movie(10))), free = Long.MAX_VALUE)
+        }
+        event("")
+        collector.collect(card(Clip("VID00099.mov", movie(10))), free = Long.MAX_VALUE)
+        assertEquals((14 downTo 3).map { "event $it" }, store.now.settings.recentEvents)
     }
 
     @Test

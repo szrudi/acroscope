@@ -46,6 +46,8 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
     companion object {
         /** Room the phone keeps after a collect. */
         const val MARGIN = 256L shl 20
+        /** Event names remembered. */
+        const val RECENT = 12
         private val STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssxxx")
         private val CONFIGURATOR = Regex("BTFL_BLACKBOX_LOG_.*_[0-9]{8}_[0-9]{6}_.*\\.bbl", RegexOption.IGNORE_CASE)
         private val LOG_MAGIC = "H Product:Blackbox".toByteArray()
@@ -134,7 +136,10 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
     private fun note(batch: Batch, item: Item, seen: Seen?) {
         store.update { s ->
             val batches = if (s.batch(batch.id) == null) s.batches + batch else s.batches
-            s.copy(batches = batches.map { if (it.id == batch.id) it.copy(items = it.items + item) else it }, seen = if (seen == null) s.seen else s.seen + seen)
+            // the event's name is remembered for the next time it is flown, the latest first
+            val recent = if (batch.event.isBlank()) s.settings.recentEvents else (listOf(batch.event) + s.settings.recentEvents).distinct().take(RECENT)
+            s.copy(batches = batches.map { if (it.id == batch.id) it.copy(items = it.items + item) else it }, seen = if (seen == null) s.seen else s.seen + seen,
+                settings = s.settings.copy(recentEvents = recent))
         }
     }
 
