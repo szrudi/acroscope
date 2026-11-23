@@ -40,6 +40,8 @@ class Mp4Test {
         assertEquals(Mp4.Index.MISSING, check(atom("ftyp", 12), atom("mdat", 0, size = 8), ByteArray(300) { 0x55 }))            // a placeholder size, then raw frames
         assertEquals(Mp4.Index.MISSING, check(atom("ftyp", 12), atom("mdat", 4, size = 3)))                                    // a size no atom can have
         assertEquals(Mp4.Index.MISSING, check(atom("ftyp", 12), atom("mdat", 300), ByteArray(5)))                               // a few stray bytes at the end
+        // frames are not atoms: bytes inside the data that happen to read like an index header are not looked at
+        assertEquals(Mp4.Index.MISSING, check(atom("ftyp", 12), atom("mdat", 8, size = 0), atom("moov", 40), ByteArray(200)))
     }
 
     @Test

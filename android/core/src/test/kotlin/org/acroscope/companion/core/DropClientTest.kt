@@ -99,6 +99,21 @@ class DropClientTest {
     }
 
     @Test
+    fun `a sidecar the server does not take is not passed over`() {
+        respond = { x, _ ->
+            when (x.requestMethod) {
+                "DELETE" -> x.answer(404)
+                "POST" -> x.answer(201, mapOf("Location" to "/drop/batches/$b/files/import.json"))
+                else -> x.answer(507, body = """{"error": "no room on the server's disk"}""")
+            }
+        }
+        val e = assertFailsWith<DropException> { client.put(b, "import.json", "{}".toByteArray()) }
+        assertEquals(507 to "no room on the server's disk", e.status to e.message)
+        respond = { x, _ -> x.answer(if (x.requestMethod == "DELETE") 423 else 204) }      // nor one that cannot be replaced right now
+        assertEquals(423, assertFailsWith<DropException> { client.put(b, "import.json", "{}".toByteArray()) }.status)
+    }
+
+    @Test
     fun `an answer that is not the server's own is still an error with its status`() {
         respond = { x, _ -> x.answer(502, body = "<html>Bad Gateway</html>") }   // a proxy's page
         val e = assertFailsWith<DropException> { client.device() }

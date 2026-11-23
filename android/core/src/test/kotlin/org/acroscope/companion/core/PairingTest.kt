@@ -32,6 +32,7 @@ class PairingTest {
             "acroscope://pair?token=$token" to "no server address",
             "acroscope://pair?url=ftp%3A%2F%2Fx.example.org&token=$token" to "no server address",
             "acroscope://pair?url=not%20a%20url&token=$token" to "no server address",
+            "acroscope://pair?url=https%3A%2Fonly-a-path&token=$token" to "no server address",          // a scheme and no host
             "acroscope://pair?url=http%3A%2F%2Facroscope.example.org&token=$token" to "must be https",   // a token over plain http across the internet
             "acroscope://pair?url=http%3A%2F%2F172.32.0.9&token=$token" to "must be https",              // just past the private 172.16 to 172.31
             "acroscope://pair?url=http%3A%2F%2F11.0.0.1&token=$token" to "must be https",

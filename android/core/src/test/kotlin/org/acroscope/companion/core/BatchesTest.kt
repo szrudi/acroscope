@@ -47,6 +47,9 @@ class BatchesTest {
         batches.remove(id, "no-such.mov")                                                    // not there: nothing happens
         assertEquals(2, store.now.batch(id)!!.items.size)
         batches.remove(id, "VID00002.mov")
+        batches.remove(id, "no-such.mov")                                                    // also when one file is left: it stays
+        assertEquals(listOf("x.bbl"), store.now.batch(id)!!.items.map { it.name })
+        assertTrue(File(store.dir(id), "x.bbl").exists())
         batches.remove(id, "x.bbl")
         assertNull(store.now.batch(id))                                                      // the last file out: the batch is gone
         assertFalse(store.dir(id).exists())
@@ -82,8 +85,9 @@ class BatchesTest {
         store.update { it.copy(batches = open + done) }
         batches.prune(keep = 20)
         assertEquals(open.map { it.id } + done.takeLast(20).map { it.id }, store.now.batches.map { it.id })   // the newest twenty finished, and everything not finished
+        store.update { it.copy(batches = done) }
         batches.prune()
-        assertEquals(22, store.now.batches.size)                                             // twenty by default
+        assertEquals(done.takeLast(20).map { it.id }, store.now.batches.map { it.id })        // twenty by default
     }
 
     @Test

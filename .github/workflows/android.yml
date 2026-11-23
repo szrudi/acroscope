@@ -32,6 +32,9 @@ jobs:
         env:
           ACROSCOPE_PYTHON: python
         run: ./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:assembleDebug
+      # the client's tests against the server skip where there is no Python: here there is one, so none may
+      - name: no test was skipped
+        run: "! grep -l 'skipped=\"[1-9]' android/core/build/test-results/test/*.xml android/app/build/test-results/testDebugUnitTest/*.xml"
       - uses: actions/upload-artifact@v4
         with:
           name: acroscope-companion-debug

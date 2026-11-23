@@ -150,8 +150,10 @@ class DropClient(
         val upload = try {
             create(batch, name, length)
         } catch (e: DropException) {
-            if (e.status != 409 || "already declared" !in (e.message ?: "")) throw e
-            call("DELETE", "${path(batch)}/files/${enc(name)}")              // another file went up under this name: that one is void
+            if (e.status != 409) throw e
+            // another file is staged under this name (it was collected again, or changed): that one is void. When the
+            // conflict is something else (the batch's id is spent), declaring again says so.
+            call("DELETE", "${path(batch)}/files/${enc(name)}")
             create(batch, name, length)
         }
         var at = offset(upload)
