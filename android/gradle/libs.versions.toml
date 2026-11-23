@@ -12,6 +12,8 @@ work = "2.12.0"
 documentfile = "1.1.0"
 junit = "4.13.2"
 robolectric = "4.18.1"
+# the Android 16 runtime Robolectric 4.18.1 runs the tests in (it names this version itself when it is missing)
+robolectricAndroid = "16-robolectric-13921718-2-i7"
 androidxTest = "1.7.0"
 
 [libraries]
@@ -36,6 +38,7 @@ documentfile = { module = "androidx.documentfile:documentfile", version.ref = "d
 junit = { module = "junit:junit", version.ref = "junit" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+robolectric-android = { module = "org.robolectric:android-all-instrumented", version.ref = "robolectricAndroid" }
 androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTest" }
 
 [plugins]

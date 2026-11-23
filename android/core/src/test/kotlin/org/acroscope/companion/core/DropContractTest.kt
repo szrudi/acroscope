@@ -37,7 +37,13 @@ class DropContractTest {
         @JvmStatic
         fun start() {
             val repo = File("../..").canonicalFile
-            val python = System.getenv("ACROSCOPE_PYTHON")?.let(::File) ?: File(repo, ".venv/bin/python")
+            val named = System.getenv("ACROSCOPE_PYTHON")
+            val python = when {
+                named == null -> File(repo, ".venv/bin/python")
+                '/' in named -> File(named)
+                else -> System.getenv("PATH").orEmpty().split(File.pathSeparator).map { File(it, named) }.firstOrNull { it.canExecute() } ?: File(named)
+            }
+            check(named == null || python.canExecute()) { "ACROSCOPE_PYTHON=$named is not a Python that can be run" }   // asked for: not skipped quietly
             Assume.assumeTrue("no Python to run the server with (set ACROSCOPE_PYTHON)", python.canExecute())
             root = Files.createTempDirectory("drop").toFile()
             File(root, "data/videos/2026-10-11-park").mkdirs()

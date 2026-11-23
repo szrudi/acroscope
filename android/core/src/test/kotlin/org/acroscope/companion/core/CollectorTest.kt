@@ -155,7 +155,7 @@ class CollectorTest {
         val c = card(Clip("VID00001.mov", movie(100)), Clip("VID00002.mov", movie(5000), breakAt = 700), Clip("VID00003.mov", movie(100)))
         val out = collector.collect(c, free = Long.MAX_VALUE)
         assertEquals(listOf("VID00001.mov"), out.items.map { it.name })          // what was whole is kept
-        assertTrue("VID00002.mov" in out.error!! && "card removed" in out.error!!, out.error)
+        assertTrue("VID00002.mov" in out.error!! && "card removed" in out.error, out.error)
         val batch = store.now.batches.single()
         assertEquals(listOf("VID00001.mov"), store.dir(batch.id).list()!!.toList())
         assertEquals(listOf("VID00001.mov"), store.now.seen.map { it.name })
