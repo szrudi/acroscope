@@ -155,6 +155,12 @@ class BlackboxTest {
     }
 
     @Test
+    fun `a read that carries more than it says is cut to what it says`() {
+        fc.spoil = { command, reply -> if (command == Msp.DATAFLASH_READ) Msp.frame(command, reply.copyOfRange(8, reply.size - 1) + ByteArray(9) { 0x7f }, '>') else reply }
+        assertEquals(log.toList(), box.download(dir)!!.file.readBytes().toList())
+    }
+
+    @Test
     fun `noise on the line does not spoil a download`() {
         fc.noise = "\r\n# garbage \$X".toByteArray()
         assertEquals(log.toList(), box.download(dir)!!.file.readBytes().toList())
