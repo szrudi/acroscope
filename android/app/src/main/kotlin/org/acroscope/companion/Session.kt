@@ -8,6 +8,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.acroscope.companion.core.Batches
+import org.acroscope.companion.core.Blackbox
+import org.acroscope.companion.core.SerialPort
 import org.acroscope.companion.core.DropException
 import org.acroscope.companion.core.Format
 import org.acroscope.companion.core.Pairing
@@ -23,7 +25,16 @@ sealed interface CardView {
     data class Unreadable(val label: String, val why: String) : CardView
 }
 
-/** A job the screen follows: a collect or an upload. */
+/** The quad as the screen shows it. */
+sealed interface QuadView {
+    data object None : QuadView
+    data class Locked(val name: String, val ask: () -> Unit) : QuadView
+    data class Ready(val name: String) : QuadView
+    /** Its log was saved and verified; erasing its flash is on offer while it stays plugged in. */
+    data class Saved(val name: String, val log: String) : QuadView
+}
+
+/** A job the screen follows: a collect, an upload or an erase. */
 sealed interface Work {
     data object Idle : Work
     data class Running(val what: String, val done: Long, val total: Long) : Work
@@ -43,6 +54,10 @@ class Session(private val g: Graph) {
     private val batches = Batches(g.store)
 
     val card = MutableStateFlow<CardView>(CardView.None)
+    val quad = MutableStateFlow<QuadView>(QuadView.None)
+    val erase = MutableStateFlow<Work>(Work.Idle)
+    /** The line to a quad whose log was just saved, kept open: only that connection may erase the flash. */
+    private var held: Pair<SerialPort, Blackbox>? = null
     val collect = MutableStateFlow<Work>(Work.Idle)
     val upload = MutableStateFlow<Work>(Work.Idle)
     /** The last thing worth telling the pilot that belongs to no job: a pairing, a log taken in, an edit refused. */
@@ -64,6 +79,19 @@ class Session(private val g: Graph) {
         }
     }
 
+    fun lookAtQuad() = scope.launch { quad.value = seeQuad() }
+
+    private fun seeQuad(): QuadView = when (val s = g.quads.state()) {
+        QuadState.None -> QuadView.None.also { letGo() }
+        is QuadState.NeedsPermission -> QuadView.Locked(s.name, s.ask)
+        is QuadState.Ready -> (quad.value as? QuadView.Saved)?.takeIf { held != null } ?: QuadView.Ready(s.name)
+    }
+
+    private fun letGo() {
+        held?.let { runCatching { it.first.close() } }
+        held = null
+    }
+
     fun allow(tree: Uri) {
         g.cards.grant(tree)
         lookAtCard()
@@ -73,27 +101,83 @@ class Session(private val g: Graph) {
         g.store.update { it.copy(settings = it.settings.copy(event = name)) }
     }
 
+    /** One press collects whatever is there: the quad's log, the card's clips, or both. */
     fun startCollect() {
-        val open = card.value as? CardView.Open ?: return
-        if (collect.value is Work.Running) return
-        collect.value = Work.Running("reading the card", 0, open.bytes)
-        g.runner.collect(open.tree)
+        val open = (card.value as? CardView.Open)?.takeIf { it.clips > 0 }
+        val log = quad.value is QuadView.Ready
+        if ((open == null && !log) || collect.value is Work.Running) return
+        collect.value = Work.Running(if (log) "asking the quad" else "reading the card", 0, open?.bytes ?: 0)
+        g.runner.collect(open?.tree)
     }
 
-    /** The collect itself, on the caller's thread. */
-    fun collectNow(tree: Uri, stop: () -> Boolean): Work.Finished {
-        val out = try {
-            g.collector.collect(g.cards.open(tree), g.store.free, { p -> collect.value = Work.Running("${p.name} (${p.index} of ${p.count})", p.done, p.total) }, stop)
-        } catch (e: Exception) {
-            org.acroscope.companion.core.Outcome(emptyList(), e.message ?: e.javaClass.simpleName)
+    /** The collect itself, on the caller's thread: the log first, then the clips, as the laptop's import does. */
+    fun collectNow(tree: Uri?, stop: () -> Boolean): Work.Finished {
+        val said = mutableListOf<String>()
+        var ok = true
+        if (g.quads.state() is QuadState.Ready && held == null) {
+            try {
+                said += saveLog(stop)
+            } catch (e: Exception) {
+                ok = false
+                said += "the log was not saved (${e.message ?: e.javaClass.simpleName}); the quad's flash is as it was"
+            }
         }
-        val flagged = out.items.count { it.unfinalised }
-        val got = "${out.items.size} clip${if (out.items.size == 1) "" else "s"} collected" +
-            if (flagged > 0) ", $flagged without an index (the recording was cut off: the server cannot read it as it is)" else ""
-        val done = Work.Finished(if (out.error == null) got else "${out.error}; $got", out.error == null)
+        if (tree != null) {
+            val out = try {
+                g.collector.collect(g.cards.open(tree), g.store.free, { p -> collect.value = Work.Running("${p.name} (${p.index} of ${p.count})", p.done, p.total) }, stop)
+            } catch (e: Exception) {
+                org.acroscope.companion.core.Outcome(emptyList(), e.message ?: e.javaClass.simpleName)
+            }
+            val flagged = out.items.count { it.unfinalised }
+            val got = "${out.items.size} clip${if (out.items.size == 1) "" else "s"} collected" +
+                if (flagged > 0) ", $flagged without an index (the recording was cut off: the server cannot read it as it is)" else ""
+            if (out.error != null) ok = false
+            said += if (out.error == null) got else "${out.error}; $got"
+        }
+        val done = Work.Finished(said.joinToString("\n").ifEmpty { "nothing to collect" }, ok)
         collect.value = done
         card.value = see()
+        quad.value = seeQuad()
         return done
+    }
+
+    /** The quad's log into the pending batch. The line stays open afterwards: erasing the flash is offered, and only
+     *  the connection that saved and verified the log may do it. */
+    private fun saveLog(stop: () -> Boolean): String {
+        val name = (g.quads.state() as? QuadState.Ready)?.name ?: "the quad"
+        val port = g.quads.open()
+        try {
+            val box = Blackbox(port, g.clock)
+            val saved = box.download(g.store.scratch, { p ->
+                collect.value = Work.Running("the log off $name" + (p.temp?.let { " · core $it °C" } ?: ""), p.done, p.total)
+            }, stop)
+            if (saved == null) {
+                port.close()
+                return "$name's flash is empty"
+            }
+            val item = try { g.collector.addLog(saved.file.name, null) { saved.file.inputStream() } } finally { saved.file.delete() }
+            held = port to box
+            quad.value = QuadView.Saved(name, item.name)
+            return "log saved (${Format.bytes(item.size)})" + (saved.peakTemp?.let { ", the core got to $it °C" } ?: "")
+        } catch (e: Exception) {
+            runCatching { port.close() }
+            throw e
+        }
+    }
+
+    /** Erase the flash of the quad whose log was just saved. Up to a minute; the quad must stay plugged in. */
+    fun eraseQuad() = scope.launch {
+        val (_, box) = held ?: return@launch
+        if (erase.value is Work.Running) return@launch
+        erase.value = Work.Running("erasing the quad's flash (up to a minute)", 0, 0)
+        erase.value = try {
+            box.erase()
+            Work.Finished("the quad's flash is erased", true)
+        } catch (e: Exception) {
+            Work.Finished("the flash was not erased: ${e.message ?: e.javaClass.simpleName}", false)
+        }
+        letGo()
+        quad.value = seeQuad()
     }
 
     fun startUpload() {
@@ -165,6 +249,13 @@ class Session(private val g: Graph) {
     } catch (e: RuntimeException) {
         note.value = e.message
         false
+    }
+
+    fun describe(view: QuadView): String = when (view) {
+        QuadView.None -> "no quad plugged in"
+        is QuadView.Locked -> "${view.name}: allow the app to talk to it"
+        is QuadView.Ready -> "${view.name}: its log will be saved"
+        is QuadView.Saved -> "${view.name}: log saved as ${view.log}"
     }
 
     fun describe(view: CardView): String = when (view) {

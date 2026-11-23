@@ -57,6 +57,8 @@ private val Scheme = darkColorScheme(
 fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob: () -> Unit = {}) {
     val state by g.store.state.collectAsStateWithLifecycle()
     val card by g.session.card.collectAsStateWithLifecycle()
+    val quad by g.session.quad.collectAsStateWithLifecycle()
+    val erase by g.session.erase.collectAsStateWithLifecycle()
     val collect by g.session.collect.collectAsStateWithLifecycle()
     val upload by g.session.upload.collectAsStateWithLifecycle()
     val note by g.session.note.collectAsStateWithLifecycle()
@@ -91,14 +93,19 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                 item {
                     Section("Collect") {
                         Text(g.session.describe(card), Modifier.testTag("card"))
+                        Text(g.session.describe(quad), Modifier.testTag("quad"))
                         Progress(collect, Modifier.testTag("collect-status"))
+                        Progress(erase, Modifier.testTag("erase-status"))
+                        val something = ((card as? CardView.Open)?.clips ?: 0) > 0 || quad is QuadView.Ready
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            when (val c = card) {
-                                is CardView.Locked -> Button({ openCard(c.request) }, Modifier.testTag("allow")) { Text("Allow the card") }
-                                is CardView.Open -> Button({ beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = c.clips > 0 && collect !is Work.Running) { Text("Start") }
-                                else -> Button({}, Modifier.testTag("start"), enabled = false) { Text("Start") }
-                            }
+                            (card as? CardView.Locked)?.let { c -> Button({ openCard(c.request) }, Modifier.testTag("allow")) { Text("Allow the card") } }
+                            (quad as? QuadView.Locked)?.let { q -> Button(q.ask, Modifier.testTag("allow-quad")) { Text("Allow the quad") } }
+                            Button({ beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = something && collect !is Work.Running) { Text("Start") }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(pickLogs, Modifier.testTag("add-log")) { Text("Add a saved log") }
+                            if (quad is QuadView.Saved)
+                                OutlinedButton({ g.session.eraseQuad() }, Modifier.testTag("erase"), enabled = erase !is Work.Running) { Text("Erase the quad's flash") }
                         }
                         Dim("${Format.bytes(g.store.free)} free on the phone")
                     }
@@ -167,8 +174,8 @@ private fun Progress(work: Work, modifier: Modifier) {
     when (work) {
         Work.Idle -> {}
         is Work.Running -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("${work.what} · ${Format.bytes(work.done)} of ${Format.bytes(work.total)}", modifier, style = MaterialTheme.typography.bodySmall)
-            LinearProgressIndicator({ if (work.total > 0) work.done.toFloat() / work.total else 0f }, Modifier.fillMaxWidth())
+            Text(work.what + if (work.total > 0) " · ${Format.bytes(work.done)} of ${Format.bytes(work.total)}" else "", modifier, style = MaterialTheme.typography.bodySmall)
+            if (work.total > 0) LinearProgressIndicator({ work.done.toFloat() / work.total }, Modifier.fillMaxWidth())
         }
         is Work.Finished -> Text(work.message, modifier, color = if (work.ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
     }

@@ -15,9 +15,10 @@ import java.time.ZonedDateTime
 class Graph(
     val store: Store,
     val cards: Cards,
+    val quads: Quads,
     val runner: Runner,
     drop: (Pairing) -> Drop = { DropClient(it) },
-    clock: () -> ZonedDateTime = ZonedDateTime::now,
+    val clock: () -> ZonedDateTime = ZonedDateTime::now,
 ) {
     val collector = Collector(store, clock)
     val uploader = Uploader(store, drop)
@@ -32,7 +33,7 @@ class App : Application() {
     private fun real(): Graph {
         // the state (with the token) in the app's own storage, the footage where there is room
         val files = getExternalFilesDir(null) ?: filesDir
-        return Graph(Store(File(filesDir, "state"), files), SafCards(this), WorkRunner(this))
+        return Graph(Store(File(filesDir, "state"), files), SafCards(this), UsbQuads(this), WorkRunner(this))
     }
 }
 

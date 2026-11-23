@@ -24,15 +24,16 @@ import kotlinx.coroutines.withContext
 
 /** What starts a collect and an upload so that they go on when the screen is left. */
 interface Runner {
-    fun collect(tree: Uri)
+    /** Collect what is there: the quad's log, and the clips of the card under `tree` when there is one. */
+    fun collect(tree: Uri?)
     fun upload()
 }
 
 /** The jobs as WorkManager work: one collect and one upload at a time, each showing its progress as a notification. */
 class WorkRunner(private val context: Context) : Runner {
-    override fun collect(tree: Uri) {
+    override fun collect(tree: Uri?) {
         WorkManager.getInstance(context).enqueueUniqueWork("collect", ExistingWorkPolicy.KEEP,
-            OneTimeWorkRequestBuilder<CollectWorker>().setInputData(workDataOf("tree" to tree.toString())).build())
+            OneTimeWorkRequestBuilder<CollectWorker>().setInputData(workDataOf("tree" to tree?.toString())).build())
     }
 
     override fun upload() {
@@ -78,9 +79,9 @@ abstract class Job(context: Context, params: WorkerParameters, private val id: I
     }
 }
 
-class CollectWorker(context: Context, params: WorkerParameters) : Job(context, params, 1, "Collecting from the card") {
+class CollectWorker(context: Context, params: WorkerParameters) : Job(context, params, 1, "Collecting") {
     override val progress get() = applicationContext.graph.session.collect
-    override fun run() = applicationContext.graph.session.collectNow(Uri.parse(inputData.getString("tree")), { isStopped })
+    override fun run() = applicationContext.graph.session.collectNow(inputData.getString("tree")?.let(Uri::parse), { isStopped })
 }
 
 class UploadWorker(context: Context, params: WorkerParameters) : Job(context, params, 2, "Uploading to acroscope") {

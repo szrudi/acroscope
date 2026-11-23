@@ -12,15 +12,21 @@ What it does now (0.1):
   copy. What was collected is remembered by name, size and time and skipped next time. A clip without its index
   (the DVR lost power while recording) is collected and flagged. A collect that does not fit on the phone is
   refused before it starts.
-- **Add a saved log**: a `.bbl` saved by the Betaflight app's "save flash to file". It keeps a name in the
-  Configurator's pattern; under another name it is named from its own header.
+- **The log off the quad.** With the quad on USB, **Start** saves its blackbox flash first (MSP, as the
+  Configurator's "save flash to file" does: the used part only), named
+  `BTFL_BLACKBOX_LOG_<CRAFT>_<date>_<time>_<board>.bbl` with the phone's time, and shows the MCU's core temperature
+  on the way (the board sits on USB power with no air over it). The file is kept only when it is as long as the
+  flash said and starts like a log. After that, and only then, **Erase the quad's flash** is offered. Only one app
+  can hold the flight controller: close the Betaflight app first.
+- **Add a saved log**: a `.bbl` saved by the Betaflight app's "save flash to file", for when the quad is not at
+  hand. It keeps a name in the Configurator's pattern; under another name it is named from its own header.
 - **Change it before it goes up**: the event, the date (it defaults to the day of the first collect), a file out,
   the whole batch away.
 - **Upload**: every pending batch, oldest first, resumable from the last byte the server has. The phone's copy of a
   batch is deleted when the server reports it done, not when the upload ends. A failed batch can be tried again on
   the server from here.
 
-Not yet: the log straight from the quad over USB, uploading by itself on Wi-Fi, a QR code for pairing.
+Not yet: uploading by itself on Wi-Fi, a QR code for pairing.
 
 ## Pairing
 
@@ -33,9 +39,10 @@ in its own storage and talks to no other host.
 ```
 core/   the app's logic in plain Kotlin, no Android in it: names and rules shared with the server (Names), the
         index check (Mp4), the stored state (Store, Model), collecting (Collector), edits (Batches), the upload
-        client (DropClient) and its orchestration (Uploader)
-app/    the Android application: card access through the storage access framework (Cards), the collect and the
-        upload as WorkManager jobs (Workers), what the screen shows and asks for (Session, Screen)
+        client (DropClient) and its orchestration (Uploader), MSP and the blackbox download (Msp, Blackbox)
+app/    the Android application: card access through the storage access framework (Cards), the flight
+        controller's USB serial port (Quads), the collect and the upload as WorkManager jobs (Workers), what the
+        screen shows and asks for (Session, Screen)
 ```
 
 The split is deliberate: everything in `core` is tested on any machine with a JDK, and `DropContractTest` runs the
@@ -63,5 +70,6 @@ phone without losing what it holds.
   acroscope's dependencies, else `.venv/bin/python` at the repo's root is used; without one those tests skip).
 - `:app:testDebugUnitTest`: the screen driven as a pilot drives it, under Robolectric, with stand-ins for the card
   and the server.
-- Only a phone can say: that the card in the reader is found and read (`SafCards`), that the jobs survive leaving
-  the app, how it feels in the hand. Those are checked on a real phone and said so in the PR.
+- Only a phone can say: that the card in the reader is found and read (`SafCards`), that a flight controller's
+  serial port opens and answers (`UsbSerial`; the protocol above it is tested against a stand-in controller), that
+  the jobs survive leaving the app, how it feels in the hand. Those are checked on a real phone and said so in the PR.

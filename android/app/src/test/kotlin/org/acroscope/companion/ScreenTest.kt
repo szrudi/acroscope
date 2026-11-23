@@ -43,6 +43,7 @@ class ScreenTest {
     private fun show() {
         rule.setContent { Screen(w.graph, openCard = { asked += it }, pickLogs = { logsPicked++ }, beforeJob = { beforeJob++ }) }
         w.session.lookAtCard()
+        w.session.lookAtQuad()
         w.session.askServer()
     }
 
@@ -146,6 +147,86 @@ class ScreenTest {
         show()
         wait { "could not be read" in text("card") }
         assertTrue("the card does not answer" in text("card"))
+        tag("start").assertIsNotEnabled()
+    }
+
+    // ---- the quad on USB
+
+    private val flightLog = "H Product:Blackbox flight data recorder by Nicholas Sherlock\nH Craft name:OttO\n".toByteArray() + ByteArray(9000) { 3 }
+
+    @Test
+    fun `a quad on usb has its log saved by start, and the erase is offered after`() {
+        w.clock = java.time.ZonedDateTime.parse("2026-12-12T08:45:00+01:00")
+        val fc = org.acroscope.companion.core.FakeFc(flightLog)
+        w.quads.fc = fc
+        w.quads.now = QuadState.Ready("OTTO")
+        show()
+        wait { "its log will be saved" in text("quad") }
+        assertFalse(seen("erase"))                                              // nothing saved yet: nothing to erase
+        tag("event").performTextInput("whoop race")
+        click("start")                                                          // no card: the quad alone is something to collect
+        wait { "log saved" in text("collect-status") }
+        val item = w.store.now.batches.single().items.single()
+        assertEquals("BTFL_BLACKBOX_LOG_OTTO_20261212_084500_BETAFPVG473_V2.bbl" to Kind.LOG, item.name to item.kind)
+        assertEquals(flightLog.toList(), File(w.store.dir(w.store.now.batches.single().id), item.name).readBytes().toList())
+        assertTrue(w.store.scratch.list().isNullOrEmpty())                       // the copy it came through is gone
+        assertTrue("log saved as ${item.name}" in text("quad"))
+        assertFalse(fc.closed)                                                  // the line stays open: only it may erase
+        assertFalse(org.acroscope.companion.core.Msp.DATAFLASH_ERASE.toString() in fc.asked)   // and saving erased nothing
+        click("start")                                                          // again: the log is not taken a second time
+        assertEquals(1, w.quads.opened)
+        click("erase")
+        wait { seen("erase-status") && "flash is erased" in text("erase-status") }
+        assertEquals(0, fc.flash.size)
+        assertTrue(fc.closed)
+        wait { !seen("erase") && "its log will be saved" in text("quad") }
+    }
+
+    @Test
+    fun `a quad the app may not talk to yet is asked about`() {
+        var asked = 0
+        w.quads.now = QuadState.NeedsPermission("OTTO") { asked++ }
+        show()
+        wait { seen("allow-quad") }
+        assertTrue("allow the app to talk to it" in text("quad"))
+        tag("start").assertIsNotEnabled()
+        click("allow-quad")
+        assertEquals(1, asked)
+    }
+
+    @Test
+    fun `a log that does not come off whole leaves the flash alone, and the card is still collected`() {
+        val fc = org.acroscope.companion.core.FakeFc(flightLog)
+        fc.spoil = { command, reply -> if (command == org.acroscope.companion.core.Msp.DATAFLASH_READ) org.acroscope.companion.core.Msp.frame(command, ByteArray(3), '>') else reply }
+        w.quads.fc = fc
+        w.quads.now = QuadState.Ready("OTTO")
+        w.card(FakeFile("VID00001.mov", movie(100)))
+        show()
+        wait { "1 new clip" in text("card") && "its log will be saved" in text("quad") }
+        click("start")
+        wait { seen("collect-status") && "1 clip collected" in text("collect-status") }
+        assertTrue("the log was not saved (a bad flash read at 0); the quad's flash is as it was" in text("collect-status"), text("collect-status"))
+        assertEquals(listOf(Kind.CLIP), w.store.now.batches.single().items.map { it.kind })
+        assertTrue(fc.closed)
+        assertFalse(seen("erase"))                                              // nothing verified: no erase on offer
+        assertEquals(flightLog.size, fc.flash.size)
+        assertTrue(w.store.scratch.list().isNullOrEmpty())
+    }
+
+    @Test
+    fun `an empty flash and an unplugged quad are said plainly`() {
+        val fc = org.acroscope.companion.core.FakeFc(ByteArray(0))
+        w.quads.fc = fc
+        w.quads.now = QuadState.Ready("OTTO")
+        show()
+        wait { "its log will be saved" in text("quad") }
+        click("start")
+        wait { "OTTO's flash is empty" in text("collect-status") }
+        assertTrue(fc.closed)
+        assertEquals(emptyList(), w.store.now.batches)
+        w.quads.now = QuadState.None
+        w.session.lookAtQuad()
+        wait { "no quad plugged in" in text("quad") }
         tag("start").assertIsNotEnabled()
     }
 

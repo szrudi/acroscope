@@ -49,7 +49,7 @@ android {
 // The Android runtime the unit tests run in (Robolectric), fetched by Gradle like any dependency: Robolectric's own
 // download of these 220 MB at test time hung for 28 minutes and failed here, and a cached, pinned jar is the better
 // arrangement anyway.
-val robolectricRuntime by configurations.creating { isTransitive = false }
+val robolectricRuntime = configurations.create("robolectricRuntime") { isTransitive = false }
 val robolectricJars = tasks.register<Copy>("robolectricJars") {
     from(robolectricRuntime)
     into(layout.buildDirectory.dir("robolectric"))
@@ -78,6 +78,7 @@ dependencies {
     implementation(libs.work.runtime)
     implementation(libs.coroutines.android)
 
+    testImplementation(testFixtures(project(":core")))
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.robolectric)

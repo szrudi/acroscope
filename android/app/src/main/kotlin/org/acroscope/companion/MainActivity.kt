@@ -1,7 +1,11 @@
 package org.acroscope.companion
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.storage.StorageManager
@@ -12,6 +16,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import java.io.FileNotFoundException
 
 class MainActivity : ComponentActivity() {
@@ -19,6 +24,13 @@ class MainActivity : ComponentActivity() {
     private val volumes = object : StorageManager.StorageVolumeCallback() {
         override fun onStateChanged(volume: StorageVolume) {
             graph.session.lookAtCard()                       // a card went in or out: the reader often shows up seconds after the plug
+        }
+    }
+
+    /** A flight controller went in or out, or the pilot answered whether the app may talk to it. */
+    private val usb = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            graph.session.lookAtQuad()
         }
     }
 
@@ -50,12 +62,16 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         storage.registerStorageVolumeCallback(mainExecutor, volumes)
+        val plugs = IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED).apply { addAction(UsbManager.ACTION_USB_DEVICE_DETACHED); addAction(UsbQuads.PERMISSION) }
+        ContextCompat.registerReceiver(this, usb, plugs, ContextCompat.RECEIVER_NOT_EXPORTED)
         graph.session.lookAtCard()
+        graph.session.lookAtQuad()
         graph.session.askServer()
     }
 
     override fun onStop() {
         storage.unregisterStorageVolumeCallback(volumes)
+        unregisterReceiver(usb)
         super.onStop()
     }
 

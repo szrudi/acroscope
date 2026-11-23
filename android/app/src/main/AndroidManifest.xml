@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <!-- the quad's flight controller on USB, for its blackbox log; a phone without USB host can still do the rest -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -28,6 +30,11 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="acroscope" android:host="pair" />
             </intent-filter>
+            <!-- a flight controller plugged in: Android offers this app, and with the choice comes the permission -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/flight_controllers" />
         </activity>
         <!-- collecting and uploading run as WorkManager's foreground work: copying and sending files -->
         <service android:name="androidx.work.impl.foreground.SystemForegroundService" android:foregroundServiceType="dataSync" tools:node="merge" />
