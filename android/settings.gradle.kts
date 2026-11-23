@@ -9,14 +9,11 @@ dependencyResolutionManagement {
     repositoriesMode = RepositoriesMode.FAIL_ON_PROJECT_REPOS
     repositories {
         google()
-        // Robolectric's Android runtime (220 MB) from Maven Central's mirror at Google: Central itself answers
-        // 429 Too Many Requests to that one file after a few fetches from an address
-        maven("https://maven-central.storage-download.googleapis.com/maven2/") {
-            content { includeModule("org.robolectric", "android-all-instrumented") }
-        }
-        mavenCentral {
-            content { excludeModule("org.robolectric", "android-all-instrumented") }
-        }
+        // Maven Central through its mirror at Google first, Central itself behind it: Central answers 429 Too Many
+        // Requests to big files (Robolectric's runtimes, hundreds of MB) from an address that fetches a lot, and a
+        // CI runner's address is one of those
+        maven("https://maven-central.storage-download.googleapis.com/maven2/") { name = "MavenCentralMirror" }
+        mavenCentral()
     }
 }
 rootProject.name = "acroscope-companion"
