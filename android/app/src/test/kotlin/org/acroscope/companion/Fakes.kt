@@ -74,8 +74,9 @@ class FakeDrop : Drop {
         progress(file.length())
     }
     override fun put(batch: String, name: String, bytes: ByteArray) = call("put $batch $name")
-    override fun commit(batch: String, files: Map<String, Long>): ServerStatus { call("commit $batch"); return ServerStatus("pending").also { statuses[batch] = it } }
-    override fun retry(batch: String): ServerStatus { call("retry $batch"); return ServerStatus("pending").also { statuses[batch] = it } }
+    // the answer is in place before the call is on record: a test that waits for the call may then change the answer
+    override fun commit(batch: String, files: Map<String, Long>): ServerStatus = ServerStatus("pending").also { statuses[batch] = it; call("commit $batch") }
+    override fun retry(batch: String): ServerStatus = ServerStatus("pending").also { statuses[batch] = it; call("retry $batch") }
 }
 
 /** The app with a scratch store, a card and a server that are stand-ins, and jobs that run inline. */
