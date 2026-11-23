@@ -48,16 +48,18 @@ shares/<token>/index.html, clip.mp4          a moment published on a secret link
 ```
 
 **Ingest** (`acroscope/ingest/`, the server runs it on complete batches, one at a time): the date and session from
-the sidecar (else the import time; `<date>-unsorted` when unnamed), the clips numbered `<date>_NNN` continuing the
+the sidecar (else the import time; `<date>-unsorted` when unnamed); the logs first, moved to `blackbox/`, attached to
+the session and decoded beside the encodes (a clip that fails no longer keeps its log out); the clips numbered `<date>_NNN` continuing the
 day's sequence over all its sessions in card order, each compressed (no-signal runs of 5 s or more cut with 1 s of
 padding: static is a flat frame that changes like noise, while a flat still picture such as dusk or a grey sky is
 kept; libx264 crf 23, keyframe every 0.5 s) and verified against the kept stretches, re-timed when the OSD's arm
 clock runs more than 5 % off the clip's, evenly through the clip, in the original's time (a DVR that wrote ~27 fps
 stamped 60: timestamps scaled, audio dropped, the factor kept as the clip's `timescale`; a cut inside an arm or one
-DVR stall is not a fast clock, and a clip whose OSD cannot be read stays as it is), the logs moved to
-`blackbox/` and attached to the session, the arms decoded, automatch run on the new clips (and, when the batch brought
-a log, on the session's clips without a match: a log may come after its clips). A failed batch stays in `inbox/`
-with its error shown; a retry does not import a clip twice.
+DVR stall is not a fast clock, and a clip whose OSD cannot be read stays as it is), each automatched once it is in
+place when the session has a log (its arms to see while the next one compresses), then automatch over the new clips
+planned whole (and, when the batch brought a log, the session's clips without a match: a log may come after its
+clips), replacing the early matches except where they were changed by hand meanwhile. A failed batch stays in
+`inbox/` with its error shown; a retry does not import a clip or a log twice.
 
 Everything acroscope knows about a session (its clips with duration and codec, its blackbox files, the matches
 video <-> arm + offset, the moments, the notes) is in one SQLite database (`ACROSCOPE_DB`, default
