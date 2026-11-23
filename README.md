@@ -98,6 +98,11 @@ read back or listed through this door; a device hears about its own batches (sta
 the recent event names. A piece whose sender goes silent is let go after a minute, and a staged batch nothing was
 added to for 7 days is dropped by the nightly housekeeping. `tests/drop_client.py` is the device's side in sixty lines.
 
+**The companion app** (`android/`, see its [README](android/README.md)) is the device this door was built for: an
+Android app that collects the DVR clips from the goggles' card and a saved blackbox log out in the field, keeps
+them on the phone, and hands them in at home. Its upload client is tested against a real `acroscope serve` from this
+same checkout, so the two sides of the protocol change together.
+
 Everything acroscope knows about a session (its clips with duration and codec, its blackbox files, the matches
 video <-> arm + offset, the moments, the notes) is in one SQLite database (`ACROSCOPE_DB`, default
 `~/.local/share/acroscope/acroscope.db`), owned by the server. The server walks the data dir in the background (at
@@ -142,6 +147,7 @@ acroscope/
   server/    the player's and a remote CLI's surface: the HTTP handler, jobs (child processes, the background), and
              drop (the paired devices' door)
   static/    the player, the configuration page, the share viewer
+android/     the companion app (Kotlin; its own build, nothing of it in the Python package or the server's image)
 ```
 
 A module imports from its own layer or an earlier one, never a later one; `tests/test_layers.py` pins it.
