@@ -47,7 +47,7 @@ class MspTest {
 
     @Test
     fun `a stray start of a frame right before a reply does not take the reply along`() {
-        for (noise in listOf("\$", "\$X", "\$\$X", "\$X\$", "x\$X?", "\$Xjunk\$")) {
+        for (noise in listOf("\$", "\$X", "\$\$X", "\$X\$", "x\$X?", "\$Xjunk\$", "\$?>", "\$Y!", "\$\$>")) {
             val line = Line(noise.toByteArray() + Msp.frame(Msp.NAME, "OttO".toByteArray(), '>'))
             assertEquals("OttO", String(MspLink(line).request(Msp.NAME)), noise)
         }
