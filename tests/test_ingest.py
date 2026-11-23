@@ -678,6 +678,121 @@ ingest._cli = _cli"""
         self.assertEqual(ran(), [["arms", "BTFL_late.bbl"], ["automatch", S, c2, "--write"]])
         self.assertEqual(db.batches()[-1]["result"], {"clips": [], "logs": ["BTFL_late.bbl"]})
 
+    # the decode and automatch children stood in for: every call noted, and automatch writing what it would (arm k
+    # to the session's k-th clip, at the run's number as offset, an existing match kept as the real one keeps it);
+    # a `HAND` run number has the pilot fix the first clip's match by hand during that run
+    LOG_FIRST = """import json
+import threading
+from acroscope.store import sessions
+matching = threading.Event()
+def note(*a):
+    with open(os.environ["CALLS"], "a") as f:
+        f.write(json.dumps(a) + "\\n")
+runs = [0]
+def _cli(*a):
+    if a[0] == "arms":
+        matching.wait(4)                        # a decode still running when an automatch that did not wait for it starts
+    note(*a)
+    if a[0] == "automatch":
+        matching.set()
+        runs[0] += 1
+        st, S = sessions.store(), a[1]
+        s = st.load(S)
+        order = [v["file"] for v in sorted(s["videos"], key=lambda v: v["name"])]
+        if runs[0] == int(os.environ.get("HAND", 0)):
+            st.set_match(S, order[0], s["blackbox"][0], 1, 99.0)
+        for c in a[2:-1]:
+            st.add_match_if_attached(S, c, s["blackbox"][0], order.index(c) + 1, float(runs[0]))
+    return 0
+ingest._cli = _cli
+real = encode.compress
+def compress(src, dst, pct=None):
+    s = ingest.sessions.store().load(json.load(open(os.environ["CALLS"] + ".session"))["s"])
+    note("compress", src.name, s["blackbox"])
+    return real(src, dst, pct)
+encode.compress = compress"""
+
+    def log_batch(self, name: str, session: str, clips: int, bad: tuple = ()) -> tuple[Path, str]:
+        """A batch of `clips` clips (the numbers in `bad` not videos) and a log, with a sidecar and a manifest."""
+        b = self.data / "inbox" / name
+        b.mkdir(parents=True)
+        make_clip(b / "VID0001.mov")
+        for i in range(2, clips + 1):
+            shutil.copy(b / "VID0001.mov", b / f"VID{i:04d}.mov")
+        for i in bad:
+            (b / f"VID{i:04d}.mov").write_text("not a video")
+        (b / "BTFL_BLACKBOX_LOG_X_20261011_120000_B.bbl").write_bytes(b"H Product:Blackbox flight data recorder\n")
+        (b / "import.json").write_text(json.dumps({"date": "2026-10-11", "session": session}))
+        (b / ".done").write_text(json.dumps({"files": {f.name: f.stat().st_size for f in b.iterdir() if not f.name.startswith(".")}}))
+        calls = self.root / f"calls-{name}"
+        self.env["CALLS"] = str(calls)
+        Path(str(calls) + ".session").write_text(json.dumps({"s": f"2026-10-11-{session}"}))
+        return b, f"2026-10-11-{session}"
+
+    def calls(self) -> list:
+        p = Path(self.env["CALLS"])
+        return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+    def test_the_log_first_and_a_match_after_each_clip(self):
+        """2026-11-23: seven clips and a log, and nothing of the log to see until the last clip was compressed. The
+        log goes in before the first clip and its decode starts beside the encode; each clip is automatched once it
+        is in place, so its arms show while the next one compresses; the session is then planned whole as before
+        (#26), and that pass replaces what the early ones wrote, except on a clip the pilot changed by hand meanwhile."""
+        LOG = "BTFL_BLACKBOX_LOG_X_20261011_120000_B.bbl"
+        b, S = self.log_batch("first", "early", 3)
+        self.env["HAND"] = "2"                                          # while the second clip's early match runs
+        r = self.run_patched("first", self.LOG_FIRST)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        db = Db(self.root / "t.db")
+        c1, c2, c3 = [v["file"] for v in sorted(db.load(S)["videos"], key=lambda v: v["name"])]
+        ran = self.calls()
+        self.assertEqual([x for x in ran if x[0] == "compress"],
+                         [["compress", f"VID000{i}.mov", [LOG]] for i in (1, 2, 3)])   # the log attached before the first clip
+        self.assertIn(["arms", LOG], ran)
+        self.assertLess(ran.index(["arms", LOG]), [x[0] for x in ran].index("automatch"))   # decoded before anything is matched
+        self.assertEqual([x for x in ran if x[0] != "compress" and x[0] != "arms"],
+                         [["automatch", S, c1, "--write"], ["automatch", S, c2, "--write"], ["automatch", S, c3, "--write"],
+                          ["automatch", S, c1, c2, c3, "--write"]])
+        # the early match of 002 ran before 003 was compressed: its arms were there to see meanwhile
+        self.assertLess(ran.index(["automatch", S, c2, "--write"]), ran.index(["compress", "VID0003.mov", [LOG]]))
+        got = {(m["video"], m["arm"]): m["offset"] for m in db.load(S)["matches"]}
+        self.assertEqual(got, {(c1, 1): 99.0, (c2, 2): 4.0, (c3, 3): 4.0})   # the whole plan's (run 4), 001 as set by hand
+        self.assertEqual(db.batches()[-1]["result"], {"clips": ["2026-10-11_001", "2026-10-11_002", "2026-10-11_003"], "logs": [LOG]})
+        self.assertFalse(b.exists())
+
+    def test_a_bad_clip_does_not_hold_back_the_log(self):
+        """2026-11-22: the batch stopped at an unfinished recording, and its log, which came after the clips, stayed
+        in the batch with it: no arms, no matches for the clips that went in. Taken first, the log is in, decoded and
+        has matched the clips before the bad one; the retry (a good copy pushed over the bad one) passes the size
+        check without the log, which is no longer in the batch, and does not attach it twice."""
+        LOG = "BTFL_BLACKBOX_LOG_X_20261011_120000_B.bbl"
+        b, S = self.log_batch("bad", "bad", 2, bad=(2,))
+        r = self.run_patched("bad", self.LOG_FIRST)
+        self.assertNotEqual(r.returncode, 0)
+        db = Db(self.root / "t.db")
+        self.assertEqual(db.batches()[-1]["status"], "failed")
+        self.assertEqual(db.load(S)["blackbox"], [LOG])
+        self.assertTrue((self.data / "blackbox" / LOG).exists())
+        self.assertFalse((b / LOG).exists())
+        c1 = db.load(S)["videos"][0]["file"]
+        self.assertIn(["automatch", S, c1, "--write"], self.calls())
+        self.assertEqual([(m["video"], m["arm"]) for m in db.load(S)["matches"]], [(c1, 1)])
+        self.assertTrue((b / "VID0002.mov").exists())                    # waits for the retry
+        Path(self.env["CALLS"]).unlink()
+        make_clip(b / "VID0002.mov")                                     # the laptop pushes a good copy, and a new manifest
+        man = json.loads((b / ".done").read_text())
+        man["files"]["VID0002.mov"] = (b / "VID0002.mov").stat().st_size
+        (b / ".done").write_text(json.dumps(man))
+        r = self.run_patched("bad", self.LOG_FIRST)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(db.load(S)["blackbox"], [LOG])
+        self.assertEqual(sorted(p.name for p in (self.data / "blackbox").iterdir()), [LOG])
+        c2 = [v["file"] for v in sorted(db.load(S)["videos"], key=lambda v: v["name"])][1]
+        self.assertEqual(self.calls()[-1], ["automatch", S, c2, "--write"])
+        self.assertEqual(db.batches()[-1]["status"], "done")
+        self.assertEqual(db.batches()[-1]["result"], {"clips": ["2026-10-11_002"], "logs": [LOG]})
+        self.assertFalse(b.exists())
+
 
 class HostileInboxTest(_Scratch):
     def test_symlink_and_manifest_paths_fail_the_batch(self):

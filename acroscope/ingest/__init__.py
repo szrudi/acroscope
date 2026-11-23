@@ -10,11 +10,14 @@ when unnamed), the clips numbered <date>_NNN continuing the day's sequence over 
 each original moved to originals/<session>/<id>.mov and compressed (no-signal stretches of 5 s or more cut: flat and
 changing like noise; H.264 as the player wants it) into videos/<session>/<id>.mp4, verified against the kept stretches,
 re-timed when its OSD clock runs off its own (fix_clock), and kept for
-ORIGINAL_DAYS after that; the logs moved to blackbox/ and attached; then the arms decoded and automatch run on the
-new clips, and when the batch brought a log, on every clip of the session without a match (a log pushed after its
-clips). The batch row in the database carries the status, the progress and any error; a failed batch stays in
-inbox/ for a retry. Everything heavy (ffmpeg, the decoder, the OSD reader) runs in child processes when the server
-drives this, so requests keep flowing.
+ORIGINAL_DAYS after that. The logs go first: moved to blackbox/ and attached before the first clip, their arms decoded
+beside the encodes, so a clip that fails does not keep them out. With a log in the session, each clip is automatched
+once it is in place (bounded by the matches before it: its arms to see while the next one compresses); at the end
+automatch plans the new clips whole, and when the batch brought a log, every clip of the session without a match (a
+log pushed after its clips), replacing the early matches unless they were changed meanwhile. The batch row in the
+database carries the status, the progress and any error; a failed batch stays in inbox/ for a retry. Everything
+heavy (ffmpeg, the decoder, the OSD reader) runs in child processes when the server drives this, so requests keep
+flowing.
 
 The inbox is hostile ground: the push user owns everything in a batch dir (names, modes, links, the manifest) and
 this runs as root. So: only regular files with one link and a plain basename count, symlinks and directories fail
@@ -27,6 +30,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -105,6 +109,17 @@ def _unique(dst: Path) -> Path:
         i += 1
 
 
+def _decode(logs: list[str]) -> None:
+    """The arms of each log, decoded in a child unless the cache has them."""
+    for b in logs:
+        if blackbox.index_bbl(b, cached_only=True) is None:
+            _cli("arms", b)
+
+
+def _matches_of(s: dict, clip: str) -> list:
+    return sorted((m["bbl"], m["arm"], m["offset"], m["note"]) for m in s["matches"] if m["video"] == clip)
+
+
 def _place(taken: Path, part: Path, dst: Path, orig: Path) -> None:
     """A recorded clip's files into place: the encode under videos/, the source under originals/. Each step is a
     rename, and a retry after a crash in between does what is left."""
@@ -142,6 +157,19 @@ def process_batch(batch: str, log=print) -> dict:
         logs = [f for f in entries if f.name.lower().endswith(".bbl")]
         (VIDEOS_DIR / session).mkdir(parents=True, exist_ok=True)
         (ORIGINALS_DIR / session).mkdir(parents=True, exist_ok=True)
+        # the logs before the clips: their arms are there from the start, and a clip that fails does not keep them out
+        BLACKBOX_DIR.mkdir(parents=True, exist_ok=True)
+        attached = [f for s, f in done_clips.items() if s.lower().endswith(".bbl")]   # an earlier attempt took these
+        for f in logs:
+            dst = BLACKBOX_DIR / f.name
+            if dst.exists() and dst.stat().st_size == os.lstat(f).st_size:
+                f.unlink()                                               # the same dump again
+            else:
+                dst = intake._take(f, _unique(dst))
+            db.record_log(batch, f.name, session, dst.name)
+            attached.append(dst.name)
+        decode = threading.Thread(target=_decode, args=(attached,), name=f"decode {batch}")   # a child: the thread only waits
+        decode.start()
         # an earlier attempt died after recording a clip and before its files were in place: put them there now
         recorded = {v["file"]: v for v in db.load(session)["videos"]}
         for source, file in done_clips.items():
@@ -152,6 +180,7 @@ def process_batch(batch: str, log=print) -> dict:
         todo = sorted((inbox | set(staged)) - set(done_clips))
         names = next_numbers(date, len(todo))
         imported = []
+        early = {}                       # clip -> its matches as its early automatch left them
         for i, source in enumerate(todo):
             cid, name = new_id(), names.pop(0)
             prog = {"clip": name, "source": source, "step": "compress", "done": i, "total": len(todo), "pct": 0}
@@ -190,27 +219,25 @@ def process_batch(batch: str, log=print) -> dict:
             if not res["verified"]:
                 log(f"{batch}: {name}: compressed clip is {res['duration']} s, kept stretches add up to {sum(e - s for s, e in res['kept']):.1f} s: original kept")
             imported.append(dst.name)
+            # its arms to see while the next clip compresses: the clip alone, bounded by the matches before it
+            if db.load(session)["blackbox"]:
+                decode.join()
+                db.set_batch(batch, progress={**prog, "step": "automatch", "done": i + 1, "pct": None})
+                _cli("automatch", session, dst.name, "--write")
+                early[dst.name] = _matches_of(db.load(session), dst.name)
         _tidy(work)
-        BLACKBOX_DIR.mkdir(parents=True, exist_ok=True)
-        attached = []
-        for f in logs:
-            dst = BLACKBOX_DIR / f.name
-            if dst.exists() and dst.stat().st_size == os.lstat(f).st_size:
-                f.unlink()                                               # the same dump again
-            else:
-                dst = intake._take(f, _unique(dst))
-            db.attach(session, dst.name)
-            attached.append(dst.name)
-        db.set_batch(batch, progress={"step": "decode", "logs": attached})
-        for b in attached:
-            if blackbox.index_bbl(b, cached_only=True) is None:
-                _cli("arms", b)
+        decode.join()
         # this batch's clips, and with a log: every clip of the session without a match yet (the log may come in a
         # batch of its own after its clips, as on 2026-10-14; a clip already matched keeps its matches)
         now_in = db.load(session)
         matched = {m["video"] for m in now_in["matches"]}
         to_match = [v["file"] for v in now_in["videos"] if v["file"] in imported
                     or (attached and v["file"] not in matched and not v.get("missing_since"))]
+        # the early matches were each clip bounded by the ones before it; the whole plan replaces them, but not on a
+        # clip whose matches changed since (set by hand in the player meanwhile): those are the pilot's
+        for c, ms in early.items():
+            if ms and _matches_of(now_in, c) == ms:
+                db.unmatch(session, c)
         db.set_batch(batch, progress={"step": "automatch", "clips": len(to_match)})
         if to_match:                         # in one run: the clips are planned together, not each bounded by the last (#26)
             _cli("automatch", session, *to_match, "--write")

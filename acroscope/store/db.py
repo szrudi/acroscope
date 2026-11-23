@@ -468,6 +468,19 @@ class Db:
     def add_batch_clip(self, batch: str, source: str, file: str, session: str) -> None:
         self.c.execute("INSERT OR REPLACE INTO batch_clips (batch, source, file, session) VALUES (?, ?, ?, ?)", (batch, source, file, session))
 
+    def record_log(self, batch: str, source: str, session: str, bbl: str) -> None:
+        """A log a batch brought, attached to its session, and noted as the batch's (under batch_clips, with the
+        clips: the retry's size check passes a log no longer in the batch), in one transaction."""
+        self.ensure_session(session)
+        self.c.execute("BEGIN IMMEDIATE")
+        try:
+            self.attach(session, bbl)
+            self.add_batch_clip(batch, source, bbl, session)
+            self.c.execute("COMMIT")
+        except BaseException:
+            self.c.execute("ROLLBACK")
+            raise
+
     def record_ingested(self, batch: str, source: str, session: str, file: str, name: str, duration, codec, **fields) -> None:
         """An ingested clip: its row, its fields and the batch's note of it, in one transaction. A clip is either
         recorded and done for the retry, or not there at all (half a row would show as missing and use up a number)."""
