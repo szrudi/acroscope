@@ -1,0 +1,45 @@
+package org.acroscope.companion.core
+
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+
+class PairingTest {
+    private val token = "sII2Bs1adMHfku5e1T3FYIh9W1U7m8OASln7pIJCU08"
+
+    @Test
+    fun `the code from the configuration page`() {
+        val p = Pairing.parse("acroscope://pair?url=https%3A%2F%2Facroscope.example.org&token=$token")
+        assertEquals(Pairing("https://acroscope.example.org", token), p)
+        assertEquals(p, Pairing.parse("  acroscope://pair?token=$token&url=https%3A%2F%2Facroscope.example.org%2F \n"))   // pasted with what came along
+        assertEquals("https://acroscope.example.org:8443/base", Pairing.parse("acroscope://pair?url=https%3A%2F%2Facroscope.example.org%3A8443%2Fbase%2F&token=$token").url)
+    }
+
+    @Test
+    fun `a server on this machine or the home network may be plain http`() {
+        for (url in listOf("http://127.0.0.1:8070", "http://localhost:8070", "http://10.0.2.2:8070", "http://192.168.1.20:8070", "http://10.10.10.17:8070", "http://172.16.0.9"))
+            assertEquals(url, Pairing.parse("acroscope://pair?url=${java.net.URLEncoder.encode(url, "UTF-8")}&token=$token").url)
+    }
+
+    @Test
+    fun `what is not a code says why`() {
+        val cases = mapOf(
+            "" to "code",
+            "hello" to "code",
+            "https://acroscope.example.org/config#devices" to "code",
+            "acroscope://pair?url=https%3A%2F%2Fx.example.org" to "token",
+            "acroscope://pair?token=$token" to "address",
+            "acroscope://pair?url=ftp%3A%2F%2Fx.example.org&token=$token" to "address",
+            "acroscope://pair?url=not%20a%20url&token=$token" to "address",
+            "acroscope://pair?url=http%3A%2F%2Facroscope.example.org&token=$token" to "https",       // a token over plain http across the internet
+            "acroscope://pair?url=https%3A%2F%2Fx.example.org&token=short" to "token",
+            "acroscope://pair?url=https%3A%2F%2Fx.example.org&token=${token}%20x" to "token",
+            "acroscope://other?url=https%3A%2F%2Fx.example.org&token=$token" to "code",
+        )
+        for ((text, why) in cases) {
+            val e = assertFailsWith<IllegalArgumentException>(text) { Pairing.parse(text) }
+            assertTrue(why in (e.message ?: ""), "$text: ${e.message}")
+        }
+    }
+}
