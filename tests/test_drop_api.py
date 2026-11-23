@@ -59,7 +59,8 @@ class DropApiTest(unittest.TestCase):
         (cls.data / "videos").mkdir(parents=True)
         cls.port = free_port()
         cls.env = dict(os.environ, ACROSCOPE_DB=str(cls.root / "t.db"), ACROSCOPE_DATA=str(cls.data), ACROSCOPE_CACHE=str(cls.root / "cache"),
-                       ACROSCOPE_URL="", ACROSCOPE_DROP_QUOTA=str(QUOTA), ACROSCOPE_DROP_MIN_FREE="0", ACROSCOPE_FONTS=str(cls.root / "fonts"))
+                       ACROSCOPE_URL="", ACROSCOPE_DROP_QUOTA=str(QUOTA), ACROSCOPE_DROP_MIN_FREE="0", ACROSCOPE_FONTS=str(cls.root / "fonts"),
+                       ACROSCOPE_DROP_URL="https://drop.example.org/")
         (cls.root / "fonts").mkdir()
         cls.proc = subprocess.Popen([sys.executable, "-m", "acroscope.cli", "serve", "--host", "127.0.0.1", "--port", str(cls.port), "--no-warm"],
                                     env=cls.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -383,6 +384,7 @@ class DropApiTest(unittest.TestCase):
         status, d = self.api("POST", "/api/devices", {"name": "  goggles phone "})
         self.assertEqual((status, d["name"], set(d)), (200, "goggles phone", {"id", "name", "token", "created_at"}))
         status, out = self.api("GET", "/api/devices")
+        self.assertEqual(out["url"], "https://drop.example.org")                # where the drop is reached, for the pairing code
         row = next(x for x in out["devices"] if x["id"] == d["id"])
         self.assertEqual(row, {"id": d["id"], "name": "goggles phone", "created_at": d["created_at"], "last_seen_at": None, "revoked_at": None})
         self.assertNotIn(d["token"], json.dumps(out))                         # the token was said once
@@ -534,6 +536,14 @@ class InProcessTest(unittest.TestCase):
                 status, h, body = self.c.request("PATCH", up, b"0123456789", {**self.octets, "Upload-Offset": "0"})
             self.assertEqual((status, h.get("connection"), json.loads(body)), (500, "close", {"error": said}))
         self.assertEqual(self.c.patch(up, 0, b"0123456789"), 10)
+
+    def test_a_drop_without_an_address_of_its_own_says_none(self):
+        """The drop is reached where the server is, unless `ACROSCOPE_DROP_URL` says it has a host of its own."""
+        api = DropClient(self.c.url.geturl(), None)
+        self.assertEqual(api.json("GET", "/api/devices"), (200, {"devices": [{"id": self.dev["id"], "name": "phone", "created_at": self.dev["created_at"],
+                                                                              "last_seen_at": None, "revoked_at": None}], "url": None}))
+        with mock.patch.object(server, "DROP_URL", "https://drop.example.org"):
+            self.assertEqual(api.json("GET", "/api/devices")[1]["url"], "https://drop.example.org")
 
     def test_the_scheme_in_any_case(self):
         for scheme in ("bearer", "BEARER"):

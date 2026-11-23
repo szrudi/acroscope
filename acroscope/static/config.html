@@ -596,14 +596,15 @@ async function renderOsd() {
 
 // ---- devices (#75): what may upload through the drop. A token per device, said once: when it is paired
 let paired = null;                                    // the device just paired, with its token: gone when the page loads again
+let dropUrl = null;                                   // where devices reach the drop, when the server names a host of its own for it
 function renderDevices() {
   const box = $('#devicesPanel');
   box.innerHTML = `<h2>devices</h2><p class="hint">a phone with the companion app uploads what it collected through this server. Each device has a token of its own, shown once, when it is paired. Revoking a device stops its token and drops what it had staged; what it already handed in stays.</p>` +
-    `<div class="row"><input id="dvName" placeholder="a name for the device" maxlength="60"><button class="primary" id="dvAdd">pair a device</button></div><div id="dvCode"></div><div id="dvList"></div>`;
+    `<div class="row"><input id="dvName" placeholder="a name for the device" maxlength="60"><button class="primary" id="dvAdd">pair a device</button><span id="dvAt" class="dim"></span></div><div id="dvCode"></div><div id="dvList"></div>`;
   const day = x => x ? esc(new Date(x).toLocaleDateString()) : '';
   const code = () => {
     if (!paired) { $('#dvCode').innerHTML = ''; return; }
-    const link = `acroscope://pair?${new URLSearchParams({url: location.origin, token: paired.token})}`;
+    const link = `acroscope://pair?${new URLSearchParams({url: dropUrl || location.origin, token: paired.token})}`;
     $('#dvCode').innerHTML = `<div class="pair"><b>${esc(paired.name)}</b> is paired. Its code is shown this once: open it on the phone, or paste it into the app.` +
       `<div class="row"><input id="dvLink" readonly value="${esc(link)}"><button class="small" id="dvCopy">copy</button><a class="btn" id="dvOpen" href="${esc(link)}">open in the app</a></div></div>`;
     $('#dvCopy').onclick = async () => { try { await navigator.clipboard.writeText(link); status('code copied'); } catch { $('#dvLink').select(); } };
@@ -611,6 +612,9 @@ function renderDevices() {
   const load = async () => {
     const r = await api('/api/devices');
     if (r.error) { err(r.error); return; }
+    dropUrl = r.url || null;
+    $('#dvAt').textContent = `devices upload at ${(dropUrl || location.origin).replace(/^https?:\/\//, '')}`;
+    code();
     $('#dvList').innerHTML = (r.devices || []).slice().reverse().map(d => `<div class="shrow" data-device="${esc(d.id)}"><span class="st ${d.revoked_at ? 'revoked' : 'active'}">${d.revoked_at ? 'revoked' : 'paired'}</span>` +
       `<span class="what"><b>${esc(d.name)}</b><span class="dim">since ${day(d.created_at)} · ${d.revoked_at ? 'revoked ' + day(d.revoked_at) : d.last_seen_at ? 'last seen ' + day(d.last_seen_at) : 'not seen yet'}</span></span>` +
       `<span class="act">${d.revoked_at ? '' : `<button class="small" data-revoke="${esc(d.id)}">revoke</button>`}</span></div>`).join('') || '<p class="hint">no device paired</p>';

@@ -43,6 +43,10 @@ SHARE_REVOKE = os.environ.get("ACROSCOPE_SHARE_REVOKE", "").strip()
 # filesystem: the commit is one rename), the bytes all devices together may have staged, and the room the data dir
 # keeps free of staged files.
 DROP_DIR = DATA_DIR / "drop"
+# Where a device reaches the drop when that is not where the player is: a host of its own in front of /drop/, so the
+# player's host keeps its login on every path. It goes into the pairing code. The host is the operator's (set in
+# the environment), not this repo's; unset, the code names the address the configuration page was opened at.
+DROP_URL = os.environ.get("ACROSCOPE_DROP_URL", "").strip().rstrip("/")
 DROP_QUOTA = int(os.environ.get("ACROSCOPE_DROP_QUOTA") or 50 << 30)
 DROP_MIN_FREE = int(os.environ.get("ACROSCOPE_DROP_MIN_FREE") or 5 << 30)
 

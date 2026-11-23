@@ -396,13 +396,16 @@ class ConfigPageTest(unittest.TestCase):
         drop takes; the list says what is paired and when it was last seen; a revoke stops the token."""
         from urllib.parse import parse_qs, urlparse
         devices = lambda: json.loads(urllib.request.urlopen(self.url + "/api/devices").read())["devices"]
+        before = devices()                                                  # what other tests paired (and revoked) stays listed
         page = self.open("/config#devices")
         page.wait_for_selector("#dvAdd")
-        page.wait_for_function("() => document.querySelector('#dvList').textContent.includes('no device paired')")
+        page.wait_for_function("(n) => document.querySelector('#dvAt').textContent && document.querySelectorAll('.shrow[data-device]').length === n", arg=len(before))
+        if not before:
+            self.assertIn("no device paired", page.text_content("#dvList"))
         page.click("#dvAdd")                                                # no name: refused, and nothing is made
         page.wait_for_selector("#err.on")
         self.assertIn("name", page.text_content("#err"))
-        self.assertEqual(devices(), [])
+        self.assertEqual(devices(), before)
         self.assertIsNone(page.query_selector("#dvLink"))
         page.fill("#dvName", "field <b>phone</b>")
         page.click("#dvAdd")
@@ -415,7 +418,7 @@ class ConfigPageTest(unittest.TestCase):
         token = q["token"][0]
         self.assertEqual(page.get_attribute("#dvOpen", "href"), link)
         self.assertEqual(page.input_value("#dvName"), "")
-        [d] = devices()
+        [d] = [x for x in devices() if x not in before]
         self.assertEqual((d["name"], d["last_seen_at"], d["revoked_at"]), ("field <b>phone</b>", None, None))
         def row(p, has="") -> list:
             """The device's row as the page shows it, once the list is loaded (and says `has`)."""
@@ -433,7 +436,7 @@ class ConfigPageTest(unittest.TestCase):
         today = page.evaluate("() => new Date().toLocaleDateString()")
         self.assertIn(f"last seen {today}", row(page, "last seen")[2])      # and the device was seen meanwhile
         again = self.open("/config#devices")                                # the page loaded again: the code was said once
-        again.wait_for_selector(".shrow[data-device]")
+        again.wait_for_selector(f'.shrow[data-device="{d["id"]}"]')
         self.assertIsNone(again.query_selector("#dvLink"))
         self.assertNotIn(token, again.content())
         self.assertEqual(row(again)[0], "paired")
@@ -444,20 +447,41 @@ class ConfigPageTest(unittest.TestCase):
         again.click(f'[data-revoke="{d["id"]}"]')
         self.assertEqual(row(again, "revoked")[0], "revoked")
         self.assertEqual(self.drop_status(token), 401)
-        self.assertTrue(devices()[0]["revoked_at"])
-        self.assertIsNone(again.query_selector("[data-revoke]"))
+        self.assertTrue(next(x for x in devices() if x["id"] == d["id"])["revoked_at"])
+        self.assertIsNone(again.query_selector(f'.shrow[data-device="{d["id"]}"] [data-revoke]'))
         self.assertIn(f"revoked {today}", row(again)[2])
         # the code box goes when its device is revoked on the page that still shows it
         page.fill("#dvName", "second phone")
         page.click("#dvAdd")
         page.wait_for_function("() => document.querySelector('#dvCode').textContent.includes('second phone')")
-        second = next(x for x in devices() if x["name"] == "second phone")
-        page.wait_for_function("() => document.querySelectorAll('.shrow[data-device]').length === 2")
-        self.assertEqual(page.eval_on_selector_all(".shrow[data-device]", "els => els.map(e => e.dataset.device)"), [second["id"], d["id"]])   # the newest first
+        second = [x for x in devices() if x["name"] == "second phone"][-1]
+        page.wait_for_function("(n) => document.querySelectorAll('.shrow[data-device]').length === n", arg=len(before) + 2)
+        self.assertEqual(page.eval_on_selector_all(".shrow[data-device]", "els => els.map(e => e.dataset.device)")[:2], [second["id"], d["id"]])   # the newest first
         page.once("dialog", lambda dlg: dlg.accept())
         page.click(f'[data-revoke="{second["id"]}"]')
         page.wait_for_function("() => !document.querySelector('#dvLink')")
-        self.assertEqual([x["revoked_at"] is not None for x in devices()], [True, True])
+        self.assertEqual([x["revoked_at"] is not None for x in devices() if x["id"] in (d["id"], second["id"])], [True, True])
+
+    def test_the_pairing_code_names_the_drops_own_address(self):
+        """A drop on a host of its own (the server says so): the code sends the app there, not to this page's host."""
+        page = self.open("/config#tags")
+
+        def with_address(route):
+            answer = route.fetch()
+            route.fulfill(response=answer, json={**answer.json(), "url": "https://drop.example.org"})
+        page.route("**/api/devices", lambda route: with_address(route) if route.request.method == "GET" else route.continue_())
+        page.click("#tabs [data-tab=devices]")
+        page.wait_for_function("() => document.querySelector('#dvAt') && document.querySelector('#dvAt').textContent.includes('drop.example.org')")
+        page.fill("#dvName", "phone for the drop's host")
+        page.click("#dvAdd")
+        page.wait_for_selector("#dvLink")
+        from urllib.parse import parse_qs, urlparse
+        self.assertEqual(parse_qs(urlparse(page.input_value("#dvLink")).query)["url"], ["https://drop.example.org"])
+        plain = self.open("/config#devices")                                 # and where the server names none, this page's own
+        plain.wait_for_selector(".shrow[data-device]")
+        self.assertIn(self.url.split("//")[1], plain.text_content("#dvAt"))
+        for d in json.loads(urllib.request.urlopen(self.url + "/api/devices").read())["devices"]:
+            urllib.request.urlopen(urllib.request.Request(f"{self.url}/api/devices/{d['id']}", method="DELETE"))
 
     def test_devices_tab_on_the_phone(self):
         page = self.open("/config#devices", size=PHONE)

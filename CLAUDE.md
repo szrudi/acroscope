@@ -55,6 +55,8 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   copy when the server reports that id done; a device sees and retries only its own batches (`batches.device`). The
   server's part runs in request threads (the copying is I/O); nothing there decodes or probes what arrived. Tokens are
   in the `devices` table as SHA-256 hashes: `db.add_device` returns the token once, nothing else may print or store it.
+  `ACROSCOPE_DROP_URL` is the drop's own address when it has a host of its own (it goes into the pairing code); like
+  `ACROSCOPE_SHARE_URL`, it and the vhost behind it are homelab settings (never in this repo).
 - OSD reader (`acroscope/sources/osd.py`): every layout is a profile derived from Betaflight's own (#10,
   `sources/osdprofile.py` over `sources/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm`
   font rendered into digit templates, the DVR's grid at x 3, y -4, 24 x 36 px; STATS rows found by their labels). The

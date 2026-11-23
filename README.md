@@ -82,10 +82,12 @@ GET    /drop/events                          what the recent sessions were calle
 ```
 
 Every request carries `Authorization: Bearer <token>` (and the tus ones `Tus-Resumable: 1.0.0`); without a valid
-token every path under `/drop/` answers 401. A reverse proxy with a login in front of the player lets `/drop/*`
-through without it (a background upload cannot sign in); so that this is no way around the login, the server
-answers 404 to any path with a `.` or `..` segment, also one behind an encoded slash, on every route
-(`/api/sessions/../../drop/x` would match the proxy's rule with its dots resolved and arrive as written). Until the commit the files are staged under `drop/<device>/<batch>/`,
+token every path under `/drop/` answers 401. Where a reverse proxy with a login stands in front of the player, the
+drop needs a way past it (a background upload cannot sign in): a host of its own that serves `/drop/*` and nothing
+else, with `ACROSCOPE_DROP_URL` set to it so the pairing code sends the app there (unset, the code names the address
+the configuration page was opened at). So that such a rule is no way around the login, the server answers 404 to any
+path with a `.` or `..` segment, also one behind an encoded slash, on every route (`/api/sessions/../../drop/x`
+matches a proxy's `/drop/*` with its dots resolved and arrives as written). Until the commit the files are staged under `drop/<device>/<batch>/`,
 outside the inbox; the commit checks every file against the manifest, writes `.done` with it and renames the folder to
 `inbox/<batch>/`, so ingest finds exactly what the laptop's push leaves there and nothing half-arrived is ever in
 the inbox. A device is trusted like the push user, no further: a batch is named as the laptop names one
@@ -255,7 +257,8 @@ POST /api/session/<s>/rename            {name}        POST /api/session/<s>/date
 POST /api/session/<s>/move              {video, to}   POST /api/session/<s>/merge  {into}
 DELETE /api/session/<s>/clip?video=     the clip into trash/<date>/<s>/, its matches and moments gone
 GET  /api/inbox                         batches and their status    POST /api/inbox/<batch>/retry
-GET  /api/devices                       the devices paired for the drop (never a token)       DELETE /api/devices/<id>   revoke one
+GET  /api/devices                       the devices paired for the drop (never a token), and the drop's own address
+                                        when it has one                                       DELETE /api/devices/<id>   revoke one
 POST /api/devices                       {name}: a new device with its token, in this answer only
      /drop/...                          the paired devices' own door, with their token: see *The drop*
 GET  /api/tricks[?craft=]               the tricks in force: params with default and source, presets, crafts (declared

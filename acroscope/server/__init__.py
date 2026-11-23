@@ -23,7 +23,7 @@ from ..match import manual
 from ..review import moments
 from ..sources import blackbox, osdprofile, video
 from ..store import db, edits, sessions
-from ..config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
+from ..config import BLACKBOX_DIR, CACHE_DIR, DROP_URL, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
 
 
 STATIC = Path(__file__).parent.parent / "static"
@@ -262,7 +262,7 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "inbox"]:
                 return self._json(ingest.list_inbox())
             if parts == ["api", "devices"]:                             # what may upload through the drop; never a token
-                return self._json({"devices": sessions.store().devices()})
+                return self._json({"devices": sessions.store().devices(), "url": DROP_URL or None})
             if parts[:2] == ["api", "cli"] and len(parts) == 3:
                 j = jobs.job(parts[2])
                 return self._json(j if j else {"error": f"no job {parts[2]} (finished and fetched, or the server restarted)"}, 200 if j else 404)
