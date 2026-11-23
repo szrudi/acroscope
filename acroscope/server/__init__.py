@@ -121,12 +121,15 @@ class Handler(BaseHTTPRequestHandler):
             super().log_message(fmt, *args)
 
     # ---- helpers
-    def _json(self, obj, code=200):
+    def _json(self, obj, code=200, close=False):
+        """`close`: the connection ends with this answer (the request's body was not read)."""
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if close:
+            self.send_header("Connection", "close")
         self.end_headers()
         if self.command != "HEAD":           # a HEAD with a body corrupts the next request on a keep-alive connection
             self.wfile.write(body)
@@ -199,8 +202,16 @@ class Handler(BaseHTTPRequestHandler):
     # ---- routes
     def _drop(self) -> bool:
         """A request under /drop/ (the door a paired device uploads through, #75) goes to its own routes, which ask
-        for the device's token; True when this was one."""
-        parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/") if p]
+        for the device's token; True when the request was answered here. A path with a . or .. segment is nowhere,
+        on every route: a proxy that lets /drop/ past its login matches the path decoded and with its dots resolved,
+        and sends it on as written, so /api/sessions/../../drop/x would pass as the drop's and be routed here as the
+        API's. The dots are looked for as the proxy sees them, in the whole path decoded: an encoded slash hides
+        none (/api/sessions/x%2F..%2F..%2F..%2Fdrop)."""
+        path = urlparse(self.path).path
+        if any(seg in (".", "..") for seg in unquote(path).split("/")):
+            self._json({"error": "not found"}, 404, close=True)
+            return True
+        parts = [unquote(p) for p in path.strip("/").split("/") if p]
         if parts[:1] != ["drop"]:
             return False
         drop.handle(self, parts[1:])
@@ -211,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):                         # only the drop has these two
         if not self._drop():
-            self.send_error(501, f"Unsupported method ({self.command!r})")
+            self.send_error(501, f"Unsupported method ({self.command!r})")       # as for any method the server has not
 
     do_OPTIONS = do_PATCH
 

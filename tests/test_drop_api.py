@@ -125,6 +125,30 @@ class DropApiTest(unittest.TestCase):
         self.assertEqual(self.c.request("GET", "/drop/device")[0], 200)      # and the device itself is still in
         self.assertEqual(self.api("GET", "/api/inbox")[0], 200)              # the rest of the API is as it was: no token
 
+    def test_dots_in_a_path_lead_nowhere(self):
+        """A reverse proxy that lets /drop/ past its login matches on the path with its dots resolved, and sends the
+        path on as it was written: /api/sessions/../../drop/x would pass as the drop's and be served as the session
+        list. So a path with a . or .. segment, written plainly or percent-encoded, is nowhere, whatever it names."""
+        sessions_ = self.api("GET", "/api/sessions")
+        self.assertEqual(sessions_[0], 200)
+        for who in (None, self.dev["token"]):
+            c = DropClient(self.url, who)
+            for method, path in (("GET", "/api/sessions/../../drop/device"), ("GET", "/api/sessions/%2e%2e/%2E%2E/drop/device"),
+                                 ("GET", "/api/inbox/./../../drop/x"), ("GET", "/drop/../api/sessions"), ("GET", "/drop/%2e%2e/api/sessions"),
+                                 ("GET", "/./drop/device"), ("GET", "/video/../drop/x.mp4"), ("HEAD", "/api/sessions/../../drop/device"),
+                                 ("GET", "/api/sessions/x%2F..%2F..%2F..%2Fdrop%2Fy"), ("GET", "/api/sessions/x%2f%2e%2e%2f..%2F..%2Fdrop"),
+                                 ("GET", "/api/sessions%2F..%2F..%2Fdrop%2Fy"), ("GET", "/api/inbox/x%2F."),
+                                 ("POST", "/api/scan/../../drop/x"), ("DELETE", "/api/tags/../../drop/x"), ("PATCH", "/api/x/../../drop/x"),
+                                 ("OPTIONS", "/api/x/../../drop/x")):
+                status, h, body = c.request(method, path, b"{}" if method in ("POST", "PATCH") else None)
+                self.assertEqual((status, h.get("connection")), (404, "close"), (who, method, path))
+                self.assertEqual(body, b"" if method == "HEAD" else b'{"error": "not found"}', (who, method, path))
+        self.assertEqual(self.api("GET", "/api/sessions"), sessions_)          # a plain path is served as ever
+        self.assertEqual(self.c.request("GET", "/drop/device")[0], 200)
+        self.assertEqual(self.api("GET", "/api/session/..hidden")[0], 404)     # dots inside a name are a name (one that is not there)
+        self.assertEqual(self.api("DELETE", "/api/tags/deg%2Fs"), (200, {"removed": False}))   # and a slash inside one is a name too
+        self.assertEqual(self.api("GET", "/api/sessions/%252e%252e/x")[0], 200)   # encoded twice: not dots to anyone
+
     def test_the_device_asks_who_it_is(self):
         status, me = self.c.json("GET", "/drop/device")
         self.assertEqual(status, 200)
@@ -373,8 +397,9 @@ class DropApiTest(unittest.TestCase):
         self.assertFalse((self.data / "drop" / d["id"]).exists())             # what it had staged went with it
         self.assertEqual(self.api("DELETE", f"/api/devices/{d['id']}"), (200, {"revoked": False}))
         self.assertEqual(self.api("DELETE", "/api/devices/d0000000000"), (200, {"revoked": False}))
-        for bad in ("videos", "D0123456789", d["id"] + "0", "d012345678%2Fx", "..%2F..%2Fvideos"):
+        for bad in ("videos", "D0123456789", d["id"] + "0", "d012345678%2Fx"):
             self.assertEqual(self.api("DELETE", f"/api/devices/{bad}")[0], 400, bad)   # not a device's id: nothing is looked for
+        self.assertEqual(self.api("DELETE", "/api/devices/..%2F..%2Fvideos")[0], 404)
         self.assertTrue((self.data / "videos").is_dir())
         self.assertTrue(next(x for x in self.api("GET", "/api/devices")[1]["devices"] if x["id"] == d["id"])["revoked_at"])
 
