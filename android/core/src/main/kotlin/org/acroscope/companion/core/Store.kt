@@ -27,6 +27,9 @@ class Store(private val root: File, private val files: File = root) {
         return File(File(files, "batches"), batch)
     }
 
+    /** A place for a file on its way into a batch (a log as it comes off the quad). */
+    val scratch: File get() = File(files, "tmp")
+
     /** Bytes free where the batches are kept. */
     val free: Long get() = generateSequence(files) { it.parentFile }.first { it.exists() }.usableSpace
 
