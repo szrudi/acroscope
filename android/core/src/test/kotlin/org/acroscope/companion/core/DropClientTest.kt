@@ -15,11 +15,12 @@ import kotlin.test.assertTrue
 /** The client's handling of what a real server only does on a bad day: a stand-in server scripted per request. */
 class DropClientTest {
     private val requests = mutableListOf<String>()
+    private val connections = mutableSetOf<Int>()                           // the client's port per request: one per connection
     private var respond: (HttpExchange, String) -> Unit = { x, _ -> x.sendResponseHeaders(500, -1) }
     private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
         createContext("/") { x ->
             val line = "${x.requestMethod} ${x.requestURI.rawPath} at=${x.requestHeaders.getFirst("Upload-Offset") ?: "-"}"
-            synchronized(requests) { requests += line }
+            synchronized(requests) { requests += line; connections += x.remoteAddress.port }
             try { respond(x, line) } finally { x.close() }
         }
         start()
@@ -65,6 +66,16 @@ class DropClientTest {
         assertEquals(listOf("park"), client.events())
         assertEquals("Bearer " + "t".repeat(43), seen["authorization"])
         assertEquals("1.0.0", seen["tus-resumable"])
+    }
+
+    @Test
+    fun `one connection serves call after call, whichever client object makes it`() {
+        respond = { x, _ -> x.answer(200, body = """{"events": []}""") }
+        val pairing = Pairing("http://127.0.0.1:${server.address.port}", "t".repeat(43))
+        repeat(3) { DropClient(pairing).events() }                              // as the app does: a client per call
+        client.events()
+        assertEquals(4, requests.size)
+        assertEquals(1, connections.size, connections.toString())
     }
 
     @Test
