@@ -157,8 +157,7 @@ def process_batch(batch: str, log=print) -> dict:
         logs = [f for f in entries if f.name.lower().endswith(".bbl")]
         (VIDEOS_DIR / session).mkdir(parents=True, exist_ok=True)
         (ORIGINALS_DIR / session).mkdir(parents=True, exist_ok=True)
-        # the logs first (2026-11-23: seven clips, and the log's arms only to see once the last one was compressed;
-        # 2026-11-22: a clip that failed kept the log in the batch with it): attached now, decoded beside the encodes
+        # the logs before the clips: their arms are there from the start, and a clip that fails does not keep them out
         BLACKBOX_DIR.mkdir(parents=True, exist_ok=True)
         attached = [f for s, f in done_clips.items() if s.lower().endswith(".bbl")]   # an earlier attempt took these
         for f in logs:
