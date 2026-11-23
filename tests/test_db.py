@@ -146,14 +146,81 @@ class MigrateTest(unittest.TestCase):
             for col in ("name", "cuts", "original", "original_until", "timescale"):
                 db.c.execute(f"ALTER TABLE videos DROP COLUMN {col}")
             db.c.execute("ALTER TABLE batches DROP COLUMN result")
+            db.c.execute("ALTER TABLE batches DROP COLUMN device")
             db2 = Db(Path(tmp) / "t.db")
             db2.set_video_fields("2026-10-14-s", "c1.mp4", name="2026-10-14_001", cuts=[[0, 4.0]], original="originals/x.mov",
                                  original_until="2026-10-21", timescale=2.2)
             v = db2.load("2026-10-14-s")["videos"][0]
             self.assertEqual((v["name"], v["cuts"], v["original"], v["original_until"], v["timescale"]),
                              ("2026-10-14_001", [[0, 4.0]], "originals/x.mov", "2026-10-21", 2.2))
-            db2.set_batch("b1", status="done", result={"clips": [], "logs": []})
+            db2.set_batch("b1", status="done", result={"clips": [], "logs": []}, device="d1")
             self.assertEqual(db2.batches()[0]["result"], {"clips": [], "logs": []})
+            self.assertEqual(db2.batches()[0]["device"], "d1")
+
+
+class DeviceTest(unittest.TestCase):
+    """The devices that may upload through the drop (#75)."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Db(Path(self.tmp.name) / "t.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_token_is_given_once_and_kept_as_a_hash(self):
+        d = self.db.add_device("field phone")
+        self.assertEqual(set(d), {"id", "name", "token", "created_at"})
+        self.assertRegex(d["id"], r"^d[0-9a-f]{10}$")
+        self.assertRegex(d["token"], r"^[A-Za-z0-9_-]{43}$")              # 32 random bytes: nothing to guess
+        rows = self.db.devices()
+        self.assertEqual(rows, [{"id": d["id"], "name": "field phone", "created_at": d["created_at"], "last_seen_at": None, "revoked_at": None}])
+        on_disk = b"".join(f.read_bytes() for f in Path(self.tmp.name).iterdir())          # the file and its write-ahead log
+        self.assertIn(b"field phone", on_disk)
+        self.assertNotIn(d["token"].encode(), on_disk)
+
+    def test_the_token_names_its_device_until_revoked(self):
+        a, b = self.db.add_device("phone"), self.db.add_device("phone")    # the same name twice: two devices
+        self.assertNotEqual(a["id"], b["id"])
+        self.assertNotEqual(a["token"], b["token"])
+        self.assertEqual(self.db.device_for(a["token"])["id"], a["id"])
+        self.assertEqual(self.db.device_for(b["token"])["name"], "phone")
+        for wrong in (a["token"] + "x", a["token"][:-1], a["id"], "", None):
+            self.assertIsNone(self.db.device_for(wrong), wrong)
+        self.assertTrue(self.db.revoke_device(a["id"]))
+        self.assertFalse(self.db.revoke_device(a["id"]))                   # once
+        self.assertFalse(self.db.revoke_device("d0000000000"))
+        self.assertIsNone(self.db.device_for(a["token"]))
+        self.assertEqual(self.db.device_for(b["token"])["id"], b["id"])    # the other one still uploads
+        by_id = {x["id"]: x for x in self.db.devices()}
+        self.assertTrue(by_id[a["id"]]["revoked_at"])                      # the row stays: what was paired, and until when
+        self.assertIsNone(by_id[b["id"]]["revoked_at"])
+
+    def test_a_device_is_seen_when_its_token_is_used(self):
+        d = self.db.add_device("phone")
+        self.assertIsNone(self.db.devices()[0]["last_seen_at"])
+        self.db.device_for("not-" + d["token"])
+        self.assertIsNone(self.db.devices()[0]["last_seen_at"])            # a wrong token is nobody
+        self.db.device_for(d["token"])
+        seen = self.db.devices()[0]["last_seen_at"]
+        self.assertAlmostEqual(datetime.fromisoformat(seen).timestamp(), datetime.now(timezone.utc).timestamp(), delta=5)
+
+    def test_a_device_name_is_some_text(self):
+        for bad in ("", "   ", None, 7, "x" * 61, "two\nlines"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                self.db.add_device(bad)
+        self.assertEqual(self.db.add_device("  Rudi's Pixel  ")["name"], "Rudi's Pixel")
+        self.assertEqual(len(self.db.add_device("x" * 60)["name"]), 60)
+
+    def test_a_batch_keeps_its_device(self):
+        """The device that handed a batch in stays on its row through ingest's own updates; a pushed batch has none."""
+        self.db.set_batch("20261011-100000-ab12", device="d1")
+        self.db.set_batch("20261011-100000-ab12", status="running", progress={"step": "compress"})
+        self.db.set_batch("20261011-110000-9", status="done")
+        got = {b["id"]: (b["device"], b["status"]) for b in self.db.batches()}
+        self.assertEqual(got, {"20261011-100000-ab12": ("d1", "running"), "20261011-110000-9": (None, "done")})
+        self.assertEqual(self.db.batch("20261011-100000-ab12")["device"], "d1")
+        self.assertEqual(self.db.batch("20261011-100000-ab12")["progress"], {"step": "compress"})
+        self.assertIsNone(self.db.batch("20261011-999999-zz"))
 
 
 class BatchBackfillTest(unittest.TestCase):

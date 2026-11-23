@@ -10,6 +10,7 @@ back); purge() is the only thing that removes rows, and it is explicit.
 import hashlib
 import json
 import re
+import secrets
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -41,7 +42,8 @@ CREATE TABLE IF NOT EXISTS moments (
   PRIMARY KEY (session, id));
 CREATE TABLE IF NOT EXISTS batches (
   id TEXT PRIMARY KEY, status TEXT NOT NULL, session TEXT, date TEXT, started_at TEXT, finished_at TEXT,
-  error TEXT, progress TEXT, result TEXT);
+  error TEXT, progress TEXT, result TEXT,
+  device TEXT);   -- the device that handed the batch in through the drop; NULL = pushed into inbox/ directly
 CREATE TABLE IF NOT EXISTS batch_clips (
   batch TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE, source TEXT NOT NULL, file TEXT NOT NULL, session TEXT NOT NULL,
   PRIMARY KEY (batch, source));
@@ -57,6 +59,11 @@ CREATE TABLE IF NOT EXISTS shares (
   text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT,
   sticks INTEGER, audio INTEGER, poster REAL,   -- what the bundle was made with, so an edit starts from it
   down_at TEXT);   -- when the bundle was taken out of the world (here and where it was pushed); NULL = may still be up
+-- a device that may upload batches through the drop (a phone with the companion app): its token is kept only as a
+-- hash; the row stays after a revoke as the record of what was paired
+CREATE TABLE IF NOT EXISTS devices (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL,
+  last_seen_at TEXT, revoked_at TEXT);
 """
 
 # The tag vocabulary a new database starts with: categories with a colour, tags with the colour the player used
@@ -115,8 +122,10 @@ class Db:
         for col, decl in (("name", "TEXT"), ("cuts", "TEXT"), ("original", "TEXT"), ("original_until", "TEXT"), ("timescale", "REAL")):
             if col not in have:
                 self.c.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
-        if "result" not in {r["name"] for r in self.c.execute("PRAGMA table_info(batches)")}:
-            self.c.execute("ALTER TABLE batches ADD COLUMN result TEXT")
+        have = {r["name"] for r in self.c.execute("PRAGMA table_info(batches)")}
+        for col in ("result", "device"):
+            if col not in have:
+                self.c.execute(f"ALTER TABLE batches ADD COLUMN {col} TEXT")
         have = {r["name"] for r in self.c.execute("PRAGMA table_info(shares)")}
         for col, decl in (("sticks", "INTEGER"), ("audio", "INTEGER"), ("poster", "REAL")):
             if col not in have:
@@ -446,17 +455,22 @@ class Db:
 
     # ---- ingest batches ---------------------------------------------------------------------------------------
 
+    @staticmethod
+    def _batch(r) -> dict:
+        b = dict(r)
+        b["progress"] = json.loads(b["progress"]) if b["progress"] else None
+        b["result"] = json.loads(b["result"]) if b["result"] else None
+        return b
+
     def batches(self) -> list[dict]:
-        out = []
-        for r in self.c.execute("SELECT * FROM batches ORDER BY started_at"):
-            b = dict(r)
-            b["progress"] = json.loads(b["progress"]) if b["progress"] else None
-            b["result"] = json.loads(b["result"]) if b["result"] else None
-            out.append(b)
-        return out
+        return [self._batch(r) for r in self.c.execute("SELECT * FROM batches ORDER BY started_at")]
+
+    def batch(self, batch: str) -> dict | None:
+        r = self.c.execute("SELECT * FROM batches WHERE id = ?", (batch,)).fetchone()
+        return self._batch(r) if r else None
 
     def set_batch(self, batch: str, **fields) -> None:
-        allowed = {"status", "session", "date", "started_at", "finished_at", "error", "progress", "result"}
+        allowed = {"status", "session", "date", "started_at", "finished_at", "error", "progress", "result", "device"}
         cols = {k: (json.dumps(v) if k in ("progress", "result") and v is not None else v) for k, v in fields.items() if k in allowed}
         self.c.execute("INSERT OR IGNORE INTO batches (id, status) VALUES (?, 'pending')", (batch,))
         if cols:
@@ -558,6 +572,38 @@ class Db:
         if used:
             raise ValueError(f"category {name} still has tags: {', '.join(used)}")
         return self.c.execute("DELETE FROM tag_categories WHERE name = ?", (name,)).rowcount > 0
+
+    # ---- devices -------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()       # the token is 32 random bytes: a plain hash is enough
+
+    def add_device(self, name: str) -> dict:
+        """A new device: {id, name, token, created_at}. The token is in this answer and nowhere else."""
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 60 or any(ord(c) < 32 for c in name):
+            raise ValueError("a device's name is one line of 1 to 60 characters")
+        d = {"id": "d" + secrets.token_hex(5), "name": name.strip(), "token": secrets.token_urlsafe(32), "created_at": now()}
+        self.c.execute("INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)",
+                       (d["id"], d["name"], self._token_hash(d["token"]), d["created_at"]))
+        return d
+
+    def devices(self) -> list[dict]:
+        return [dict(r) for r in self.c.execute("SELECT id, name, created_at, last_seen_at, revoked_at FROM devices ORDER BY created_at, id")]
+
+    def device_for(self, token) -> dict | None:
+        """The device a token belongs to ({id, name}), noted as seen now; None for a wrong or a revoked one."""
+        if not isinstance(token, str) or not token:
+            return None
+        r = self.c.execute("SELECT id, name, last_seen_at FROM devices WHERE token_hash = ? AND revoked_at IS NULL", (self._token_hash(token),)).fetchone()
+        if r is None:
+            return None
+        if (r["last_seen_at"] or "")[:16] != now()[:16]:        # to the minute: an upload is many requests
+            self.c.execute("UPDATE devices SET last_seen_at = ? WHERE id = ?", (now(), r["id"]))
+        return {"id": r["id"], "name": r["name"]}
+
+    def revoke_device(self, device: str) -> bool:
+        return self.c.execute("UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (now(), device)).rowcount > 0
 
     # ---- settings ------------------------------------------------------------------------------------------------
 
