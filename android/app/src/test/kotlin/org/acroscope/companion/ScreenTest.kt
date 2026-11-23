@@ -297,6 +297,32 @@ class ScreenTest {
     }
 
     @Test
+    fun `uploading by itself is a switch, there once the app is paired`() {
+        val id = collected()
+        show()
+        assertFalse(seen("auto"))                                               // not paired: nothing to switch on
+        w.paired()
+        wait { seen("auto") }
+        assertEquals(emptyList(), w.runner.ran)
+        click("auto")
+        assertTrue(w.store.now.settings.autoUpload)
+        assertEquals(listOf("auto"), w.runner.ran)                              // a batch waits: an unattended run is asked for at once
+        click("auto")
+        assertFalse(w.store.now.settings.autoUpload)
+        assertEquals(listOf("auto"), w.runner.ran)                              // off: nothing more is asked for
+        w.runner.ran.clear()
+        w.store.update { it.copy(settings = it.settings.copy(autoUpload = true)) }
+        w.card(FakeFile("VID00003.mov", movie(50)))
+        w.session.collectNow(TREE) { false }                                    // switched on, and something new was collected
+        assertEquals(listOf("auto"), w.runner.ran)
+        w.runner.ran.clear()
+        w.session.uploadNow { false }
+        w.session.kick()                                                        // handed in: now it is the server's turn, to be looked in on
+        assertEquals(listOf("follow"), w.runner.ran)
+        assertEquals(Stage.COMMITTED, w.store.now.batch(id)!!.stage)
+    }
+
+    @Test
     fun `an upload that cannot go says why in the pilot's words`() {
         val id = collected()
         show()

@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
         graph.session.lookAtCard()
         graph.session.lookAtQuad()
         graph.session.askServer()
+        graph.session.kick()
     }
 
     override fun onStop() {

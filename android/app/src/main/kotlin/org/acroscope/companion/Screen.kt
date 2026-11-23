@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -78,6 +79,15 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                     }
                 }
                 if (pairing) item { PairCard(onPair = { g.session.pair(it); pairing = false }, onClose = { pairing = false }) }
+                if (state.settings.pairing != null) item {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Upload by itself")
+                            Dim("when the phone is on Wi-Fi that costs nothing and the server answers")
+                        }
+                        Switch(state.settings.autoUpload, { g.session.setAuto(it) }, Modifier.testTag("auto"))
+                    }
+                }
                 note?.let { item { Notice(it, Modifier.testTag("note")) { g.session.note.value = null } } }
                 item {
                     Section("Where are you flying?") {

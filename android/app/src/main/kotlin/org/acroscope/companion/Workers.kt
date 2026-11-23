@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import androidx.core.app.NotificationCompat
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -21,12 +22,20 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.acroscope.companion.core.Auto
+import org.acroscope.companion.core.Next
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /** What starts a collect and an upload so that they go on when the screen is left. */
 interface Runner {
     /** Collect what is there: the quad's log, and the clips of the card under `tree` when there is one. */
     fun collect(tree: Uri?)
     fun upload()
+    /** An upload by itself, as soon as the phone is on a network that costs nothing. */
+    fun auto()
+    /** A look, in a while, at how the server is doing with what was handed in. */
+    fun follow()
 }
 
 /** The jobs as WorkManager work: one collect and one upload at a time, each showing its progress as a notification. */
@@ -39,6 +48,28 @@ class WorkRunner(private val context: Context) : Runner {
     override fun upload() {
         WorkManager.getInstance(context).enqueueUniqueWork("upload", ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<UploadWorker>().setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build())
+    }
+
+    // Both survive the app being closed and the phone restarting: WorkManager keeps them. KEEP: asking again while
+    // one waits (for the network, or for its next try) changes nothing, so its backing off is not started over.
+    override fun auto() {
+        WorkManager.getInstance(context).enqueueUniqueWork(AUTO, ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<AutoUploadWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES).build())
+    }
+
+    override fun follow() {
+        WorkManager.getInstance(context).enqueueUniqueWork(FOLLOW, ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<FollowWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setInitialDelay(2, TimeUnit.MINUTES)
+                .setBackoffCriteria(BackoffPolicy.LINEAR, 5, TimeUnit.MINUTES).build())
+    }
+
+    companion object {
+        const val AUTO = "auto-upload"
+        const val FOLLOW = "follow"
     }
 }
 
@@ -86,5 +117,43 @@ class CollectWorker(context: Context, params: WorkerParameters) : Job(context, p
 
 class UploadWorker(context: Context, params: WorkerParameters) : Job(context, params, 2, "Uploading to acroscope") {
     override val progress get() = applicationContext.graph.session.upload
-    override fun run() = applicationContext.graph.session.uploadNow { isStopped }
+    override fun run() = applicationContext.graph.session.let { s -> s.say(s.uploadNow { isStopped }) }
+}
+
+/**
+ * The upload by itself. It runs when the phone is on an unmetered network; a run the phone cuts short, or one that
+ * finds no server (not at home), is tried again later with what went up kept; what only the pilot can put right is
+ * said in a notification and not tried again.
+ */
+class AutoUploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val g = applicationContext.graph
+        if (!Auto.wanted(g.store.now)) return Result.success()
+        val result = withContext(Dispatchers.IO) { g.session.uploadNow { isStopped } }
+        return when (Auto.next(result)) {
+            Next.LATER -> Result.retry()
+            Next.DONE -> Result.success().also { g.session.kick() }             // the server's turn: look in on it later
+            Next.PILOT -> Result.success().also {
+                applicationContext.getSystemService(NotificationManager::class.java).notify(102, notification(applicationContext, "Uploading to acroscope", g.session.say(result)))
+            }
+        }
+    }
+}
+
+/** A look at what the server made of the batches handed in; again later while it is still busy with one, for a
+ *  day at most (the app looks too whenever it is opened). When it reports a batch done, the phone's copy goes. */
+class FollowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val g = applicationContext.graph
+        try {
+            withContext(Dispatchers.IO) { g.uploader.refresh() }
+        } catch (e: IOException) {
+            return if (runAttemptCount < TRIES) Result.retry() else Result.success()
+        }
+        return if (Auto.following(g.store.now) && runAttemptCount < TRIES) Result.retry() else Result.success()
+    }
+
+    companion object {
+        const val TRIES = 24
+    }
 }

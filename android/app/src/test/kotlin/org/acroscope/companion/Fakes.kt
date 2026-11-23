@@ -55,6 +55,8 @@ class InlineRunner : Runner {
     val ran = mutableListOf<String>()
     override fun collect(tree: Uri?) { ran += "collect"; graph.session.collectNow(tree) { false } }
     override fun upload() { ran += "upload"; graph.session.uploadNow { false } }
+    override fun auto() { ran += "auto" }
+    override fun follow() { ran += "follow" }
 }
 
 class FakeDrop : Drop {

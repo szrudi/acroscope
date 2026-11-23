@@ -25,8 +25,13 @@ What it does now (0.1):
 - **Upload**: every pending batch, oldest first, resumable from the last byte the server has. The phone's copy of a
   batch is deleted when the server reports it done, not when the upload ends. A failed batch can be tried again on
   the server from here.
+- **Upload by itself** (a switch, once the app is paired): when the phone is on a network that costs nothing and
+  the server answers, what waits goes up without the app being opened, also after a restart of the phone. A run
+  the phone cuts short, or one that finds no server (not at home), is tried again later; what went up stays. What
+  only you can put right (the device revoked, a file gone) is said in a notification and not tried again. The
+  server is looked in on afterwards, and the phone's copy goes once it reports the batch done.
 
-Not yet: uploading by itself on Wi-Fi, a QR code for pairing.
+Not yet: a QR code for pairing.
 
 ## Pairing
 

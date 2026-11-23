@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import org.acroscope.companion.core.Auto
 import org.acroscope.companion.core.Batches
 import org.acroscope.companion.core.Blackbox
 import org.acroscope.companion.core.SerialPort
@@ -138,7 +139,20 @@ class Session(private val g: Graph) {
         collect.value = done
         card.value = see()
         quad.value = seeQuad()
+        kick()
         return done
+    }
+
+    /** Uploading by itself, switched on or off; on, it starts as soon as the phone is on a network that costs nothing. */
+    fun setAuto(on: Boolean) {
+        g.store.update { it.copy(settings = it.settings.copy(autoUpload = on)) }
+        kick()
+    }
+
+    /** Ask for an unattended upload when one is wanted, and for a later look at what the server is still busy with. */
+    fun kick() {
+        if (Auto.wanted(g.store.now)) g.runner.auto()
+        if (Auto.following(g.store.now)) g.runner.follow()
     }
 
     /** The quad's log into the pending batch. The line stays open afterwards: erasing the flash is offered, and only
@@ -186,9 +200,15 @@ class Session(private val g: Graph) {
         g.runner.upload()
     }
 
-    /** The upload itself, on the caller's thread. */
-    fun uploadNow(stop: () -> Boolean): Work.Finished {
+    /** The upload itself, on the caller's thread; what came of it is on the screen and returned for the job to act on. */
+    fun uploadNow(stop: () -> Boolean): UploadResult {
         val result = g.uploader.run({ p -> upload.value = Work.Running(p.name, p.done, p.total) }, stop)
+        batches.prune()
+        upload.value = say(result)
+        return result
+    }
+
+    fun say(result: UploadResult): Work.Finished {
         val done = when (result) {
             is UploadResult.Done -> Work.Finished(if (result.batches == 0) "nothing to upload" else "uploaded: the server takes it from here", true)
             UploadResult.NotPaired -> Work.Finished("pair the app with the server first", false)
@@ -201,8 +221,6 @@ class Session(private val g: Graph) {
                 else -> "the server refused: ${result.message}"
             }, false)
         }
-        batches.prune()
-        upload.value = done
         return done
     }
 
@@ -211,6 +229,7 @@ class Session(private val g: Graph) {
             try { "${g.collector.addLog(p.name, p.modified, p.open).name} added" } catch (e: Exception) { e.message ?: "${p.name}: could not be read" }
         }
         note.value = said.joinToString("\n")
+        kick()
     }
 
     fun pair(code: String) = scope.launch {
