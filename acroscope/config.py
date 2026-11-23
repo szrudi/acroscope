@@ -39,6 +39,13 @@ SHARE_URL = os.environ.get("ACROSCOPE_SHARE_URL", "").strip().rstrip("/")
 SHARE_PUSH = os.environ.get("ACROSCOPE_SHARE_PUSH", "").strip()
 SHARE_REVOKE = os.environ.get("ACROSCOPE_SHARE_REVOKE", "").strip()
 
+# The drop (#75): where a paired device's batch is staged until it is whole (a sibling of inbox/ on the same
+# filesystem: the commit is one rename), the bytes all devices together may have staged, and the room the data dir
+# keeps free of staged files.
+DROP_DIR = DATA_DIR / "drop"
+DROP_QUOTA = int(os.environ.get("ACROSCOPE_DROP_QUOTA") or 50 << 30)
+DROP_MIN_FREE = int(os.environ.get("ACROSCOPE_DROP_MIN_FREE") or 5 << 30)
+
 # Encoding the player relies on (Chrome on Linux has no HEVC): H.264, keyframe every 0.5 s at 60 fps.
 H264_ARGS = ["-c:v", "libx264", "-preset", "medium", "-crf", "23", "-pix_fmt", "yuv420p",
              "-g", "30", "-keyint_min", "30", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"]
