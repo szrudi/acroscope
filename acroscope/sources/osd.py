@@ -386,8 +386,9 @@ def carry_reading(was: Path, now: Path, fps: float = 2.0) -> None:
         dst.write_text(src.read_text())
 
 
-def read_timers(path: Path, fps: float = 2.0, layout: str | None = None) -> dict:
-    """Read the timers through the clip: {layout, rows: [{t, top, bottom, conf}]} (cached per clip)."""
+def read_timers(path: Path, fps: float = 2.0, layout: str | None = None, progress=None) -> dict:
+    """Read the timers through the clip: {layout, rows: [{t, top, bottom, conf}]} (cached per clip). `progress` hears
+    each frame's time in the clip as it is read: nothing, when the reading is the cached one."""
     layouts(fresh=True)                    # the profiles as stored now, for the whole clip and the cache's stamp alike
     cp = _timers_cache(path, fps)
     if cp.exists():
@@ -398,6 +399,8 @@ def read_timers(path: Path, fps: float = 2.0, layout: str | None = None) -> dict
     for t, buf in _frames(path, fps, layout=layout):
         top, bot, conf = read_frame(buf, tpl, layout)
         rows.append({"t": round(t, 2), "top": top, "bottom": bot, "conf": round(conf, 3)})
+        if progress:
+            progress(t)
     out = {"layout": layout, "rows": rows}
     cp.write_text(json.dumps(out))
     return out

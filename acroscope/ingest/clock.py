@@ -107,12 +107,13 @@ def retime(path: Path, k: float) -> None:
     os.replace(tmp, path)
 
 
-def fix_clock(path: Path, kept: list, log=print) -> float | None:
+def fix_clock(path: Path, kept: list, log=print, progress=None) -> float | None:
     """1.0 (on time), the factor a clip was re-timed by, or None when it cannot tell (an OSD the reader cannot read, no
     arm long enough, an uneven clock): the clip then stays as it is. The OSD's arm clock against the clip's, in the
-    original's time (`kept`: the stretches compress kept), read at automatch's 2 fps."""
+    original's time (`kept`: the stretches compress kept), read at automatch's 2 fps. The reading is the slow part:
+    `progress` hears how many seconds into the clip it is."""
     try:
-        k = clock_fit(osd.read_timers(path, 2.0)["rows"], kept)
+        k = clock_fit(osd.read_timers(path, 2.0, progress=progress)["rows"], kept)
     except Exception:  # noqa: BLE001  (an OSD the reader has no layout for: nothing to go by)
         return None
     if k is None:

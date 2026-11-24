@@ -377,7 +377,12 @@ class ClipTest(unittest.TestCase):
             with mock.patch.object(osd, "PROFILE_SOURCE", lambda: (doc, "t")), mock.patch("acroscope.config.CACHE_DIR", Path(tmp) / "cache"), \
                     mock.patch.object(osd, "SHIPPED", Path(tmp) / "none.json"):
                 self.assertEqual(osd.detect_layout(clip), "synth")
-                rt = osd.read_timers(clip, 2.0, layout="synth")
+                heard = []
+                rt = osd.read_timers(clip, 2.0, layout="synth", progress=heard.append)
+                self.assertEqual(heard, [r["t"] for r in rt["rows"]])           # each frame's time, as it is read
+                self.assertGreater(len(heard), 40)
+                self.assertEqual(osd.read_timers(clip, 2.0, layout="synth", progress=heard.append), rt)
+                self.assertEqual(len(heard), len(rt["rows"]))                   # the cached reading: nothing read, nothing said
                 runs = osd.video_arms(rt)
                 self.assertEqual(len(runs), 1)
                 # drawn armed from 4.0 s; the reader's frame sampling (ffmpeg's fps filter hands over a frame up to 0.2 s
