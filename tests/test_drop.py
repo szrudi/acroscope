@@ -1,5 +1,6 @@
 """The drop (#75) on its own: a device's batch staged file by file on a scratch data dir and handed to the inbox
 whole. No server here; tests/test_drop_api.py drives the routes."""
+import errno
 import io
 import json
 import os
@@ -185,6 +186,80 @@ class UploadTest(_Drop):
             t.join(10)
         self.assertEqual(self.staged("VID00001.mov").read_bytes(), b"a" * 10)
         self.assertEqual(drop.commit(DEV, B, {"files": {"VID00001.mov": 10, "VID00002.mov": len(CLIP)}})["status"], "pending")
+
+    def gone(self, stopped: threading.Event):
+        """A sender that brings three bytes and then says nothing, until it is stopped: (its stream, an event set once
+        it has gone silent)."""
+        silent = threading.Event()
+
+        class Gone(io.BytesIO):
+            def read1(self, n=-1):
+                if self.tell() < 3:
+                    return super().read1(3)
+                silent.set()
+                stopped.wait(10)
+                return b""
+        return Gone(b"a" * 10), silent
+
+    def test_the_device_come_back_takes_its_file_over(self):
+        """A sender went away without a word (a phone off the Wi-Fi sends no FIN) and its request still holds the file.
+        The next piece for that file, starting where the file ends, is the same device come back: the old sender is
+        stopped the way its request said, what it brought stays, and the new piece goes on from there at once."""
+        stopped, first = threading.Event(), []
+        stream, silent = self.gone(stopped)
+        drop.create(DEV, B, "VID00001.mov", 10)
+        t = threading.Thread(target=lambda: first.append(drop.append(DEV, B, "VID00001.mov", 0, stream, 10, stop=stopped.set)))
+        t.start()
+        self.assertTrue(silent.wait(10))
+        started = time.monotonic()
+        self.assertEqual(drop.append(DEV, B, "VID00001.mov", 3, io.BytesIO(b"b" * 7), 7), 10)
+        self.assertLess(time.monotonic() - started, 2)
+        t.join(10)
+        self.assertEqual(first, [3])                                         # the old one ended short, with what it brought
+        self.assertEqual(self.staged("VID00001.mov").read_bytes(), b"aaa" + b"b" * 7)
+
+    def test_a_piece_at_the_wrong_place_stops_nobody(self):
+        """Only a piece that starts where the file ends takes it over: one sent from an older offset is refused as it
+        would be on a free file, and the sender that holds the file is left to go on."""
+        stopped = threading.Event()
+        stream, silent = self.gone(stopped)
+        drop.create(DEV, B, "VID00001.mov", 10)
+        t = threading.Thread(target=lambda: drop.append(DEV, B, "VID00001.mov", 0, stream, 10, stop=stopped.set))
+        t.start()
+        try:
+            self.assertTrue(silent.wait(10))
+            for at, n, error in ((0, 10, drop.Conflict), (3, 8, drop.TooLarge)):
+                with self.assertRaises(error):
+                    drop.append(DEV, B, "VID00001.mov", at, io.BytesIO(b"b" * n), n)
+                self.assertFalse(stopped.is_set())
+        finally:
+            stopped.set()
+            t.join(10)
+
+    def test_a_sender_that_does_not_let_go_keeps_the_file(self):
+        """Stopping is asked, not forced: when the old sender is still there after `TAKEOVER` seconds the new piece is
+        told the file is busy, as it is when the old one gave no way to stop it."""
+        asked, release = [], threading.Event()
+        stream, silent = self.gone(release)
+
+        def stop():                                       # as a socket that is gone already answers being shut down
+            asked.append(1)
+            raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+        drop.create(DEV, B, "VID00001.mov", 10)
+        t = threading.Thread(target=lambda: drop.append(DEV, B, "VID00001.mov", 0, stream, 10, stop=stop))
+        t.start()
+        try:
+            self.assertTrue(silent.wait(10))
+            with mock.patch.object(drop, "TAKEOVER", 0.3):
+                started = time.monotonic()
+                with self.assertRaises(drop.Busy):
+                    drop.append(DEV, B, "VID00001.mov", 3, io.BytesIO(b"b" * 7), 7)
+            self.assertGreaterEqual(time.monotonic() - started, 0.3)
+            self.assertTrue(asked)
+        finally:
+            release.set()
+            t.join(10)
+        self.assertEqual(self.staged("VID00001.mov").read_bytes(), b"aaa")
 
 
 class NamesTest(_Drop):

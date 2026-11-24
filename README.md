@@ -95,7 +95,9 @@ the inbox. A device is trusted like the push user, no further: a batch is named 
 under a plain name, the declared sizes count against a quota (`ACROSCOPE_DROP_QUOTA`, 50 GB for all devices together)
 and the room the disk keeps (`ACROSCOPE_DROP_MIN_FREE`, 5 GB), and a device reaches only its own staging. Nothing is
 read back or listed through this door; a device hears about its own batches (status, error, what they became) and
-the recent event names. A piece whose sender goes silent is let go after a minute, and a staged batch nothing was
+the recent event names. A piece whose sender goes silent is let go after a minute, or as soon as the device is back with the
+next piece for that file (it starts where the file ends: the old sender is stopped and the new one goes on from
+there); a sender that breaks off in a piece is no error, what came is kept. A staged batch nothing was
 added to for 7 days is dropped by the nightly housekeeping. `tests/drop_client.py` is the device's side in sixty lines.
 
 Everything acroscope knows about a session (its clips with duration and codec, its blackbox files, the matches

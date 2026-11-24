@@ -36,6 +36,7 @@ MAX_FILE = 4 << 30         # bytes in one file: the largest a FAT32 card holds, 
 MAX_FILES = 500            # files in one batch
 MAX_BATCHES = 20           # batches one device has staged at a time
 STALE_DAYS = 7             # a staged batch nothing was added to for this long is dropped
+TAKEOVER = 5               # seconds a piece waits for the sender before it to let go of the file
 CHUNK = 1 << 20
 
 
@@ -60,7 +61,7 @@ class Busy(Refused):
 
 
 _meta = threading.Lock()         # held for every look at and change to what is declared
-_busy: set[Path] = set()         # the staged files a piece is arriving on
+_busy: dict[Path, object] = {}   # the staged files a piece is arriving on, each with the way to stop its sender (or None)
 
 
 # ---- names -------------------------------------------------------------------------------------------------------
@@ -183,26 +184,41 @@ def offset(device: str, batch: str, name: str) -> tuple[int, int]:
     return _arrived(d, name), length
 
 
-def append(device: str, batch: str, name: str, at: int, stream, n: int) -> int:
+def append(device: str, batch: str, name: str, at: int, stream, n: int, stop=None) -> int:
     """`n` bytes from `stream` (a buffered reader: its read1 gives what has arrived) onto a staged file, which must
     end at `at`. Returns where it ends now: short of at + n when the stream ended early. What came is kept either
-    way, also when the stream breaks or goes silent and raises."""
+    way, also when the stream breaks or goes silent and raises.
+
+    `stop` ends this piece from outside: called from another thread, it makes `stream` end. A piece that fits a file
+    another one is still arriving on is its device come back (only that device reaches the file, and it knows where
+    the file ends): the sender before it is stopped and this piece goes on from there, instead of waiting until a
+    connection that died without a word is given up."""
     d, name = _stage(device, batch), name_ok(name)
     if not _whole(at) or not _whole(n):
         raise ValueError("an offset and a size are whole numbers of bytes")
     f = d / "files" / name
-    with _meta:
-        length = _lengths(d).get(name)
-        if length is None:
-            raise FileNotFoundError(f"{batch}/{name}: not declared")
-        if f in _busy:
-            raise Busy(f"{name}: another upload is writing it")
-        here = _arrived(d, name)
-        if at != here:
-            raise Conflict(f"{name}: {here} bytes are here, not {at}")
-        if at + n > length:
-            raise TooLarge(f"{name}: {at + n} bytes are more than the {length} declared")
-        _busy.add(f)
+    patience = time.monotonic() + TAKEOVER
+    while True:
+        with _meta:
+            length = _lengths(d).get(name)
+            if length is None:
+                raise FileNotFoundError(f"{batch}/{name}: not declared")
+            here = _arrived(d, name)
+            if at != here:
+                raise Conflict(f"{name}: {here} bytes are here, not {at}")
+            if at + n > length:
+                raise TooLarge(f"{name}: {at + n} bytes are more than the {length} declared")
+            if f not in _busy:
+                _busy[f] = stop
+                break
+            before = _busy[f]
+            if before is None or time.monotonic() >= patience:
+                raise Busy(f"{name}: another upload is writing it")
+            try:
+                before()                                # under the lock: it still holds the file, so this is its sender
+            except OSError:
+                pass
+        time.sleep(0.02)
     try:
         left = n
         with open(f, "r+b", buffering=0) as out:        # unbuffered: what arrived is in the file, and offset() says so
@@ -219,7 +235,7 @@ def append(device: str, batch: str, name: str, at: int, stream, n: int) -> int:
         return at + n - left
     finally:
         with _meta:
-            _busy.discard(f)
+            _busy.pop(f, None)
 
 
 def terminate(device: str, batch: str, name: str) -> None:

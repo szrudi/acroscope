@@ -20,6 +20,7 @@ import base64
 import errno
 import json
 import re
+import socket
 from urllib.parse import quote
 
 from .. import ingest
@@ -150,7 +151,7 @@ def _route(h, device: dict, parts: list[str]) -> None:
             if h.headers.get("Content-Length") is None:
                 raise _Answer(411, "Content-Length: say how long the piece is")
             n = _number(h, "Content-Length")
-            here = staging.append(device["id"], batch, name, at, h.rfile, n)
+            here = staging.append(device["id"], batch, name, at, h.rfile, n, stop=lambda: h.connection.shutdown(socket.SHUT_RDWR))
             h._drop_unread = at + n - here          # short of the piece: the sender closed, the rest is not coming
             return _send(h, 204, headers={"Upload-Offset": str(here)})
         if method == "DELETE":
@@ -193,7 +194,9 @@ def handle(h, parts: list[str]) -> None:
         _send(h, 400, {"error": str(e)})
     except TimeoutError:                            # a silent sender: what came is kept, the rest is not waited for
         _send(h, 408, {"error": f"nothing came for {STALL} s"})
-    except Exception as e:  # noqa: BLE001  (a connection that broke under a piece too: its answer goes nowhere)
+    except ConnectionError:                         # the sender broke off: what came is kept, and there is nobody to answer
+        h.close_connection = True
+    except Exception as e:  # noqa: BLE001
         full = isinstance(e, OSError) and e.errno == errno.ENOSPC
         _send(h, 507 if full else 500, {"error": "no room on the server's disk" if full else f"{type(e).__name__}: {e}"})
     finally:

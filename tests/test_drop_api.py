@@ -502,6 +502,17 @@ class InProcessTest(unittest.TestCase):
         """A phone that left the Wi-Fi sends no FIN: its connection would hold the file until the kernel gave up.
         After STALL seconds without a byte the piece ends, what came is kept, and the file is free for the resume."""
         b = "20261011-100000-stall"
+        up, s = self.half_sent(b)
+        self.assertEqual(self.c.request("DELETE", up)[0], 423)               # the silent one holds the file
+        s.settimeout(10)
+        answer = s.recv(4096)                                                # until its patience is over
+        self.assertEqual(answer[:12], b"HTTP/1.1 408")                       # and it is told, had it still listened
+        self.assertIn(b"Connection: close", answer)
+        self.assertEqual(self.c.patch(up, 300, b"b" * 700), 1000)            # what came was kept and the file is free
+        self.assertEqual(self.staged(b, "VID00001.mov").read_bytes(), b"a" * 300 + b"b" * 700)
+
+    def half_sent(self, b: str) -> tuple[str, socket.socket]:
+        """A file of 1000 bytes declared and a connection that is inside its first piece: 300 bytes sent, 700 owed."""
         up = self.c.create(b, "VID00001.mov", 1000)
         s = socket.create_connection(self.srv.server_address)
         self.addCleanup(s.close)
@@ -511,17 +522,38 @@ class InProcessTest(unittest.TestCase):
             if self.c.offset(up) == 300:
                 break
             time.sleep(0.02)
-        status, _, _ = self.c.request("PATCH", up, b"b" * 700, {**self.octets, "Upload-Offset": "300"})
-        self.assertEqual(status, 423)                                        # the silent one still holds it
-        deadline = time.time() + 10
-        while time.time() < deadline and status != 204:
-            time.sleep(0.1)
-            status, _, _ = self.c.request("PATCH", up, b"b" * 700, {**self.octets, "Upload-Offset": "300"})
-        self.assertEqual(status, 204)
-        self.assertEqual(self.staged(b, "VID00001.mov").read_bytes(), b"a" * 300 + b"b" * 700)
-        answer = s.recv(4096)
-        self.assertEqual(answer[:12], b"HTTP/1.1 408")                       # and the silent one was told, had it still listened
-        self.assertIn(b"Connection: close", answer)
+        return up, s
+
+    def test_the_device_come_back_takes_its_file_over(self):
+        """The phone is back on the Wi-Fi within the minute and sends the next piece. Its old connection is still
+        counted as silent, not gone (a real phone waited 42 s here, asking 21 times): the new piece ends the old
+        request at once and goes on from the last byte that arrived."""
+        with mock.patch.object(routes, "STALL", 30):
+            up, s = self.half_sent("20261011-100000-back")
+            started = time.monotonic()
+            self.assertEqual(self.c.patch(up, 300, b"b" * 700), 1000)
+            self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(self.staged("20261011-100000-back", "VID00001.mov").read_bytes(), b"a" * 300 + b"b" * 700)
+        s.settimeout(5)
+        self.assertEqual(s.recv(4096), b"")                                  # the old connection was closed under its sender
+
+    def test_a_sender_that_breaks_off_in_a_piece_is_no_error(self):
+        """A connection reset in the middle of a piece is how an upload is interrupted, not a fault of the server's:
+        there is nobody to answer, nothing is logged (a real phone's left a 500 in the log), what came is kept and
+        the next piece goes on from there."""
+        seen, errors = [], []
+        self.srv.handle_error = lambda request, client: errors.append(client)
+        with mock.patch.object(server.Handler, "log_message", lambda h, fmt, *args: seen.append(args)):
+            up, s = self.half_sent("20261011-100000-reset")
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            s.close()                                                        # a reset, not a goodbye
+            for _ in range(100):                                             # until the broken request has let go of the file
+                if not drop._busy:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(self.c.patch(up, 300, b"b" * 700), 1000)
+        self.assertEqual(errors, [])
+        self.assertEqual([code for line, code, _ in seen if line.startswith("PATCH")], ["204"])
 
     def test_a_full_disk_is_said_as_no_room(self):
         """The disk filled up under a piece (the room was there when the file was declared): 507, as when the quota
