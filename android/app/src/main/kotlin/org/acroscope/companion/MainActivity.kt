@@ -6,8 +6,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.os.storage.StorageManager
 import android.os.storage.StorageVolume
 import android.provider.DocumentsContract
@@ -18,6 +22,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import java.io.FileNotFoundException
 
 class MainActivity : ComponentActivity() {
@@ -46,8 +51,18 @@ class MainActivity : ComponentActivity() {
             val notify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
             Screen(graph, openCard = { tree.launch(it) }, pickLogs = { logs.launch(arrayOf("*/*")) },
                 beforeJob = { notify.launch(Manifest.permission.POST_NOTIFICATIONS) },   // the job's progress is a notification; it runs without one too
-                openStorage = { runCatching { startActivity(Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)) } })
+                openStorage = { runCatching { startActivity(Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)) } },
+                alarm = ::alarm)
         }
+    }
+
+    private val tone by lazy { ToneGenerator(AudioManager.STREAM_ALARM, ToneGenerator.MAX_VOLUME) }
+
+    /** A quad too warm on the bench: a buzz and a tone, while this screen is the one in front. */
+    private fun alarm() {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        runCatching { getSystemService(Vibrator::class.java).vibrate(VibrationEffect.createWaveform(longArrayOf(0, 300, 150, 300), -1)) }
+        runCatching { tone.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 700) }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -70,10 +85,12 @@ class MainActivity : ComponentActivity() {
         graph.session.lookAtQuad()
         graph.session.askServer()
         graph.session.kick()
+        graph.session.watch(true)
     }
 
     override fun onStop() {
         graph.session.left()
+        graph.session.watch(false)
         storage.unregisterStorageVolumeCallback(volumes)
         unregisterReceiver(usb)
         super.onStop()

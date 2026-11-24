@@ -15,10 +15,14 @@ What it does now (0.1):
   **Eject the card…** opens the phone's own storage screen, where it is ejected (an app may not eject a card).
 - **The log off the quad.** With the quad on USB, **Start** saves its blackbox flash first (MSP, as the
   Configurator's "save flash to file" does: the used part only), named
-  `BTFL_BLACKBOX_LOG_<CRAFT>_<date>_<time>_<board>.bbl` with the phone's time, and shows the MCU's core temperature
-  on the way (the board sits on USB power with no air over it). The file is kept only when it is as long as the
-  flash said and starts like a log. After that, and only then, **Erase the quad's flash** is offered. Only one app
-  can hold the flight controller: close the Betaflight app first.
+  `BTFL_BLACKBOX_LOG_<CRAFT>_<date>_<time>_<board>.bbl` with the phone's time. The file is kept only when it is as
+  long as the flash said and starts like a log. After that, and only then, **Erase the quad's flash** is offered.
+  Only one app can hold the flight controller: close the Betaflight app first.
+- **How warm the quad is.** On USB the board has power and no air over it. While a quad is plugged in and the app
+  is on the screen, its MCU's core temperature is read every few seconds and shown; from 65 °C the line turns into
+  a warning to unplug it, with a buzz and a tone every two seconds until it has cooled or is unplugged. With the
+  app not on the screen nothing is read and nothing sounds, and the quad's line is free for another app (unless a
+  saved log's erase is still on offer).
 - **Add a saved log**: a `.bbl` saved by the Betaflight app's "save flash to file", for when the quad is not at
   hand. It keeps a name in the Configurator's pattern; under another name it is named from its own header.
 - **Change it before it goes up**: the event, the date (it defaults to the day of the first collect), a file out,

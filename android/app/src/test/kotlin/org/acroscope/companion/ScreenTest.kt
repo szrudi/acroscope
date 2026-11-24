@@ -42,10 +42,11 @@ class ScreenTest {
     private var logsPicked = 0
     private var beforeJob = 0
     private var storageOpened = 0
+    private var alarms = 0
     private val today = LocalDate.now().toString()
 
     private fun show() {
-        rule.setContent { Screen(w.graph, openCard = { asked += it }, pickLogs = { logsPicked++ }, beforeJob = { beforeJob++ }, openStorage = { storageOpened++ }) }
+        rule.setContent { Screen(w.graph, openCard = { asked += it }, pickLogs = { logsPicked++ }, beforeJob = { beforeJob++ }, openStorage = { storageOpened++ }, alarm = { alarms++ }) }
         w.session.lookAtCard()
         w.session.lookAtQuad()
         w.session.askServer()
@@ -212,6 +213,110 @@ class ScreenTest {
         w.quads.now = QuadState.None
         w.session.lookAtQuad()
         wait { "no quad plugged in" in text("quad") && !seen("erase-status") && !seen("collect-status") }   // unplugged: what was said about it goes with it
+    }
+
+    private fun quad(vararg temps: Int): org.acroscope.companion.core.FakeFc {
+        val fc = org.acroscope.companion.core.FakeFc(flightLog)
+        fc.temps = temps.toMutableList()
+        w.quads.fc = fc
+        w.quads.now = QuadState.Ready("OTTO")
+        return fc
+    }
+
+    @Test
+    fun `a quad on usb says how warm it is, and a hot one is an alarm until it has cooled`() {
+        val fc = quad(41)
+        show()
+        wait { "its log will be saved" in text("quad") }
+        assertFalse(seen("heat"))                                               // nothing read yet
+        w.session.feel()
+        wait { seen("heat") && "41 °C" in text("heat") }
+        fc.temps = mutableListOf(64)
+        w.session.feel()
+        wait { "64 °C" in text("heat") }
+        assertFalse("unplug" in text("heat"))
+        rule.mainClock.advanceTimeBy(3 * ALARM_EVERY_MS)
+        assertEquals(0, alarms)                                                 // warm is not hot
+        fc.temps = mutableListOf(65)
+        w.session.feel()
+        wait { "65 °C: unplug it and let it cool" in text("heat") }
+        wait { alarms >= 1 }
+        val first = alarms
+        rule.mainClock.advanceTimeBy(ALARM_EVERY_MS + 100)
+        wait { alarms > first }                                                 // again and again while it stays hot
+        fc.temps = mutableListOf(50)
+        w.session.feel()
+        wait { "50 °C" in text("heat") && "unplug" !in text("heat") }
+        val rung = alarms
+        rule.mainClock.advanceTimeBy(3 * ALARM_EVERY_MS)
+        assertEquals(rung, alarms)                                              // cooled: quiet
+        w.quads.now = QuadState.None
+        w.session.feel()                                                        // unplugged, noticed by the next reading
+        wait { !seen("heat") }
+        assertTrue(fc.closed)
+    }
+
+    @Test
+    fun `a save takes the quad's line from the temperature, and an unplugged quad has none`() {
+        val fc = quad(41)
+        show()
+        w.session.feel()
+        wait { seen("heat") }
+        click("start")
+        wait { seen("erase") }
+        assertTrue(fc.closed)                                                   // the reading's line was let go before the save opened its own
+        assertEquals(2, w.quads.opened)
+        w.quads.now = QuadState.None
+        w.session.lookAtQuad()                                                  // unplugged, told by the phone
+        wait { "no quad plugged in" in text("quad") && !seen("heat") }
+    }
+
+    @Test
+    fun `the temperature has a line to the quad of its own, kept between readings and let go with the screen`() {
+        val fc = quad(41)
+        show()
+        w.session.feel()
+        w.session.feel()
+        wait { seen("heat") }
+        assertEquals(1, w.quads.opened)                                         // one line, not one a reading
+        assertFalse(fc.closed)
+        w.quads.now = QuadState.None
+        w.session.lookAtQuad()                                                  // unplugged, told by the phone: its line is closed with it
+        wait { !seen("heat") }
+        assertTrue(fc.closed)
+        fc.closed = false
+        w.quads.now = QuadState.Ready("OTTO")                                   // plugged in again
+        w.session.feel()
+        wait { seen("heat") }
+        assertEquals(2, w.quads.opened)
+        assertFalse(fc.closed)
+        kotlinx.coroutines.runBlocking { w.session.watch(false).join() }        // the screen is left: another app may have the quad
+        assertTrue(fc.closed)
+        kotlinx.coroutines.runBlocking { w.session.watch(true) }                // back: read again, by itself
+        wait { w.quads.opened == 3 }
+        kotlinx.coroutines.runBlocking { w.session.watch(false).join() }
+        w.quads.fc = null                                                       // held by another app, or gone under the question
+        w.session.feel()
+        wait { !seen("heat") }
+    }
+
+    @Test
+    fun `a save says the temperature itself, and the erase's line outlives the screen`() {
+        val fc = quad(44)
+        show()
+        wait { "its log will be saved" in text("quad") }
+        click("start")
+        wait { seen("erase") }
+        wait { "44 °C" in text("heat") }                                        // read by the save, on its own line
+        assertEquals(1, w.quads.opened)
+        fc.temps = mutableListOf(46)
+        w.session.feel()
+        wait { "46 °C" in text("heat") }
+        assertEquals(1, w.quads.opened)                                         // asked on the line the saved log keeps open
+        kotlinx.coroutines.runBlocking { w.session.watch(false).join() }
+        assertFalse(fc.closed)                                                  // leaving the screen does not take the erase away
+        click("erase")
+        wait { seen("erase-status") && "flash is erased" in text("erase-status") }
     }
 
     @Test

@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,7 +44,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.acroscope.companion.core.Batch
+import kotlinx.coroutines.delay
 import org.acroscope.companion.core.Format
+import org.acroscope.companion.core.Heat
 import org.acroscope.companion.core.Names
 import org.acroscope.companion.core.Stage
 import java.time.LocalDate
@@ -58,11 +61,20 @@ private val Scheme = darkColorScheme(
  * The one screen: where you fly, what is plugged in, what waits to go up, how what went up is doing. `openCard`
  * asks the pilot for a card's folder, `pickLogs` for saved logs, `beforeJob` runs before a collect or an upload
  * starts (the notification permission), `openStorage` shows the phone's own storage screen, where a card is ejected
- * (an app may not eject one).
+ * (an app may not eject one), `alarm` makes itself felt and heard once: it is called again and again while a quad on
+ * USB is too warm.
  */
 @Composable
-fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob: () -> Unit = {}, openStorage: () -> Unit = {}) {
+fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob: () -> Unit = {}, openStorage: () -> Unit = {}, alarm: () -> Unit = {}) {
     val focus = LocalFocusManager.current
+    val heat by g.session.heat.collectAsStateWithLifecycle()
+    val hot = Heat.hot(heat)
+    LaunchedEffect(hot) {
+        while (hot) {
+            alarm()
+            delay(ALARM_EVERY_MS)
+        }
+    }
     val state by g.store.state.collectAsStateWithLifecycle()
     val card by g.session.card.collectAsStateWithLifecycle()
     val quad by g.session.quad.collectAsStateWithLifecycle()
@@ -112,6 +124,10 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                     Section("Collect") {
                         Text(g.session.describe(card), Modifier.testTag("card"))
                         Text(g.session.describe(quad), Modifier.testTag("quad"))
+                        heat?.let { t ->
+                            if (hot) Text("the quad's core is at $t °C: unplug it and let it cool", Modifier.testTag("heat"), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                            else Dim("the quad's core is at $t °C", Modifier.testTag("heat"))
+                        }
                         Progress(collect, Modifier.testTag("collect-status"))
                         Progress(erase, Modifier.testTag("erase-status"))
                         val something = ((card as? CardView.Open)?.clips ?: 0) > 0 || quad is QuadView.Ready
@@ -165,6 +181,8 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
         }
     }
 }
+
+const val ALARM_EVERY_MS = 2000L
 
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {
