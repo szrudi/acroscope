@@ -45,11 +45,11 @@ class ScreenTest {
     private var alarms = 0
     private val today = LocalDate.now().toString()
 
+    /** The screen with what the first looks found already on it: a tap sent while it still fills in can miss its mark. */
     private fun show() {
         rule.setContent { Screen(w.graph, openCard = { asked += it }, pickLogs = { logsPicked++ }, beforeJob = { beforeJob++ }, openStorage = { storageOpened++ }, alarm = { alarms++ }) }
-        w.session.lookAtCard()
-        w.session.lookAtQuad()
-        w.session.askServer()
+        kotlinx.coroutines.runBlocking { kotlinx.coroutines.joinAll(w.session.lookAtCard(), w.session.lookAtQuad(), w.session.askServer()) }
+        rule.waitForIdle()
     }
 
     private fun tag(t: String) = rule.onNodeWithTag(t, useUnmergedTree = true)
