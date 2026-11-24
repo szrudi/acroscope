@@ -205,9 +205,11 @@ class ScreenTest {
         wait { seen("erase-status") && "flash is erased" in text("erase-status") }
         assertEquals(0, fc.flash.size)
         assertTrue(fc.closed)
-        wait { !seen("erase") && "its log will be saved" in text("quad") }
+        wait { !seen("erase") && "OTTO: its flash is empty, there is no log to save" in text("quad") }
+        tag("start").assertIsNotEnabled()                                       // and nothing is left for Start
         w.session.lookAtQuad()                                                  // the same quad, looked at again
         rule.waitForIdle()
+        assertTrue("its flash is empty" in text("quad"))
         assertTrue("flash is erased" in text("erase-status"))                   // still plugged in: the line stands
         assertTrue("log saved" in text("collect-status"))
         w.quads.now = QuadState.None
@@ -320,6 +322,95 @@ class ScreenTest {
     }
 
     @Test
+    fun `the quad's line says what is on its flash, and an empty one is nothing to start`() {
+        val fc = quad(41)
+        show()
+        wait { "OTTO: its log will be saved" in text("quad") }                  // not asked yet
+        w.session.feel()
+        wait { "OTTO: its log (${Format.bytes(flightLog.size.toLong())}) will be saved" in text("quad") }
+        tag("start").assertIsEnabled()
+        fc.flash = ByteArray(0)
+        w.session.feel()
+        wait { "OTTO: its flash is empty, there is no log to save" in text("quad") }
+        tag("start").assertIsNotEnabled()
+        w.session.startCollect()                                                // asked for all the same: nothing runs
+        assertEquals(emptyList(), w.runner.ran)
+        w.card(FakeFile("VID00001.mov", movie(100)))                            // a card beside it is still something to collect
+        w.session.lookAtCard()
+        wait { "1 new clip" in text("card") }
+        tag("start").assertIsEnabled()
+        tag("event").performTextInput("park")
+        click("start")
+        wait { seen("collect-status") && "1 clip collected" in text("collect-status") }
+        assertEquals(listOf(Kind.CLIP), w.store.now.batches.single().items.map { it.kind })
+        w.quads.now = QuadState.None
+        w.session.lookAtQuad()
+        wait { "no quad plugged in" in text("quad") }
+        w.quads.now = QuadState.Ready("OTTO")                                   // plugged in again, or another quad
+        w.session.lookAtQuad()
+        wait { "OTTO: its log will be saved" in text("quad") }                  // what the last one said is forgotten
+        tag("start").assertIsEnabled()
+    }
+
+    @Test
+    fun `what was read of the flash is forgotten when the quad stops answering`() {
+        val fc = quad(41)
+        fc.flash = ByteArray(0)
+        show()
+        w.session.feel()
+        wait { "its flash is empty" in text("quad") }
+        w.quads.now = QuadState.None                                            // pulled, and the phone has not said so yet
+        w.session.feel()
+        wait { "OTTO: its log will be saved" in text("quad") }
+        w.quads.now = QuadState.Ready("OTTO")
+        w.session.feel()
+        wait { "its flash is empty" in text("quad") }
+        kotlinx.coroutines.runBlocking { w.session.watch(false).join() }
+        w.quads.fc = null                                                       // held by another app
+        w.session.feel()
+        wait { "OTTO: its log will be saved" in text("quad") }
+        tag("start").assertIsEnabled()                                          // Start is where the pilot hears why
+    }
+
+    @Test
+    fun `a board without a flash is not called empty`() {
+        val fc = quad(41)
+        fc.flash = ByteArray(0)
+        fc.present = false
+        show()
+        w.session.feel()
+        wait { seen("heat") }
+        assertTrue("OTTO: its log will be saved" in text("quad"), text("quad"))
+        click("start")
+        wait { seen("collect-status") && "this flight controller has no flash for logs" in text("collect-status") }
+    }
+
+    @Test
+    fun `an erase that fails leaves the flash unknown, not empty`() {
+        val fc = quad(41)
+        show()
+        wait { "its log will be saved" in text("quad") }
+        click("start")
+        wait { seen("erase") }
+        fc.spoil = { command, reply -> if (command == org.acroscope.companion.core.Msp.DATAFLASH_SUMMARY) org.acroscope.companion.core.Msp.frame(command, ByteArray(3), '>') else reply }
+        click("erase")
+        wait { seen("erase-status") && "the flash was not erased" in text("erase-status") }
+        wait { "OTTO: its log will be saved" in text("quad") }
+        tag("start").assertIsEnabled()
+    }
+
+    @Test
+    fun `a quad plugged in while the screen is there is asked at once`() {
+        show()
+        w.session.watch(true)
+        Thread.sleep(300)                                                       // the first reading has found no quad; the next is WATCH_MS away
+        quad(41)
+        w.session.lookAtQuad()                                                  // plugged in, told by the phone
+        rule.waitUntil(1500) { seen("heat") && "its log (" in text("quad") }
+        kotlinx.coroutines.runBlocking { w.session.watch(false).join() }
+    }
+
+    @Test
     fun `a new collect makes the last erase old news`() {
         val fc = org.acroscope.companion.core.FakeFc(flightLog)
         w.quads.fc = fc
@@ -331,6 +422,8 @@ class ScreenTest {
         click("erase")
         wait { seen("erase-status") && "flash is erased" in text("erase-status") }
         w.quads.fc = org.acroscope.companion.core.FakeFc(flightLog)             // flown again, plugged in again, unseen by the app in between
+        w.session.feel()                                                        // back on the screen, the quad is asked again
+        wait { "its log (" in text("quad") }
         click("start")
         wait { seen("erase") }                                                  // a log is saved and the flash is not erased: nothing says it is
         assertFalse(seen("erase-status"))
@@ -425,6 +518,8 @@ class ScreenTest {
         wait { "OTTO's flash is empty" in text("collect-status") }
         assertTrue(fc.closed)
         assertEquals(emptyList(), w.store.now.batches)
+        wait { "OTTO: its flash is empty, there is no log to save" in text("quad") }   // told by the save that found nothing
+        tag("start").assertIsNotEnabled()
         w.quads.now = QuadState.None
         w.session.lookAtQuad()
         wait { "no quad plugged in" in text("quad") }

@@ -69,6 +69,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
     val focus = LocalFocusManager.current
     val heat by g.session.heat.collectAsStateWithLifecycle()
     val hot = Heat.hot(heat)
+    val flash by g.session.flash.collectAsStateWithLifecycle()
     LaunchedEffect(hot) {
         while (hot) {
             alarm()
@@ -123,14 +124,14 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                 item {
                     Section("Collect") {
                         Text(g.session.describe(card), Modifier.testTag("card"))
-                        Text(g.session.describe(quad), Modifier.testTag("quad"))
+                        Text(g.session.describe(quad, flash), Modifier.testTag("quad"))
                         heat?.let { t ->
                             if (hot) Text("the quad's core is at $t °C: unplug it and let it cool", Modifier.testTag("heat"), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
                             else Dim("the quad's core is at $t °C", Modifier.testTag("heat"))
                         }
                         Progress(collect, Modifier.testTag("collect-status"))
                         Progress(erase, Modifier.testTag("erase-status"))
-                        val something = ((card as? CardView.Open)?.clips ?: 0) > 0 || quad is QuadView.Ready
+                        val something = ((card as? CardView.Open)?.clips ?: 0) > 0 || (quad is QuadView.Ready && flash != 0L)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             (card as? CardView.Locked)?.let { c -> Button({ openCard(c.request) }, Modifier.testTag("allow")) { Text("Allow the card") } }
                             (quad as? QuadView.Locked)?.let { q -> Button(q.ask, Modifier.testTag("allow-quad")) { Text("Allow the quad") } }

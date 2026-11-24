@@ -66,7 +66,10 @@ class Session(private val g: Graph) {
     @Volatile private var held: Pair<SerialPort, Blackbox>? = null
     /** The quad's core temperature as last read, in °C: while it is plugged in and the screen is there to show it. */
     val heat = MutableStateFlow<Int?>(null)
-    /** One talker on the quad's line at a time: a save, an erase, or a reading of the temperature. */
+    /** How much log is on the quad's flash as last read, in bytes: 0 is an empty flash, null is not known (not asked
+     *  yet, no answer, or a board without a flash). */
+    val flash = MutableStateFlow<Long?>(null)
+    /** One talker on the quad's line at a time: a save, an erase, or a reading of the temperature and the flash. */
     private val wire = ReentrantLock()
     /** The line the temperature is read on while no saved log holds one open. Let go when the screen is left: only
      *  one app can talk to a flight controller. */
@@ -130,6 +133,7 @@ class Session(private val g: Graph) {
         val now = seeQuad()
         if (plugged(now) != plugged(quad.value)) settle(collect, erase)
         quad.value = now
+        if (now is QuadView.Ready) feel(looping = true)     // just plugged in or allowed: ask it now, not at the next reading
     }
 
     private fun seeQuad(): QuadView = when (val s = g.quads.state()) {
@@ -142,7 +146,13 @@ class Session(private val g: Graph) {
         held?.let { runCatching { it.first.close() } }
         held = null
         unwatch()
+        forget()
+    }
+
+    /** What was read off the quad is about a quad that is gone, or one that did not answer. */
+    private fun forget() {
         heat.value = null
+        flash.value = null
     }
 
     private fun unwatch() {
@@ -150,7 +160,8 @@ class Session(private val g: Graph) {
         watch = null
     }
 
-    /** The screen is there (`on`) or left: the quad's temperature is read every few seconds while someone can see it. */
+    /** The screen is there (`on`) or left: the quad's temperature and what is on its flash are read every few seconds
+     *  while someone can see them. */
     fun watch(on: Boolean): Job {
         watched = on
         watching?.cancel()
@@ -162,21 +173,23 @@ class Session(private val g: Graph) {
         }.also { watching = it }
     }
 
-    /** One reading of the quad's temperature, unless a save or an erase has its line: the save says it itself. */
+    /** One reading of the quad's temperature and of how much log its flash holds, unless a save or an erase has its
+     *  line: those say it themselves. */
     fun feel(looping: Boolean = false) {
         if (!wire.tryLock()) return
         try {
             if (looping && !watched) return             // the screen was left while this reading waited its turn
             if (g.quads.state() !is QuadState.Ready) {
                 unwatch()
-                heat.value = null
+                forget()
                 return
             }
-            val line = held ?: watch ?: g.quads.open().let { it to Blackbox(it, g.clock) }.also { watch = it }
-            heat.value = line.second.temp()
+            val box = (held ?: watch ?: g.quads.open().let { it to Blackbox(it, g.clock) }.also { watch = it }).second
+            heat.value = box.temp()
+            flash.value = box.flash().takeIf { it.present }?.used
         } catch (e: Exception) {            // unplugged under the question, or held by another app: nothing to show
             unwatch()
-            heat.value = null
+            forget()
         } finally {
             wire.unlock()
         }
@@ -194,7 +207,7 @@ class Session(private val g: Graph) {
     /** One press collects whatever is there: the quad's log, the card's clips, or both. */
     fun startCollect() {
         val open = (card.value as? CardView.Open)?.takeIf { it.clips > 0 }
-        val log = quad.value is QuadView.Ready
+        val log = quad.value is QuadView.Ready && flash.value != 0L
         if ((open == null && !log) || collect.value is Work.Running) return
         settle(erase, upload)
         collect.value = Work.Running(if (log) "asking the quad" else "reading the card", 0, open?.bytes ?: 0)
@@ -261,6 +274,7 @@ class Session(private val g: Graph) {
             }, stop)
             if (saved == null) {
                 port.close()
+                flash.value = 0L
                 return "$name's flash is empty"
             }
             val item = try { g.collector.addLog(saved.file.name, null) { saved.file.inputStream() } } finally { saved.file.delete() }
@@ -278,13 +292,15 @@ class Session(private val g: Graph) {
         val (_, box) = held ?: return@launch
         if (erase.value is Work.Running) return@launch
         erase.value = Work.Running("erasing the quad's flash (up to a minute)", 0, 0)
-        erase.value = try {
+        val done = try {
             wire.withLock { box.erase() }
             Work.Finished("the quad's flash is erased", true)
         } catch (e: Exception) {
             Work.Finished("the flash was not erased: ${e.message ?: e.javaClass.simpleName}", false)
         }
+        erase.value = done
         letGo()
+        if (done.ok) flash.value = 0L           // the erase ends on a flash that says it is empty
         quad.value = seeQuad()
     }
 
@@ -370,10 +386,15 @@ class Session(private val g: Graph) {
         const val WATCH_MS = 3000L
     }
 
-    fun describe(view: QuadView): String = when (view) {
+    /** `flash` is how much log the quad's flash holds, when that was read. */
+    fun describe(view: QuadView, flash: Long? = null): String = when (view) {
         QuadView.None -> "no quad plugged in"
         is QuadView.Locked -> "${view.name}: allow the app to talk to it"
-        is QuadView.Ready -> "${view.name}: its log will be saved"
+        is QuadView.Ready -> when (flash) {
+            null -> "${view.name}: its log will be saved"
+            0L -> "${view.name}: its flash is empty, there is no log to save"
+            else -> "${view.name}: its log (${Format.bytes(flash)}) will be saved"
+        }
         is QuadView.Saved -> "${view.name}: its log is saved, its flash can be erased"
     }
 
