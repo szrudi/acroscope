@@ -2,6 +2,9 @@ package org.acroscope.companion
 
 import android.content.Intent
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotFocused
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -38,10 +41,11 @@ class ScreenTest {
     private val asked = mutableListOf<Intent>()
     private var logsPicked = 0
     private var beforeJob = 0
+    private var storageOpened = 0
     private val today = LocalDate.now().toString()
 
     private fun show() {
-        rule.setContent { Screen(w.graph, openCard = { asked += it }, pickLogs = { logsPicked++ }, beforeJob = { beforeJob++ }) }
+        rule.setContent { Screen(w.graph, openCard = { asked += it }, pickLogs = { logsPicked++ }, beforeJob = { beforeJob++ }, openStorage = { storageOpened++ }) }
         w.session.lookAtCard()
         w.session.lookAtQuad()
         w.session.askServer()
@@ -83,6 +87,22 @@ class ScreenTest {
     }
 
     @Test
+    fun `done on the keyboard lets go of the event field, and so does starting a job`() {
+        w.card(FakeFile("VID00001.mov", movie(100)))
+        show()
+        tag("event").performClick()
+        tag("event").performTextInput("park")
+        tag("event").assertIsFocused()
+        tag("event").performImeAction()                                         // the keyboard's tick
+        tag("event").assertIsNotFocused()                                       // and with the focus goes the keyboard
+        tag("event").performClick()
+        tag("event").assertIsFocused()
+        wait { seen("start") && "1 new clip" in text("card") }
+        click("start")
+        tag("event").assertIsNotFocused()
+    }
+
+    @Test
     fun `a card is allowed once, then says what it holds, and start collects it`() {
         w.locked()
         show()
@@ -93,6 +113,7 @@ class ScreenTest {
         w.card(FakeFile("VID00001.mov", movie(100)), FakeFile("VID00002.mov", movie(200)), FakeFile("notes.txt", ByteArray(3)))
         w.session.lookAtCard()
         wait { seen("start") && "2 new clips" in text("card") }
+        assertFalse("eject it" in text("card"), text("card"))                   // there is something to collect first
         assertTrue("notes.txt" in text("card"), text("card"))                   // what would be left on the card is said
         tag("event").performTextInput("park")
         tag("start").assertIsEnabled()
@@ -104,6 +125,9 @@ class ScreenTest {
         assertEquals("park" to listOf("VID00001.mov", "VID00002.mov"), batch.event to batch.items.map { it.name })
         assertTrue(File(w.store.dir(batch.id), "VID00002.mov").length() == movie(200).size.toLong())
         wait { "nothing new" in text("card") && "2 collected before" in text("card") }
+        assertTrue("the app has nothing open on it: eject it, then pull it" in text("card"), text("card"))
+        click("eject")
+        assertEquals(1, storageOpened)                                          // the phone's own storage screen: an app may not eject a card
         tag("start").assertIsNotEnabled()
         bring("batch-${batch.id}")
         assertTrue(seen("remove-VID00001.mov") && seen("remove-VID00002.mov"))
@@ -114,6 +138,7 @@ class ScreenTest {
     fun `without a card there is nothing to start, and a saved log can still be added`() {
         show()
         assertTrue("no card plugged in" in text("card"))
+        assertFalse(seen("eject"))
         tag("start").assertIsNotEnabled()
         click("add-log")
         assertEquals(1, logsPicked)
@@ -170,7 +195,7 @@ class ScreenTest {
         assertEquals("BTFL_BLACKBOX_LOG_OTTO_20261212_084500_BETAFPVG473_V2.bbl" to Kind.LOG, item.name to item.kind)
         assertEquals(flightLog.toList(), File(w.store.dir(w.store.now.batches.single().id), item.name).readBytes().toList())
         assertTrue(w.store.scratch.list().isNullOrEmpty())                       // the copy it came through is gone
-        assertTrue("log saved as ${item.name}" in text("quad"))
+        assertTrue("its log is saved, its flash can be erased" in text("quad"), text("quad"))
         assertFalse(fc.closed)                                                  // the line stays open: only it may erase
         assertFalse(org.acroscope.companion.core.Msp.DATAFLASH_ERASE.toString() in fc.asked)   // and saving erased nothing
         click("start")                                                          // again: the log is not taken a second time
@@ -180,6 +205,71 @@ class ScreenTest {
         assertEquals(0, fc.flash.size)
         assertTrue(fc.closed)
         wait { !seen("erase") && "its log will be saved" in text("quad") }
+        w.session.lookAtQuad()                                                  // the same quad, looked at again
+        rule.waitForIdle()
+        assertTrue("flash is erased" in text("erase-status"))                   // still plugged in: the line stands
+        assertTrue("log saved" in text("collect-status"))
+        w.quads.now = QuadState.None
+        w.session.lookAtQuad()
+        wait { "no quad plugged in" in text("quad") && !seen("erase-status") && !seen("collect-status") }   // unplugged: what was said about it goes with it
+    }
+
+    @Test
+    fun `a new collect makes the last erase old news`() {
+        val fc = org.acroscope.companion.core.FakeFc(flightLog)
+        w.quads.fc = fc
+        w.quads.now = QuadState.Ready("OTTO")
+        show()
+        wait { "its log will be saved" in text("quad") }
+        click("start")
+        wait { seen("erase") }
+        click("erase")
+        wait { seen("erase-status") && "flash is erased" in text("erase-status") }
+        w.quads.fc = org.acroscope.companion.core.FakeFc(flightLog)             // flown again, plugged in again, unseen by the app in between
+        click("start")
+        wait { seen("erase") }                                                  // a log is saved and the flash is not erased: nothing says it is
+        assertFalse(seen("erase-status"))
+    }
+
+    @Test
+    fun `a finished line goes when what it spoke of has moved on`() {
+        w.card(FakeFile("VID00001.mov", movie(100)))
+        w.paired()
+        show()
+        tag("event").performTextInput("park")
+        wait { seen("start") && "1 new clip" in text("card") }
+        click("start")
+        wait { seen("collect-status") && "1 clip collected" in text("collect-status") }
+        click("upload")
+        assertTrue("uploaded" in text("upload-status"), text("upload-status"))
+        assertTrue("1 clip collected" in text("collect-status"))                // nothing moved: both lines stand
+        w.card(FakeFile("VID00001.mov", movie(100)), FakeFile("VID00002.mov", movie(200)))
+        w.session.lookAtCard()                                                  // the same card, looked at again
+        wait { "1 new clip" in text("card") }
+        assertTrue(seen("collect-status"))
+        click("start")                                                          // a new collect: the last upload is old news
+        bring("upload")
+        assertFalse(seen("upload-status"))                                      // not "uploaded" under a batch that has not gone up
+        assertTrue("1 clip collected" in text("collect-status"))
+        w.cards.now = CardState.None
+        w.session.lookAtCard()                                                  // the card is pulled: the line about it goes
+        wait { "no card plugged in" in text("card") && !seen("collect-status") }
+    }
+
+    @Test
+    fun `leaving the screen takes the lines the pilot has seen, and keeps what went wrong`() {
+        collected()
+        show()
+        wait { seen("collect-status") && "2 clips collected" in text("collect-status") }
+        w.session.upload.value = Work.Finished("uploaded: the server takes it from here", true)
+        wait { seen("upload-status") || run { bring("upload"); seen("upload-status") } }
+        w.session.left()
+        wait { !seen("collect-status") && !seen("upload-status") }
+        click("upload")                                                         // not paired: this one fails
+        assertTrue("pair the app with the server first" in text("upload-status"))
+        w.session.left()
+        rule.waitForIdle()
+        assertTrue("pair the app with the server first" in text("upload-status"))   // until the next try
     }
 
     @Test
@@ -211,6 +301,12 @@ class ScreenTest {
         assertFalse(seen("erase"))                                              // nothing verified: no erase on offer
         assertEquals(flightLog.size, fc.flash.size)
         assertTrue(w.store.scratch.list().isNullOrEmpty())
+        w.session.left()
+        rule.waitForIdle()
+        assertTrue("the log was not saved" in text("collect-status"))           // what went wrong is still there after a look elsewhere
+        w.quads.now = QuadState.None
+        w.session.lookAtQuad()
+        wait { !seen("collect-status") }                                        // and goes with the quad it was about
     }
 
     @Test
@@ -274,7 +370,7 @@ class ScreenTest {
         show()
         bring("upload")
         click("upload")
-        assertEquals(listOf("upload"), w.runner.ran)
+        assertEquals(listOf("upload", "follow"), w.runner.ran)                  // handed in by a press: looked in on afterwards all the same
         assertEquals(listOf("upload $id VID00001.mov", "upload $id VID00002.mov", "put $id import.json", "commit $id"), w.drop.calls.filter { !it.startsWith("batches") && it != "events" })
         wait { seen("sent-$id") }
         assertTrue("uploaded" in text("upload-status"), text("upload-status"))
@@ -292,7 +388,8 @@ class ScreenTest {
         click("check")
         wait { w.store.now.batch(id)!!.stage == Stage.DONE }
         assertFalse(w.store.dir(id).exists())                                   // the server has it: the phone's copy is gone
-        wait { "done: 2 clips in $today-park" in text("status-$id") }
+        wait { "done: 2 clips" in text("status-$id") }
+        assertFalse("park" in text("status-$id"), text("status-$id"))           // the session is the line above it
         assertFalse(seen("retry-$id"))
     }
 
@@ -316,8 +413,7 @@ class ScreenTest {
         w.session.collectNow(TREE) { false }                                    // switched on, and something new was collected
         assertEquals(listOf("auto"), w.runner.ran)
         w.runner.ran.clear()
-        w.session.uploadNow { false }
-        w.session.kick()                                                        // handed in: now it is the server's turn, to be looked in on
+        w.session.uploadNow { false }                                           // handed in: now it is the server's turn, to be looked in on
         assertEquals(listOf("follow"), w.runner.ran)
         assertEquals(Stage.COMMITTED, w.store.now.batch(id)!!.stage)
     }
@@ -330,7 +426,7 @@ class ScreenTest {
         click("upload")
         assertTrue("pair the app with the server first" in text("upload-status"))
         w.paired()
-        for ((failure, said) in listOf(java.io.IOException("no route to host") to "did not answer (no route to host)",
+        for ((failure, said) in listOf(java.io.IOException("no route to host") to "the server could not be reached (no route to host); Upload goes on from where it stopped",
             org.acroscope.companion.core.DropException(401, "this door takes a paired device's token") to "pair it again",
             org.acroscope.companion.core.DropException(507, "the drop is full: 1 of 2 bytes") to "no room right now: the drop is full")) {
             w.drop.fail = failure
@@ -338,6 +434,10 @@ class ScreenTest {
             assertTrue(said in text("upload-status"), text("upload-status"))
             assertEquals(Stage.PENDING, w.store.now.batch(id)!!.stage)
         }
+        w.store.update { it.copy(settings = it.settings.copy(autoUpload = true)) }
+        w.drop.fail = java.io.IOException("Software caused connection abort")
+        click("upload")                                                         // with uploading by itself on, the next step is the app's
+        assertTrue("it goes on by itself when the phone is back on Wi-Fi" in text("upload-status"), text("upload-status"))
         w.drop.fail = null
         click("upload")
         wait { seen("sent-$id") }

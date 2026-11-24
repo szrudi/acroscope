@@ -24,6 +24,8 @@ class FormatTest {
         assertEquals("handed in, waiting its turn", Format.status(ServerStatus("pending")))
         assertEquals("being ingested", Format.status(ServerStatus("running")))
         assertEquals("done: 2 clips, 1 log in 2026-12-12-whoop-race", Format.status(ServerStatus("done", "2026-12-12-whoop-race", null, listOf("a", "b"), listOf("x.bbl"))))
+        assertEquals("done: 2 clips, 1 log", Format.status(ServerStatus("done", "2026-12-12-whoop-race", null, listOf("a", "b"), listOf("x.bbl")), "2026-12-12-whoop-race"))   // filed where the app shows it: not said twice
+        assertEquals("done: 1 clip in 2026-12-13-whoop-race", Format.status(ServerStatus("done", "2026-12-13-whoop-race", null, listOf("a")), "2026-12-12-whoop-race"))
         assertEquals("done", Format.status(ServerStatus("done")))
         assertEquals("failed: ValueError: VID00003.mov: moov atom not found", Format.status(ServerStatus("failed", error = "ValueError: VID00003.mov: moov atom not found")))
         assertEquals("handed in", Format.status(null))                          // the server has not said yet

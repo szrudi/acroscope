@@ -23,7 +23,8 @@ object Auto {
     /** Something waits to go up. */
     fun wanted(state: State): Boolean = on(state) && state.pending.any { it.items.isNotEmpty() }
 
-    /** Something was handed in and the server is not finished with it: the phone's copy waits for its "done". */
+    /** Something was handed in and the server is not finished with it: the phone's copy waits for its "done",
+     *  whether a press of Upload sent it or the app by itself. */
     fun following(state: State): Boolean =
-        on(state) && state.batches.any { it.stage == Stage.COMMITTED && it.server?.status != "failed" }
+        state.settings.pairing != null && state.batches.any { it.stage == Stage.COMMITTED && it.server?.status != "failed" }
 }

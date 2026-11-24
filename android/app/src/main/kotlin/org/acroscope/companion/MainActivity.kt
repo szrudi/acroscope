@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.storage.StorageManager
 import android.os.storage.StorageVolume
 import android.provider.DocumentsContract
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -44,7 +45,8 @@ class MainActivity : ComponentActivity() {
             val logs = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> if (uris.isNotEmpty()) session.addLogs(uris.map(::picked)) }
             val notify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
             Screen(graph, openCard = { tree.launch(it) }, pickLogs = { logs.launch(arrayOf("*/*")) },
-                beforeJob = { notify.launch(Manifest.permission.POST_NOTIFICATIONS) })   // the job's progress is a notification; it runs without one too
+                beforeJob = { notify.launch(Manifest.permission.POST_NOTIFICATIONS) },   // the job's progress is a notification; it runs without one too
+                openStorage = { runCatching { startActivity(Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)) } })
         }
     }
 
@@ -71,6 +73,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        graph.session.left()
         storage.unregisterStorageVolumeCallback(volumes)
         unregisterReceiver(usb)
         super.onStop()

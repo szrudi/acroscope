@@ -23,14 +23,15 @@ object Format {
         return (listOfNotNull(if (clips > 0) count(clips, "clip") else null, if (logs > 0) count(logs, "log") else null) + bytes(items.sumOf { it.size })).joinToString(", ")
     }
 
-    fun status(s: ServerStatus?): String = when (s?.status) {
+    /** The server's word on a batch; `filed` is the session the app shows it under, not said twice. */
+    fun status(s: ServerStatus?, filed: String? = null): String = when (s?.status) {
         null -> "handed in"
         "pending" -> "handed in, waiting its turn"
         "running" -> "being ingested"
         "failed" -> "failed: ${s.error ?: "no reason given"}"
         "done" -> {
             val what = listOfNotNull(if (s.clips.isNotEmpty()) count(s.clips.size, "clip") else null, if (s.logs.isNotEmpty()) count(s.logs.size, "log") else null).joinToString(", ")
-            if (what.isEmpty()) "done" else "done: $what" + (s.session?.let { " in $it" } ?: "")
+            if (what.isEmpty()) "done" else "done: $what" + (s.session?.takeIf { it != filed }?.let { " in $it" } ?: "")
         }
         else -> s.status
     }

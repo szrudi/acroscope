@@ -67,7 +67,39 @@ class Session(private val g: Graph) {
     /** A pairing code that came in as a link and waits for the pilot's yes. */
     val pairRequest = MutableStateFlow<String?>(null)
 
-    fun lookAtCard() = scope.launch { card.value = see() }
+    /**
+     * A finished job's line says what just happened, and goes when what it speaks of has moved on: the card or the
+     * quad it was about is another one or gone, a new collect makes the last erase and the last upload old news, and
+     * a line the pilot has seen is not there again when they come back to the screen. What went wrong stays until
+     * the next try: `failures` false keeps those lines.
+     */
+    private fun settle(vararg lines: MutableStateFlow<Work>, failures: Boolean = true) = lines.forEach {
+        val done = it.value as? Work.Finished ?: return@forEach
+        if (failures || done.ok) it.value = Work.Idle
+    }
+
+    /** The screen was left. */
+    fun left() = settle(collect, erase, upload, failures = false)
+
+    private fun plugged(view: CardView): String? = when (view) {
+        CardView.None -> null
+        is CardView.Locked -> view.label
+        is CardView.Open -> view.label
+        is CardView.Unreadable -> view.label
+    }
+
+    private fun plugged(view: QuadView): String? = when (view) {
+        QuadView.None -> null
+        is QuadView.Locked -> view.name
+        is QuadView.Ready -> view.name
+        is QuadView.Saved -> view.name
+    }
+
+    fun lookAtCard() = scope.launch {
+        val now = see()
+        if (plugged(now) != plugged(card.value)) settle(collect)
+        card.value = now
+    }
 
     private fun see(): CardView = when (val s = g.cards.state()) {
         CardState.None -> CardView.None
@@ -80,7 +112,11 @@ class Session(private val g: Graph) {
         }
     }
 
-    fun lookAtQuad() = scope.launch { quad.value = seeQuad() }
+    fun lookAtQuad() = scope.launch {
+        val now = seeQuad()
+        if (plugged(now) != plugged(quad.value)) settle(collect, erase)
+        quad.value = now
+    }
 
     private fun seeQuad(): QuadView = when (val s = g.quads.state()) {
         QuadState.None -> QuadView.None.also { letGo() }
@@ -107,6 +143,7 @@ class Session(private val g: Graph) {
         val open = (card.value as? CardView.Open)?.takeIf { it.clips > 0 }
         val log = quad.value is QuadView.Ready
         if ((open == null && !log) || collect.value is Work.Running) return
+        settle(erase, upload)
         collect.value = Work.Running(if (log) "asking the quad" else "reading the card", 0, open?.bytes ?: 0)
         g.runner.collect(open?.tree)
     }
@@ -205,15 +242,17 @@ class Session(private val g: Graph) {
         val result = g.uploader.run({ p -> upload.value = Work.Running(p.name, p.done, p.total) }, stop)
         batches.prune()
         upload.value = say(result)
+        if (Auto.following(g.store.now)) g.runner.follow()     // what was handed in is the server's now: look in on it, also with the app closed
         return result
     }
 
     fun say(result: UploadResult): Work.Finished {
+        val next = if (g.store.now.settings.autoUpload) "it goes on by itself when the phone is back on Wi-Fi" else "Upload goes on from where it stopped"
         val done = when (result) {
             is UploadResult.Done -> Work.Finished(if (result.batches == 0) "nothing to upload" else "uploaded: the server takes it from here", true)
             UploadResult.NotPaired -> Work.Finished("pair the app with the server first", false)
-            UploadResult.Stopped -> Work.Finished("stopped; the next upload goes on from here", false)
-            is UploadResult.Unreachable -> Work.Finished("the server did not answer (${result.message}); the next upload goes on from here", false)
+            UploadResult.Stopped -> Work.Finished("stopped; $next", false)
+            is UploadResult.Unreachable -> Work.Finished("the server could not be reached (${result.message}); $next", false)
             is UploadResult.Broken -> Work.Finished(result.message, false)
             is UploadResult.Refused -> Work.Finished(when (result.status) {
                 401 -> "the server does not know this device any more: pair it again"
@@ -274,7 +313,7 @@ class Session(private val g: Graph) {
         QuadView.None -> "no quad plugged in"
         is QuadView.Locked -> "${view.name}: allow the app to talk to it"
         is QuadView.Ready -> "${view.name}: its log will be saved"
-        is QuadView.Saved -> "${view.name}: log saved as ${view.log}"
+        is QuadView.Saved -> "${view.name}: its log is saved, its flash can be erased"
     }
 
     fun describe(view: CardView): String = when (view) {
@@ -283,6 +322,7 @@ class Session(private val g: Graph) {
         is CardView.Unreadable -> "${view.label}: could not be read (${view.why})"
         is CardView.Open -> (if (view.clips == 0) "${view.label}: nothing new" else "${view.label}: ${view.clips} new clip${if (view.clips == 1) "" else "s"}, ${Format.bytes(view.bytes)}") +
             (if (view.collected > 0) ", ${view.collected} collected before" else "") +
-            (if (view.others.isNotEmpty()) "\nalso on the card, not collected: ${view.others.take(5).joinToString(", ")}${if (view.others.size > 5) " and ${view.others.size - 5} more" else ""}" else "")
+            (if (view.others.isNotEmpty()) "\nalso on the card, not collected: ${view.others.take(5).joinToString(", ")}${if (view.others.size > 5) " and ${view.others.size - 5} more" else ""}" else "") +
+            (if (view.clips == 0) "\nthe app has nothing open on it: eject it, then pull it" else "")
     }
 }

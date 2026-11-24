@@ -11,7 +11,8 @@ What it does now (0.1):
   on it (`DCIM/VID*.mov`, in the DVR's recording order). The card is only read, never written: it stays the second
   copy. What was collected is remembered by name, size and time and skipped next time. A clip without its index
   (the DVR lost power while recording) is collected and flagged. A collect that does not fit on the phone is
-  refused before it starts.
+  refused before it starts. With nothing left to collect the card's line says the app has nothing open on it;
+  **Eject the card…** opens the phone's own storage screen, where it is ejected (an app may not eject a card).
 - **The log off the quad.** With the quad on USB, **Start** saves its blackbox flash first (MSP, as the
   Configurator's "save flash to file" does: the used part only), named
   `BTFL_BLACKBOX_LOG_<CRAFT>_<date>_<time>_<board>.bbl` with the phone's time, and shows the MCU's core temperature
@@ -23,13 +24,15 @@ What it does now (0.1):
 - **Change it before it goes up**: the event, the date (it defaults to the day of the first collect), a file out,
   the whole batch away.
 - **Upload**: every pending batch, oldest first, resumable from the last byte the server has. The phone's copy of a
-  batch is deleted when the server reports it done, not when the upload ends. A failed batch can be tried again on
-  the server from here.
+  batch is deleted when the server reports it done, not when the upload ends: the server is looked in on
+  afterwards, also with the app closed. A failed batch can be tried again on the server from here.
+- **What the screen says stays true**: a finished job's line (collected, log saved, flash erased, uploaded) goes
+  when the card or quad it was about is another one or gone, when a new collect starts, and when you leave the
+  screen; what went wrong stays until the next try.
 - **Upload by itself** (a switch, once the app is paired): when the phone is on a network that costs nothing and
   the server answers, what waits goes up without the app being opened, also after a restart of the phone. A run
   the phone cuts short, or one that finds no server (not at home), is tried again later; what went up stays. What
-  only you can put right (the device revoked, a file gone) is said in a notification and not tried again. The
-  server is looked in on afterwards, and the phone's copy goes once it reports the batch done.
+  only you can put right (the device revoked, a file gone) is said in a notification and not tried again.
 
 Not yet: a QR code for pairing.
 
