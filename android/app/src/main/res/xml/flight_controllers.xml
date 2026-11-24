@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- What a Betaflight flight controller looks like on USB: a serial port (the communications class), by ST's or
-     Artery's virtual COM port ids for the boards that say a composite class instead. -->
-<resources>
-    <usb-device class="2" />
-    <usb-device vendor-id="1155" product-id="22336" />
-    <usb-device vendor-id="11836" product-id="22336" />
-</resources>
