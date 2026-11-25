@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
@@ -30,11 +31,12 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="acroscope" android:host="pair" />
             </intent-filter>
-            <!-- a flight controller plugged in: Android offers this app, and with the choice comes the permission -->
+            <!-- a flight controller or the card's reader plugged in: Android offers this app, and for the flight
+                 controller the permission comes with the choice -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
-            <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/flight_controllers" />
+            <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/usb_devices" />
         </activity>
         <!-- collecting and uploading run as WorkManager's foreground work: copying and sending files -->
         <service android:name="androidx.work.impl.foreground.SystemForegroundService" android:foregroundServiceType="dataSync" tools:node="merge" />

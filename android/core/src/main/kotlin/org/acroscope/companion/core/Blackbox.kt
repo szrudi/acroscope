@@ -28,6 +28,9 @@ class Blackbox(port: SerialPort, private val clock: () -> ZonedDateTime, private
         private val MAGIC = "H Product:Blackbox".toByteArray()
     }
 
+    /** The MCU's core temperature now, in °C; null when the firmware does not say. */
+    fun temp(): Int? = Msp.coreTemp(link.request(Msp.STATUS))
+
     fun flash(): Flash {
         val s = link.request(Msp.DATAFLASH_SUMMARY)
         if (s.size < 13) throw IOException("a flash summary of ${s.size} bytes")
@@ -61,7 +64,7 @@ class Blackbox(port: SerialPort, private val clock: () -> ZonedDateTime, private
                     if (stop()) throw IOException("stopped")
                     if (now() - polled >= 1000) {
                         polled = now()
-                        temp = Msp.coreTemp(link.request(Msp.STATUS))
+                        temp = this.temp()
                         temp?.let { t -> peak = maxOf(peak ?: t, t) }
                     }
                     val want = minOf(PIECE.toLong(), flash.used - at).toInt()

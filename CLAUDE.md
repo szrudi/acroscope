@@ -65,7 +65,9 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   when the server reports the batch done, never when the upload ends; nothing about an upload is remembered on the
   phone (the client asks the server where each file ends); the quad's flash is erased only on the pilot's press and
   only by the connection that saved and verified its log (`Blackbox.erase` refuses otherwise; a collect never
-  erases); a change to the drop's protocol changes `DropClient` and
+  erases); the upload by itself (`Auto`, `AutoUploadWorker`, WorkManager's unmetered constraint) retries in silence
+  what a later try can mend and tells the pilot, once, what only they can, and it is the same upload the button
+  runs; a change to the drop's protocol changes `DropClient` and
   `tests/drop_client.py` in the same PR, and `DropContractTest` (the Kotlin client against an `acroscope serve` child
   from this checkout, `ACROSCOPE_PYTHON` naming the Python) is what says they still agree. Building on joan:
   `android/scripts/setup.sh` once (JDK 21 in `~/.jdks`, the SDK in `~/Android/Sdk`, no root), then
