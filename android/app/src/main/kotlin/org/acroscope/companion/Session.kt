@@ -4,8 +4,11 @@ import android.content.Intent
 import android.net.Uri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.acroscope.companion.core.Auto
 import org.acroscope.companion.core.Batches
@@ -17,6 +20,8 @@ import org.acroscope.companion.core.Pairing
 import org.acroscope.companion.core.UploadResult
 import java.io.IOException
 import java.io.InputStream
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /** The card as the screen shows it: what the phone knows of it and what a collect would take. */
 sealed interface CardView {
@@ -58,7 +63,19 @@ class Session(private val g: Graph) {
     val quad = MutableStateFlow<QuadView>(QuadView.None)
     val erase = MutableStateFlow<Work>(Work.Idle)
     /** The line to a quad whose log was just saved, kept open: only that connection may erase the flash. */
-    private var held: Pair<SerialPort, Blackbox>? = null
+    @Volatile private var held: Pair<SerialPort, Blackbox>? = null
+    /** The quad's core temperature as last read, in °C: while it is plugged in and the screen is there to show it. */
+    val heat = MutableStateFlow<Int?>(null)
+    /** How much log is on the quad's flash as last read, in bytes: 0 is an empty flash, null is not known (not asked
+     *  yet, no answer, or a board without a flash). */
+    val flash = MutableStateFlow<Long?>(null)
+    /** One talker on the quad's line at a time: a save, an erase, or a reading of the temperature and the flash. */
+    private val wire = ReentrantLock()
+    /** The line the temperature is read on while no saved log holds one open. Let go when the screen is left: only
+     *  one app can talk to a flight controller. */
+    @Volatile private var watch: Pair<SerialPort, Blackbox>? = null
+    @Volatile private var watched = false
+    private var watching: Job? = null
     val collect = MutableStateFlow<Work>(Work.Idle)
     val upload = MutableStateFlow<Work>(Work.Idle)
     /** The last thing worth telling the pilot that belongs to no job: a pairing, a log taken in, an edit refused. */
@@ -116,6 +133,7 @@ class Session(private val g: Graph) {
         val now = seeQuad()
         if (plugged(now) != plugged(quad.value)) settle(collect, erase)
         quad.value = now
+        if (now is QuadView.Ready) feel(looping = true)     // just plugged in or allowed: ask it now, not at the next reading
     }
 
     private fun seeQuad(): QuadView = when (val s = g.quads.state()) {
@@ -127,6 +145,54 @@ class Session(private val g: Graph) {
     private fun letGo() {
         held?.let { runCatching { it.first.close() } }
         held = null
+        unwatch()
+        forget()
+    }
+
+    /** What was read off the quad is about a quad that is gone, or one that did not answer. */
+    private fun forget() {
+        heat.value = null
+        flash.value = null
+    }
+
+    private fun unwatch() {
+        watch?.let { runCatching { it.first.close() } }
+        watch = null
+    }
+
+    /** The screen is there (`on`) or left: the quad's temperature and what is on its flash are read every few seconds
+     *  while someone can see them. */
+    fun watch(on: Boolean): Job {
+        watched = on
+        watching?.cancel()
+        return scope.launch {
+            if (on) while (isActive) {
+                feel(looping = true)
+                delay(WATCH_MS)
+            } else wire.withLock { unwatch() }
+        }.also { watching = it }
+    }
+
+    /** One reading of the quad's temperature and of how much log its flash holds, unless a save or an erase has its
+     *  line: those say it themselves. */
+    fun feel(looping: Boolean = false) {
+        if (!wire.tryLock()) return
+        try {
+            if (looping && !watched) return             // the screen was left while this reading waited its turn
+            if (g.quads.state() !is QuadState.Ready) {
+                unwatch()
+                forget()
+                return
+            }
+            val box = (held ?: watch ?: g.quads.open().let { it to Blackbox(it, g.clock) }.also { watch = it }).second
+            heat.value = box.temp()
+            flash.value = box.flash().takeIf { it.present }?.used
+        } catch (e: Exception) {            // unplugged under the question, or held by another app: nothing to show
+            unwatch()
+            forget()
+        } finally {
+            wire.unlock()
+        }
     }
 
     fun allow(tree: Uri) {
@@ -141,7 +207,7 @@ class Session(private val g: Graph) {
     /** One press collects whatever is there: the quad's log, the card's clips, or both. */
     fun startCollect() {
         val open = (card.value as? CardView.Open)?.takeIf { it.clips > 0 }
-        val log = quad.value is QuadView.Ready
+        val log = quad.value is QuadView.Ready && flash.value != 0L
         if ((open == null && !log) || collect.value is Work.Running) return
         settle(erase, upload)
         collect.value = Work.Running(if (log) "asking the quad" else "reading the card", 0, open?.bytes ?: 0)
@@ -154,7 +220,10 @@ class Session(private val g: Graph) {
         var ok = true
         if (g.quads.state() is QuadState.Ready && held == null) {
             try {
-                said += saveLog(stop)
+                said += wire.withLock {
+                    unwatch()                       // the save opens the line itself, and keeps it for the erase
+                    saveLog(stop)
+                }
             } catch (e: Exception) {
                 ok = false
                 said += "the log was not saved (${e.message ?: e.javaClass.simpleName}); the quad's flash is as it was"
@@ -200,10 +269,12 @@ class Session(private val g: Graph) {
         try {
             val box = Blackbox(port, g.clock)
             val saved = box.download(g.store.scratch, { p ->
-                collect.value = Work.Running("the log off $name" + (p.temp?.let { " · core $it °C" } ?: ""), p.done, p.total)
+                collect.value = Work.Running("the log off $name", p.done, p.total)
+                heat.value = p.temp
             }, stop)
             if (saved == null) {
                 port.close()
+                flash.value = 0L
                 return "$name's flash is empty"
             }
             val item = try { g.collector.addLog(saved.file.name, null) { saved.file.inputStream() } } finally { saved.file.delete() }
@@ -221,13 +292,15 @@ class Session(private val g: Graph) {
         val (_, box) = held ?: return@launch
         if (erase.value is Work.Running) return@launch
         erase.value = Work.Running("erasing the quad's flash (up to a minute)", 0, 0)
-        erase.value = try {
-            box.erase()
+        val done = try {
+            wire.withLock { box.erase() }
             Work.Finished("the quad's flash is erased", true)
         } catch (e: Exception) {
             Work.Finished("the flash was not erased: ${e.message ?: e.javaClass.simpleName}", false)
         }
+        erase.value = done
         letGo()
+        if (done.ok) flash.value = 0L           // the erase ends on a flash that says it is empty
         quad.value = seeQuad()
     }
 
@@ -309,10 +382,19 @@ class Session(private val g: Graph) {
         false
     }
 
-    fun describe(view: QuadView): String = when (view) {
+    companion object {
+        const val WATCH_MS = 3000L
+    }
+
+    /** `flash` is how much log the quad's flash holds, when that was read. */
+    fun describe(view: QuadView, flash: Long? = null): String = when (view) {
         QuadView.None -> "no quad plugged in"
         is QuadView.Locked -> "${view.name}: allow the app to talk to it"
-        is QuadView.Ready -> "${view.name}: its log will be saved"
+        is QuadView.Ready -> when (flash) {
+            null -> "${view.name}: its log will be saved"
+            0L -> "${view.name}: its flash is empty, there is no log to save"
+            else -> "${view.name}: its log (${Format.bytes(flash)}) will be saved"
+        }
         is QuadView.Saved -> "${view.name}: its log is saved, its flash can be erased"
     }
 
