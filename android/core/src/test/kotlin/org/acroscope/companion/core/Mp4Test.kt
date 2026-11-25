@@ -3,6 +3,7 @@ package org.acroscope.companion.core
 import java.nio.ByteBuffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class Mp4Test {
     private fun atom(type: String, payload: Int, size: Long? = null): ByteArray {
@@ -20,6 +21,19 @@ class Mp4Test {
     private fun check(vararg parts: ByteArray): Mp4.Index {
         val bytes = parts.fold(ByteArray(0)) { a, p -> a + p }
         return Mp4.index(bytes.size.toLong()) { at, n -> bytes.copyOfRange(at.toInt(), minOf(bytes.size, at.toInt() + n)) }
+    }
+
+    @Test
+    fun `an atom that says it runs past any file ends the walk, not on a negative offset`() {
+        val head = atom("ftyp", 12)
+        val huge = ByteBuffer.allocate(16).putInt(1).put("mdat".toByteArray()).putLong(Long.MAX_VALUE - 4).array()
+        val asked = mutableListOf<Long>()
+        val index = Mp4.index(1000) { at, n ->
+            asked += at
+            when (at) { 0L -> head; head.size.toLong() -> huge; else -> ByteArray(minOf(n, 16)) }.copyOf(minOf(n, 16))
+        }
+        assertEquals(Mp4.Index.MISSING, index)
+        assertTrue(asked.all { it in 0 until 1000 }, asked.toString())
     }
 
     @Test

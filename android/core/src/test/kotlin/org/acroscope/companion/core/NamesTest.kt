@@ -57,5 +57,9 @@ class NamesTest {
         assertEquals("BTFL_BLACKBOX_LOG_OTTO_20261010_123023_BETAFPVG473_V2.bbl", Names.log("OttO", "BETAFPVG473_V2", at))
         assertEquals("BTFL_BLACKBOX_LOG_AIR65_F_20261010_123023_X.bbl", Names.log("AIR65 F", "X", at))
         assertEquals("BTFL_BLACKBOX_LOG_20261010_123023_X.bbl", Names.log("  ", "X", at))       // no craft name: left out
+        // the board's name as the quad says it, cleaned like the craft's: one plain file name, which the server takes
+        val odd = Names.log("OttO", "G4 7/3", at)
+        assertEquals("BTFL_BLACKBOX_LOG_OTTO_20261010_123023_G4_7_3.bbl", odd)
+        assertTrue(Names.accepted(odd), odd)
     }
 }

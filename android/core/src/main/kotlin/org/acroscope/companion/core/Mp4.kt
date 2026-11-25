@@ -28,7 +28,7 @@ object Mp4 {
                 1L -> if (head.size >= 16) u64(head, 8) else break   // the 64-bit form
                 else -> short
             }
-            if (length < 8) break
+            if (length < 8 || length > size - at) break             // past the end of the file: no index after it
             at += length
         }
         return if (movie) Index.MISSING else Index.NOT_A_MOVIE

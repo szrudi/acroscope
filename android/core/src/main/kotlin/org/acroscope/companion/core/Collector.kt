@@ -51,7 +51,7 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
         /** Event names remembered. */
         const val RECENT = 12
         private val STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssxxx")
-        private val CONFIGURATOR = Regex("BTFL_BLACKBOX_LOG_.*_[0-9]{8}_[0-9]{6}_.*\\.bbl", RegexOption.IGNORE_CASE)
+        private val CONFIGURATOR = Regex("BTFL_BLACKBOX_LOG_(.*_)?[0-9]{8}_[0-9]{6}_.*\\.bbl", RegexOption.IGNORE_CASE)   // the craft left out when it has none
         private val LOG_MAGIC = "H Product:Blackbox".toByteArray()
     }
 

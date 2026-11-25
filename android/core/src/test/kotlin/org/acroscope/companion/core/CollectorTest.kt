@@ -324,6 +324,13 @@ class CollectorTest {
     }
 
     @Test
+    fun `a name in the configurator's pattern without a craft is kept as it is`() {
+        event("park")
+        val name = "BTFL_BLACKBOX_LOG_20261212_084500_BETAFPVG473_V2.bbl"              // what Names.log itself makes for a quad with no craft name
+        assertEquals(name, collector.addLog(name, 5_000L) { ByteArrayInputStream(log()) }.name)
+    }
+
+    @Test
     fun `what is not a blackbox log is refused and nothing of it kept`() {
         event("park")
         for ((name, bytes) in listOf("x.bbl" to "not a log at all".toByteArray(), "x.bbl" to ByteArray(0), "notes.txt" to log(), "x.bbl" to movie(100))) {

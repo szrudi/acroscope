@@ -39,9 +39,11 @@ object Names {
 
     fun isBatchId(id: String): Boolean = BATCH.matches(id)
 
-    /** `BTFL_BLACKBOX_LOG_<CRAFT>_<YYYYMMDD_HHMMSS>_<board>.bbl`; the craft upper-cased, left out when empty. */
+    /** `BTFL_BLACKBOX_LOG_<CRAFT>_<YYYYMMDD_HHMMSS>_<board>.bbl`; the craft upper-cased, left out when empty; both as
+     *  the quad says them, so cleaned into one plain file name. */
     fun log(craft: String, board: String, at: LocalDateTime): String {
         val c = craft.trim().uppercase().replace(Regex("[^A-Z0-9_]"), "_")
-        return (listOf("BTFL_BLACKBOX_LOG") + (if (c.isEmpty()) emptyList() else listOf(c)) + listOf(at.format(LOG_STAMP), board)).joinToString("_") + ".bbl"
+        val b = board.trim().replace(Regex("[^A-Za-z0-9_-]"), "_")
+        return (listOf("BTFL_BLACKBOX_LOG") + (if (c.isEmpty()) emptyList() else listOf(c)) + listOf(at.format(LOG_STAMP), b)).joinToString("_") + ".bbl"
     }
 }

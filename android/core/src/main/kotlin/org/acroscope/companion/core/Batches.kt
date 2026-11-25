@@ -19,7 +19,8 @@ class Batches(private val store: Store) {
 
     fun edit(id: String, event: String, date: String) {
         pending(id) ?: return
-        val day = try { LocalDate.parse(date) } catch (e: DateTimeParseException) { null }
+        // the plain form only: LocalDate also reads a sign and a year past 9999, which a session's name cannot carry
+        val day = if (!Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}").matches(date)) null else try { LocalDate.parse(date) } catch (e: DateTimeParseException) { null }
         require(day != null) { "the date is a day like 2026-12-12" }
         store.updateBatch(id) { it.copy(event = event.trim(), date = date) }
     }

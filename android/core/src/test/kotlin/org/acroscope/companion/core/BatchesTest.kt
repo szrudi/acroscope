@@ -28,7 +28,7 @@ class BatchesTest {
         assertEquals("whoop race" to "2026-12-11", store.now.batch(id)!!.let { it.event to it.date })
         assertEquals("2026-12-11-whoop-race", store.now.batch(id)!!.session)
         assertEquals("2026-12-12T09:05:07+01:00", store.now.batch(id)!!.createdAt)            // when it was collected stays what it was
-        for (bad in listOf("12-11-2026", "2026-13-01", "2026-02-30", "yesterday", "", "2026-12-11 ")) {
+        for (bad in listOf("12-11-2026", "2026-13-01", "2026-02-30", "yesterday", "", "2026-12-11 ", "-2026-12-11", "+2026-12-11", "+12026-12-11")) {
             val e = assertFailsWith<IllegalArgumentException>(bad) { batches.edit(id, "park", bad) }
             assertTrue("date" in e.message!!, e.message)
         }
