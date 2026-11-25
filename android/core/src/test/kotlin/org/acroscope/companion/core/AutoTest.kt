@@ -45,7 +45,8 @@ class AutoTest {
         assertTrue(Auto.following(State(paired, listOf(batch(Stage.COMMITTED, null)))))
         assertFalse(Auto.following(State(paired, listOf(batch(Stage.COMMITTED, "failed")))))    // that one waits for the pilot
         assertFalse(Auto.following(State(paired, listOf(batch(Stage.DONE, "done")))))
-        assertFalse(Auto.following(State(paired.copy(autoUpload = false), listOf(batch(Stage.COMMITTED, "pending")))))
+        assertTrue(Auto.following(State(paired.copy(autoUpload = false), listOf(batch(Stage.COMMITTED, "pending")))))   // sent by a press of Upload: followed all the same
+        assertFalse(Auto.following(State(paired.copy(token = null), listOf(batch(Stage.COMMITTED, "pending")))))        // nobody to ask
         assertFalse(Auto.following(State(paired, listOf(batch(Stage.PENDING)))))
     }
 }

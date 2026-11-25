@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -26,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,12 +36,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.acroscope.companion.core.Batch
+import kotlinx.coroutines.delay
 import org.acroscope.companion.core.Format
+import org.acroscope.companion.core.Heat
 import org.acroscope.companion.core.Names
 import org.acroscope.companion.core.Stage
 import java.time.LocalDate
@@ -52,10 +60,22 @@ private val Scheme = darkColorScheme(
 /**
  * The one screen: where you fly, what is plugged in, what waits to go up, how what went up is doing. `openCard`
  * asks the pilot for a card's folder, `pickLogs` for saved logs, `beforeJob` runs before a collect or an upload
- * starts (the notification permission).
+ * starts (the notification permission), `openStorage` shows the phone's own storage screen, where a card is ejected
+ * (an app may not eject one), `alarm` makes itself felt and heard once: it is called again and again while a quad on
+ * USB is too warm.
  */
 @Composable
-fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob: () -> Unit = {}) {
+fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob: () -> Unit = {}, openStorage: () -> Unit = {}, alarm: () -> Unit = {}) {
+    val focus = LocalFocusManager.current
+    val heat by g.session.heat.collectAsStateWithLifecycle()
+    val hot = Heat.hot(heat)
+    val flash by g.session.flash.collectAsStateWithLifecycle()
+    LaunchedEffect(hot) {
+        while (hot) {
+            alarm()
+            delay(ALARM_EVERY_MS)
+        }
+    }
     val state by g.store.state.collectAsStateWithLifecycle()
     val card by g.session.card.collectAsStateWithLifecycle()
     val quad by g.session.quad.collectAsStateWithLifecycle()
@@ -91,7 +111,8 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                 note?.let { item { Notice(it, Modifier.testTag("note")) { g.session.note.value = null } } }
                 item {
                     Section("Where are you flying?") {
-                        OutlinedTextField(state.settings.event, g.session::setEvent, Modifier.fillMaxWidth().testTag("event"), singleLine = true, placeholder = { Text("home, park, whoop race…") })
+                        OutlinedTextField(state.settings.event, g.session::setEvent, Modifier.fillMaxWidth().testTag("event"), singleLine = true, placeholder = { Text("home, park, whoop race…") },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }))   // the keyboard goes with the focus
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items((state.settings.recentEvents + events).distinct().filter { it != state.settings.event }) { name ->
                                 AssistChip({ g.session.setEvent(name) }, { Text(name) }, Modifier.testTag("event-$name"))
@@ -103,14 +124,20 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                 item {
                     Section("Collect") {
                         Text(g.session.describe(card), Modifier.testTag("card"))
-                        Text(g.session.describe(quad), Modifier.testTag("quad"))
+                        Text(g.session.describe(quad, flash), Modifier.testTag("quad"))
+                        heat?.let { t ->
+                            if (hot) Text("the quad's core is at $t °C: unplug it and let it cool", Modifier.testTag("heat"), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                            else Dim("the quad's core is at $t °C", Modifier.testTag("heat"))
+                        }
                         Progress(collect, Modifier.testTag("collect-status"))
                         Progress(erase, Modifier.testTag("erase-status"))
-                        val something = ((card as? CardView.Open)?.clips ?: 0) > 0 || quad is QuadView.Ready
+                        val something = ((card as? CardView.Open)?.clips ?: 0) > 0 || (quad is QuadView.Ready && flash != 0L)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             (card as? CardView.Locked)?.let { c -> Button({ openCard(c.request) }, Modifier.testTag("allow")) { Text("Allow the card") } }
                             (quad as? QuadView.Locked)?.let { q -> Button(q.ask, Modifier.testTag("allow-quad")) { Text("Allow the quad") } }
-                            Button({ beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = something && collect !is Work.Running) { Text("Start") }
+                            Button({ focus.clearFocus(); beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = something && collect !is Work.Running) { Text("Start") }
+                            if (card is CardView.Open || card is CardView.Unreadable)
+                                OutlinedButton(openStorage, Modifier.testTag("eject"), enabled = collect !is Work.Running) { Text("Eject the card…") }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(pickLogs, Modifier.testTag("add-log")) { Text("Add a saved log") }
@@ -128,7 +155,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                                 EditBatch(b, onSave = { e, d -> if (g.session.edit(b.id, e, d)) editing = null }, onDiscard = { g.session.discard(b.id); editing = null }, onClose = { editing = null })
                         }
                         Progress(upload, Modifier.testTag("upload-status"))
-                        Button({ beforeJob(); g.session.startUpload() }, Modifier.testTag("upload"), enabled = upload !is Work.Running) { Text("Upload") }
+                        Button({ focus.clearFocus(); beforeJob(); g.session.startUpload() }, Modifier.testTag("upload"), enabled = upload !is Work.Running) { Text("Upload") }
                     }
                 } else if (upload is Work.Finished) item { Section("Upload") { Progress(upload, Modifier.testTag("upload-status")) } }
                 if (sent.isNotEmpty()) item {
@@ -136,7 +163,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                         sent.forEach { b ->
                             Column(Modifier.fillMaxWidth().testTag("sent-${b.id}")) {
                                 Text(b.session, fontWeight = FontWeight.Medium)
-                                Text(Format.status(b.server), Modifier.testTag("status-${b.id}"), color = if (b.server?.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                Text(Format.status(b.server, b.session), Modifier.testTag("status-${b.id}"), color = if (b.server?.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                                     style = MaterialTheme.typography.bodySmall)
                                 if (b.stage == Stage.COMMITTED) Dim("${Format.contents(b.items)} kept on the phone until the server is done")
                                 if (b.server?.status == "failed") TextButton({ g.session.retry(b.id) }, Modifier.testTag("retry-${b.id}")) { Text("Try again on the server") }
@@ -155,6 +182,8 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
         }
     }
 }
+
+const val ALARM_EVERY_MS = 2000L
 
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {
@@ -204,7 +233,7 @@ private fun PendingBatch(b: Batch, onEdit: () -> Unit, onRemove: (String) -> Uni
         b.items.forEach { i ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(i.name, style = MaterialTheme.typography.bodySmall)
+                    Text(i.name, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
                     if (i.unfinalised) Text("no index: the recording was cut off", Modifier.testTag("flag-${i.name}"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
                 Dim(Format.bytes(i.size))

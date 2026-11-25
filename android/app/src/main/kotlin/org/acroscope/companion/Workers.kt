@@ -132,7 +132,7 @@ class AutoUploadWorker(context: Context, params: WorkerParameters) : CoroutineWo
         val result = withContext(Dispatchers.IO) { g.session.uploadNow { isStopped } }
         return when (Auto.next(result)) {
             Next.LATER -> Result.retry()
-            Next.DONE -> Result.success().also { g.session.kick() }             // the server's turn: look in on it later
+            Next.DONE -> Result.success()                                       // the server's turn; uploadNow asked for the look-in
             Next.PILOT -> Result.success().also {
                 applicationContext.getSystemService(NotificationManager::class.java).notify(102, notification(applicationContext, "Uploading to acroscope", g.session.say(result)))
             }
