@@ -7,6 +7,8 @@ What it does now (0.1):
 
 - **Pick the event** (home, park, whoop race…). It becomes the session's name after the date; names used before,
   on this phone or on the server, are a tap away.
+- **Opens on the plug.** Plugged in, the card's reader and the quad both bring up Android's "Choose an app for
+  the USB device" with this app on it; chosen with **Always**, it opens by itself from then on.
 - **Collect from the card.** The goggles' card in a USB-C reader is allowed once, then **Start** copies what is new
   on it (`DCIM/VID*.mov`, in the DVR's recording order). The card is only read, never written: it stays the second
   copy. What was collected is remembered by name, size and time and skipped next time. A clip without its index
@@ -17,7 +19,9 @@ What it does now (0.1):
   Configurator's "save flash to file" does: the used part only), named
   `BTFL_BLACKBOX_LOG_<CRAFT>_<date>_<time>_<board>.bbl` with the phone's time. The file is kept only when it is as
   long as the flash said and starts like a log. After that, and only then, **Erase the quad's flash** is offered.
-  Only one app can hold the flight controller: close the Betaflight app first.
+  Only one app can hold the flight controller: close the Betaflight app first. While the app is on the screen the
+  quad's line says how much log is on its flash, or that the flash is empty: then there is nothing for **Start** to
+  save, also right after an erase.
 - **How warm the quad is.** On USB the board has power and no air over it. While a quad is plugged in and the app
   is on the screen, its MCU's core temperature is read every few seconds and shown; from 65 °C the line turns into
   a warning to unplug it, with a buzz and a tone every two seconds until it has cooled or is unplugged. With the
@@ -81,7 +85,8 @@ phone without losing what it holds.
 - `:core:test`: the logic, and the client against the server (set `ACROSCOPE_PYTHON` to a Python that has
   acroscope's dependencies, else `.venv/bin/python` at the repo's root is used; without one those tests skip).
 - `:app:testDebugUnitTest`: the screen driven as a pilot drives it, under Robolectric, with stand-ins for the card
-  and the server.
-- Only a phone can say: that the card in the reader is found and read (`SafCards`), that a flight controller's
-  serial port opens and answers (`UsbSerial`; the protocol above it is tested against a stand-in controller), that
-  the jobs survive leaving the app, how it feels in the hand. Those are checked on a real phone and said so in the PR.
+  and the server; and the manifest's USB device filter, matched the way Android matches one.
+- Only a phone can say: that Android offers the app on the plug, that the card in the reader is found and read
+  (`SafCards`), that a flight controller's serial port opens and answers (`UsbSerial`; the protocol above it is
+  tested against a stand-in controller), that the jobs survive leaving the app, how it feels in the hand. Those are
+  checked on a real phone and said so in the PR.
