@@ -17,6 +17,9 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
     var eraseNeverEnds = false
     var halfDone = mutableListOf<Pair<Boolean, Long>>()   // summaries after an erase that say (ready, used) as given, before it is done
     var closed = false
+    var most: Int? = null                                // a read answers at most this many bytes, whatever was asked
+    var more = 0                                         // a read answers this many bytes past what was asked
+    var says: Long? = null                               // the used size the summary reports, when not the flash's own
     private var incoming = ByteArray(0)
     private var outgoing = ByteArray(0)
     private var erasing = false
@@ -48,7 +51,7 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
                     erasing = false
                     flash = ByteArray(0)
                 }
-                summary(ready, flash.size.toLong())
+                summary(ready, says ?: flash.size.toLong())
             }
             Msp.NAME -> Msp.frame(command, craft.toByteArray(), '>')
             Msp.BOARD_INFO -> Msp.frame(command, boardInfo, '>')
@@ -58,7 +61,7 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
             }
             Msp.DATAFLASH_READ -> {
                 val at = Msp.u32(payload, 0).toInt()
-                val n = minOf(Msp.u16(payload, 4), flash.size - at)
+                val n = minOf(Msp.u16(payload, 4) + more, most ?: Int.MAX_VALUE, flash.size - at)
                 Msp.frame(command, Msp.le32(at.toLong()) + byteArrayOf(n.toByte(), (n shr 8).toByte(), 0) + flash.copyOfRange(at, at + n), '>')
             }
             Msp.DATAFLASH_ERASE -> {

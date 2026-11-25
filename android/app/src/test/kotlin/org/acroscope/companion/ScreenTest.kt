@@ -111,8 +111,9 @@ class ScreenTest {
         assertTrue("allow the app to read it" in text("card"))
         click("allow")
         assertEquals(1, asked.size)                                             // the system's folder picker, opened at the card
-        w.card(FakeFile("VID00001.mov", movie(100)), FakeFile("VID00002.mov", movie(200)), FakeFile("notes.txt", ByteArray(3)))
-        w.session.lookAtCard()
+        w.cards.files = listOf(FakeFile("VID00001.mov", movie(100)), FakeFile("VID00002.mov", movie(200)), FakeFile("notes.txt", ByteArray(3)))
+        w.session.allow(TREE)                                                   // the folder the pilot chose there
+        assertEquals(listOf(TREE), w.cards.granted)                             // kept: the card is not asked about again
         wait { seen("start") && "2 new clips" in text("card") }
         assertFalse("eject it" in text("card"), text("card"))                   // there is something to collect first
         assertTrue("notes.txt" in text("card"), text("card"))                   // what would be left on the card is said
@@ -159,6 +160,24 @@ class ScreenTest {
         wait { seen("collect-status") && "without an index" in text("collect-status") }
         bring("flag-VID00001.mov")
         assertTrue(seen("flag-VID00001.mov"))
+    }
+
+    @Test
+    fun `a collect that ended early says so as a failure, and the line stays when the screen is left`() {
+        w.card(FakeFile("VID00001.mov", movie(100)), object : org.acroscope.companion.core.CardFile {
+            override val name = "VID00002.mov"
+            override val size = 500L
+            override val modified = 1000L
+            override fun open(): java.io.InputStream = throw java.io.IOException("card removed")
+        })
+        show()
+        wait { "2 new clips" in text("card") }
+        click("start")
+        wait { seen("collect-status") && "card removed" in text("collect-status") }
+        assertEquals(false, (w.session.collect.value as Work.Finished).ok)
+        w.session.left()
+        rule.waitForIdle()
+        assertTrue(seen("collect-status"))                                      // what went wrong stays until the next try
     }
 
     @Test
@@ -639,6 +658,7 @@ class ScreenTest {
         assertTrue("uploaded" in text("upload-status"), text("upload-status"))
         assertEquals(Stage.COMMITTED, w.store.now.batch(id)!!.stage)
         assertTrue("waiting its turn" in text("status-$id"))
+        assertTrue("kept on the phone until the server is done" in text("kept-$id"), text("kept-$id"))
         assertTrue(File(w.store.dir(id), "VID00001.mov").exists())
         w.drop.statuses[id] = ServerStatus("failed", error = "ValueError: VID00002.mov: no video stream")
         bring("check")
@@ -652,6 +672,7 @@ class ScreenTest {
         wait { w.store.now.batch(id)!!.stage == Stage.DONE }
         assertFalse(w.store.dir(id).exists())                                   // the server has it: the phone's copy is gone
         wait { "done: 2 clips" in text("status-$id") }
+        assertFalse(seen("kept-$id"))                                           // its copy is gone: nothing is kept
         assertFalse("park" in text("status-$id"), text("status-$id"))           // the session is the line above it
         assertFalse(seen("retry-$id"))
     }
@@ -766,7 +787,7 @@ class ScreenTest {
         collected()
         show()
         bring("upload")
-        assertTrue(rule.onAllNodesWithTag("batch-${w.store.now.batches.single().id}").fetchSemanticsNodes().isNotEmpty())
-        assertEquals("2 clips, ${Format.bytes((movie(100).size + movie(200).size).toLong())}", Format.contents(w.store.now.batches.single().items))
+        val id = w.store.now.batches.single().id
+        assertEquals("2 clips, ${Format.bytes((movie(100).size + movie(200).size).toLong())}", text("contents-$id").removeSurrounding("[", "]"))   // as the screen says it
     }
 }

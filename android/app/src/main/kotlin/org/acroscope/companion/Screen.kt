@@ -166,7 +166,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                                 Text(b.session, fontWeight = FontWeight.Medium)
                                 Text(Format.status(b.server, b.session), Modifier.testTag("status-${b.id}"), color = if (b.server?.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                                     style = MaterialTheme.typography.bodySmall)
-                                if (b.stage == Stage.COMMITTED) Dim("${Format.contents(b.items)} kept on the phone until the server is done")
+                                if (b.stage == Stage.COMMITTED) Dim("${Format.contents(b.items)} kept on the phone until the server is done", Modifier.testTag("kept-${b.id}"))
                                 if (b.server?.status == "failed") TextButton({ g.session.retry(b.id) }, Modifier.testTag("retry-${b.id}")) { Text("Try again on the server") }
                             }
                         }
@@ -229,7 +229,7 @@ private fun PendingBatch(b: Batch, onEdit: () -> Unit, onRemove: (String) -> Uni
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Column(Modifier.weight(1f)) {
                 Text(b.session, fontWeight = FontWeight.Medium)
-                Dim(Format.contents(b.items))
+                Dim(Format.contents(b.items), Modifier.testTag("contents-${b.id}"))
             }
             TextButton(onEdit, Modifier.testTag("edit-${b.id}")) { Text("Change") }
         }

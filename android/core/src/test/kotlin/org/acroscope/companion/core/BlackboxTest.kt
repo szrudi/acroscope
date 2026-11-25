@@ -115,6 +115,23 @@ class BlackboxTest {
     }
 
     @Test
+    fun `a controller that answers less than was asked is read on from where it stopped`() {
+        fc.most = 1000
+        assertEquals(log.toList(), box.download(dir)!!.file.readBytes().toList())
+        assertEquals((0 until log.size step 1000).map { "read@$it" }, fc.asked.filter { it.startsWith("read") }.map { it.substringBefore('+') })
+    }
+
+    @Test
+    fun `what came off longer than the flash said is not a whole log, and the flash is not to be erased`() {
+        fc.says = log.size - 50L
+        fc.more = 100                                                           // the last read answers past what was asked
+        val e = assertFailsWith<IOException> { box.download(dir) }
+        assertTrue("not a whole log" in e.message!!, e.message)
+        assertTrue(dir.list().isNullOrEmpty())
+        assertFailsWith<IllegalStateException> { box.erase() }
+    }
+
+    @Test
     fun `a save that failed takes back what an earlier one allowed`() {
         box.download(dir)!!.file.delete()
         fc.spoil = { command, reply -> if (command == Msp.DATAFLASH_READ) Msp.frame(command, ByteArray(3), '>') else reply }
