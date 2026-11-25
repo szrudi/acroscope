@@ -217,6 +217,69 @@ class ScreenTest {
         wait { "no quad plugged in" in text("quad") && !seen("erase-status") && !seen("collect-status") }   // unplugged: what was said about it goes with it
     }
 
+    /** A quad whose log was saved through the screen: its erase is on offer. */
+    private fun saved(): org.acroscope.companion.core.FakeFc {
+        val fc = org.acroscope.companion.core.FakeFc(flightLog)
+        w.quads.fc = fc
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/002")
+        show()
+        wait { "its log will be saved" in text("quad") }
+        click("start")
+        wait { seen("erase") }
+        return fc
+    }
+
+    private val erased get() = org.acroscope.companion.core.Msp.DATAFLASH_ERASE.toString()
+
+    @Test
+    fun `the erase is withdrawn when the saved log is taken off the phone`() {
+        val fc = saved()
+        val batch = w.store.now.batches.single()
+        w.session.remove(batch.id, batch.items.single().name)                   // the batch's only file: the batch goes with it
+        wait { !seen("erase") && "its log" in text("quad") && "will be saved" in text("quad") }
+        assertTrue(fc.closed)                                                   // the line that could erase is let go
+        assertFalse(erased in fc.asked)
+    }
+
+    @Test
+    fun `an erase asked for after the saved log went another way erases nothing`() {
+        val fc = saved()
+        w.store.update { it.copy(batches = emptyList()) }                        // gone without the screen hearing of it
+        click("erase")
+        wait { !seen("erase") && "will be saved" in text("quad") }
+        assertFalse(erased in fc.asked)
+        assertEquals(flightLog.size, fc.flash.size)
+    }
+
+    @Test
+    fun `a quad swapped while the app was away is another quad, though it has the same name`() {
+        val first = saved()
+        val second = org.acroscope.companion.core.FakeFc(flightLog + ByteArray(100) { 5 })
+        w.quads.fc = second
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/003")           // unplugged and another plugged in, with the screen off
+        w.session.lookAtQuad()
+        wait { !seen("erase") && "will be saved" in text("quad") }
+        assertTrue(first.closed)
+        tag("start").assertIsEnabled()                                          // the new one's log is there to save
+        click("start")
+        wait { seen("erase") }
+        assertEquals(2, w.store.now.batches.single().items.size)
+        assertFalse(erased in first.asked || erased in second.asked)
+    }
+
+    @Test
+    fun `a card collected while a saved log waits for its erase does not save the log again`() {
+        saved()
+        w.card(FakeFile("VID00001.mov", movie(100)))
+        w.session.lookAtCard()
+        wait { "1 new clip" in text("card") }
+        click("start")
+        wait { "1 clip collected" in text("collect-status") }
+        assertEquals(1, w.quads.opened)
+        assertEquals(listOf(Kind.LOG, Kind.CLIP), w.store.now.batches.single().items.map { it.kind })
+        assertTrue(seen("erase"))
+    }
+
     private fun quad(vararg temps: Int): org.acroscope.companion.core.FakeFc {
         val fc = org.acroscope.companion.core.FakeFc(flightLog)
         fc.temps = temps.toMutableList()

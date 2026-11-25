@@ -18,7 +18,9 @@ sealed interface QuadState {
     data object None : QuadState
     /** A flight controller is plugged in; `ask` puts Android's question to the pilot. */
     data class NeedsPermission(val name: String, val ask: () -> Unit) : QuadState
-    data class Ready(val name: String) : QuadState
+    /** `id` tells one plugged-in device from another (Android's name for it): a quad swapped while the app was not
+     *  looking is another quad, though it calls itself the same. */
+    data class Ready(val name: String, val id: String = name) : QuadState
 }
 
 interface Quads {
@@ -40,7 +42,7 @@ class UsbQuads(private val context: Context) : Quads {
     override fun state(): QuadState {
         val device = controller() ?: return QuadState.None
         val name = device.productName ?: "flight controller"
-        if (usb.hasPermission(device)) return QuadState.Ready(name)
+        if (usb.hasPermission(device)) return QuadState.Ready(name, device.deviceName)
         return QuadState.NeedsPermission(name) {
             val answer = PendingIntent.getBroadcast(context, 0, Intent(PERMISSION).setPackage(context.packageName), PendingIntent.FLAG_MUTABLE)
             usb.requestPermission(device, answer)
