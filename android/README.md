@@ -19,7 +19,9 @@ What it does now (0.1):
   Configurator's "save flash to file" does: the used part only), named
   `BTFL_BLACKBOX_LOG_<CRAFT>_<date>_<time>_<board>.bbl` with the phone's time. The file is kept only when it is as
   long as the flash said and starts like a log. After that, and only then, **Erase the quad's flash** is offered.
-  Only one app can hold the flight controller: close the Betaflight app first.
+  Only one app can hold the flight controller: close the Betaflight app first. While the app is on the screen the
+  quad's line says how much log is on its flash, or that the flash is empty: then there is nothing for **Start** to
+  save, also right after an erase.
 - **How warm the quad is.** On USB the board has power and no air over it. While a quad is plugged in and the app
   is on the screen, its MCU's core temperature is read every few seconds and shown; from 65 °C the line turns into
   a warning to unplug it, with a buzz and a tone every two seconds until it has cooled or is unplugged. With the
