@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
+from acroscope.store import db
 from acroscope.store.db import Db
 
 
@@ -205,6 +207,16 @@ class DeviceTest(unittest.TestCase):
         self.db.device_for(d["token"])
         seen = self.db.devices()[0]["last_seen_at"]
         self.assertAlmostEqual(datetime.fromisoformat(seen).timestamp(), datetime.now(timezone.utc).timestamp(), delta=5)
+
+    def test_last_seen_is_kept_to_the_minute(self):
+        """An upload is many requests: the stamp is written once a minute, and it is the minute the device was last here."""
+        d = self.db.add_device("phone")
+        seen = []
+        for stamp in ("2026-10-11T10:00:05+00:00", "2026-10-11T10:00:55+00:00", "2026-10-11T10:01:00+00:00", "2026-10-12T10:01:30+00:00", "2027-01-01T00:00:00+00:00"):
+            with mock.patch.object(db, "now", lambda: stamp):
+                self.db.device_for(d["token"])
+            seen.append(self.db.devices()[0]["last_seen_at"])
+        self.assertEqual(seen, ["2026-10-11T10:00:05+00:00", "2026-10-11T10:00:05+00:00", "2026-10-11T10:01:00+00:00", "2026-10-12T10:01:30+00:00", "2027-01-01T00:00:00+00:00"])
 
     def test_a_device_name_is_some_text(self):
         for bad in ("", "   ", None, 7, "x" * 61, "two\nlines"):

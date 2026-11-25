@@ -52,7 +52,9 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   files are staged in `drop/<device>/<batch>/files/`, root's own and never inside `inbox/`; the commit is one rename
   with `.done` already written, onto nothing (a folder or a link by that name in the inbox refuses it); names go through
   `drop.batch_ok`/`name_ok`/`device_ok` before any path is built; a batch id is used once, since the app deletes its
-  copy when the server reports that id done; a device sees and retries only its own batches (`batches.device`). The
+  copy when the server reports that id done; a device sees and retries only its own batches (`batches.device`); a
+  body's end is known before any of it is read (a chunked one is refused, the connection ends); an answer carries the
+  drop's own words, never the system's (an `OSError` names the server's paths: those go to the log). The
   server's part runs in request threads (the copying is I/O); nothing there decodes or probes what arrived. Tokens are
   in the `devices` table as SHA-256 hashes: `db.add_device` returns the token once, nothing else may print or store it.
   `ACROSCOPE_DROP_URL` is the drop's own address when it has a host of its own: it goes into the pairing code, and a

@@ -82,7 +82,7 @@ GET    /drop/events                          what the recent sessions were calle
 ```
 
 Every request carries `Authorization: Bearer <token>` (and the tus ones `Tus-Resumable: 1.0.0`); without a valid
-token every path under `/drop/` answers 401. Where a reverse proxy with a login stands in front of the player, the
+token every path under `/drop/` answers 401. A body comes with its `Content-Length`: a chunked one is refused. Where a reverse proxy with a login stands in front of the player, the
 drop needs a way past it (a background upload cannot sign in): a host of its own that serves `/drop/*` and nothing
 else, with `ACROSCOPE_DROP_URL` set to it so the pairing code sends the app there (unset, the code names the address
 the configuration page was opened at). So that such a host is no way around the login, a request under its name is
@@ -94,12 +94,14 @@ outside the inbox; the commit checks every file against the manifest, writes `.d
 the inbox. A device is trusted like the push user, no further: a batch is named as the laptop names one
 (`YYYYmmdd-HHMMSS-<suffix>`) and its id is used once, a file is one ingest takes (`VID*.mov`, `*.bbl`, `import.json`)
 under a plain name, the declared sizes count against a quota (`ACROSCOPE_DROP_QUOTA`, 50 GB for all devices together)
-and the room the disk keeps (`ACROSCOPE_DROP_MIN_FREE`, 5 GB), and a device reaches only its own staging. Nothing is
+and the room the disk keeps (`ACROSCOPE_DROP_MIN_FREE`, 5 GB), and a device reaches only its own staging. The quota is
+on what is staged (a committed batch leaves it, and one device can hold all of it); what a device can put on the disk
+in all is bounded by the room kept free. Nothing is
 read back or listed through this door; a device hears about its own batches (status, error, what they became) and
 the recent event names. A piece whose sender goes silent is let go after a minute, or as soon as the device is back with the
 next piece for that file (it starts where the file ends: the old sender is stopped and the new one goes on from
 there); a sender that breaks off in a piece is no error, what came is kept. A staged batch nothing was
-added to for 7 days is dropped by the nightly housekeeping. `tests/drop_client.py` is the device's side in sixty lines.
+added to for 7 days is dropped by the nightly housekeeping. `tests/drop_client.py` is the device's side in plain stdlib.
 
 Everything acroscope knows about a session (its clips with duration and codec, its blackbox files, the matches
 video <-> arm + offset, the moments, the notes) is in one SQLite database (`ACROSCOPE_DB`, default
