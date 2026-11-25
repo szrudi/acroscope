@@ -16,6 +16,7 @@ database already has is refused.
 
 One process stages (the server); `expire` also runs from housekeeping, on batches nothing has touched for days.
 """
+import errno
 import json
 import os
 import re
@@ -73,8 +74,16 @@ def batch_ok(batch) -> str:
 
 
 def name_ok(name) -> str:
-    """A file a batch may hold: what ingest takes (a clip, a log, the sidecar), under a plain name."""
-    if not isinstance(name, str) or len(name) > 200 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+    """A file a batch may hold: what ingest takes (a clip, a log, the sidecar), under a plain name. One a file system
+    can hold (200 bytes, as it counts them; half a surrogate pair, which JSON can spell, is no text at all) and no
+    command takes for an option."""
+    if not isinstance(name, str) or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError(f"{name!r}: not a plain file name")
+    try:
+        long = len(name.encode()) > 200
+    except UnicodeEncodeError:
+        long = True
+    if long or name.startswith("-"):
         raise ValueError(f"{name!r}: not a plain file name")
     intake.plain_name(name)
     if name.startswith(".") or not (name == "import.json" or intake.CLIP_RE.match(name) or name.lower().endswith(".bbl")):
@@ -99,11 +108,13 @@ def _whole(n) -> bool:
 # ---- what is staged ----------------------------------------------------------------------------------------------
 
 def _lengths(d: Path) -> dict:
-    """{file name: declared length} of a staged batch."""
+    """{file name: declared length} of a staged batch. A list that is not there or cannot be read (cut short by a
+    crash) declares nothing: its files are sent again, and no other batch is held up by it."""
     try:
-        return json.loads((d / "lengths.json").read_text())
-    except FileNotFoundError:
+        lengths = json.loads((d / "lengths.json").read_text())
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         return {}
+    return lengths if isinstance(lengths, dict) else {}
 
 
 def _save_lengths(d: Path, lengths: dict) -> None:
@@ -116,7 +127,13 @@ def _all_staged() -> dict[Path, dict]:
     """{staging dir: its declared lengths}, every batch of every device."""
     if not DROP_DIR.is_dir():
         return {}
-    return {d: _lengths(d) for dev in sorted(DROP_DIR.iterdir()) if dev.is_dir() for d in sorted(dev.iterdir()) if d.is_dir()}
+    staged = {}
+    for dev in sorted(DROP_DIR.iterdir()):
+        try:
+            staged.update((d, _lengths(d)) for d in sorted(dev.iterdir()) if d.is_dir())
+        except (FileNotFoundError, NotADirectoryError):     # a device's folder that went with its last batch while this looked
+            pass
+    return staged
 
 
 def _arrived(d: Path, name: str) -> int:
@@ -134,9 +151,14 @@ def usage() -> dict:
     return {"quota": DROP_QUOTA, "staged": sum(sum(v.values()) for v in _all_staged().values()), "max_file": MAX_FILE}
 
 
-def _taken(batch: str) -> bool:
-    """A batch by that id is in the inbox or known to the database."""
-    return os.path.lexists(ingest.INBOX_DIR / batch) or sessions.store().batch(batch) is not None
+def _taken(batch: str, device: str) -> bool:
+    """A batch by that id was handed in: it is in the inbox, or the database knows it. Not so the device's own batch
+    whose commit was cut short before the move: the database has it, the inbox never did, and its device may go on
+    with it (the app sends the sidecar anew before every commit)."""
+    if os.path.lexists(ingest.INBOX_DIR / batch):       # a link there too: followed or not, the name is not free
+        return True
+    row = sessions.store().batch(batch)
+    return row is not None and not (row.get("device") == device and row["status"] == "pending")
 
 
 # ---- a file ------------------------------------------------------------------------------------------------------
@@ -156,7 +178,7 @@ def create(device: str, batch: str, name: str, length: int) -> int:
             if mine[name] != length:
                 raise Conflict(f"{name}: already declared with {mine[name]} bytes; take it back first to send another file")
             return _arrived(d, name)
-        if _taken(batch):
+        if _taken(batch, device):
             raise Conflict(f"{batch}: a batch by that id was already handed in")
         if len(mine) >= MAX_FILES:
             raise Full(f"{batch}: a batch holds {MAX_FILES} files")
@@ -228,7 +250,12 @@ def append(device: str, batch: str, name: str, at: int, stream, n: int, stop=Non
                     piece = stream.read1(min(CHUNK, left))
                     if not piece:
                         break
-                    out.write(piece)
+                    rest = memoryview(piece)
+                    while rest:                         # a write straight to the file may take part of it and say so
+                        took = out.write(rest)
+                        if not took:
+                            raise OSError(errno.ENOSPC, "the disk took nothing of a piece")
+                        rest = rest[took:]
                     left -= len(piece)
             finally:
                 os.fsync(out.fileno())
@@ -314,9 +341,9 @@ def commit(device: str, batch: str, manifest: dict) -> dict:
             if size != here:
                 raise ValueError(f"{name}: {here} bytes are here, the manifest says {size}")
         target = ingest.INBOX_DIR / batch
-        mine_unmoved = row is not None and row.get("device") == device and row["status"] == "pending"
-        if os.path.lexists(target) or (row is not None and not mine_unmoved):
+        if _taken(batch, device):
             raise Conflict(f"{batch}: a batch by that id was already handed in")
+        _save_lengths(d, {name: lengths[name] for name in want})     # first: whatever fails next, nothing gone is still declared
         for f in files.iterdir():
             if f.name not in want:
                 f.unlink()
@@ -377,8 +404,24 @@ def expire(days: float = STALE_DAYS, now: float | None = None, log=print) -> lis
 
 
 def forget(device: str) -> None:
-    """Everything a device has staged, gone."""
-    shutil.rmtree(DROP_DIR / device_ok(device), ignore_errors=True)
+    """Everything a device has staged, gone. Under the lock a commit holds, so not from under a batch on its way into
+    the inbox; and the pieces arriving for the device are stopped first, as a piece come back stops the one before
+    it. One that cannot be stopped is waited for as long as a takeover waits."""
+    root = DROP_DIR / device_ok(device)
+    patience = time.monotonic() + TAKEOVER
+    while True:
+        with _meta:
+            arriving = [stop for f, stop in _busy.items() if root in f.parents]
+            if not arriving or time.monotonic() >= patience:
+                shutil.rmtree(root, ignore_errors=True)
+                return
+            for stop in arriving:
+                try:
+                    if stop is not None:
+                        stop()
+                except OSError:
+                    pass
+        time.sleep(0.02)
 
 
 def revoke(device: str) -> bool:

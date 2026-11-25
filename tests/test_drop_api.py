@@ -541,6 +541,22 @@ class DropApiTest(unittest.TestCase):
         self.assertIn(b, r.stderr)
         self.assertEqual((self.c.request("HEAD", up)[0], self.c.request("HEAD", keep)[0]), (404, 200))
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a folder whatever its mode")
+    def test_housekeeping_backs_the_database_up_before_it_looks_at_the_drop(self):
+        """The drop's upkeep is the newest step of the nightly run and reads what devices left behind. Should it ever
+        fail, the database was backed up first."""
+        state = self.data / "state"
+        for old in state.glob("acroscope-*.db") if state.is_dir() else ():
+            old.unlink()
+        locked = self.data / "drop" / "d0000000000"
+        locked.mkdir(parents=True)
+        locked.chmod(0)
+        self.addCleanup(lambda: (locked.chmod(0o755), locked.rmdir()))
+        r = self.cli("housekeeping")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("PermissionError", r.stderr)
+        self.assertEqual(len(list(state.glob("acroscope-*.db"))), 1)
+
     # ---- and then ingest ---------------------------------------------------------------------------------------------------
 
     def test_what_a_device_sends_becomes_a_session(self):
