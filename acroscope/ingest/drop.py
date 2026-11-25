@@ -114,7 +114,7 @@ def _lengths(d: Path) -> dict:
         lengths = json.loads((d / "lengths.json").read_text())
     except (FileNotFoundError, NotADirectoryError, ValueError):
         return {}
-    return lengths if isinstance(lengths, dict) else {}
+    return lengths if isinstance(lengths, dict) and all(_whole(n) for n in lengths.values()) else {}
 
 
 def _save_lengths(d: Path, lengths: dict) -> None:
@@ -174,12 +174,14 @@ def create(device: str, batch: str, name: str, length: int) -> int:
     with _meta:
         staged = _all_staged()
         mine = staged.get(d, {})
+        if _taken(batch, device):
+            raise Conflict(f"{batch}: a batch by that id was already handed in")
         if name in mine:
             if mine[name] != length:
                 raise Conflict(f"{name}: already declared with {mine[name]} bytes; take it back first to send another file")
+            (d / "files").mkdir(parents=True, exist_ok=True)       # there again, should its bytes have gone from under the name
+            os.close(os.open(d / "files" / name, os.O_WRONLY | os.O_CREAT, 0o644))
             return _arrived(d, name)
-        if _taken(batch, device):
-            raise Conflict(f"{batch}: a batch by that id was already handed in")
         if len(mine) >= MAX_FILES:
             raise Full(f"{batch}: a batch holds {MAX_FILES} files")
         if d not in staged and sum(1 for x in staged if x.parent == d.parent) >= MAX_BATCHES:
@@ -306,8 +308,19 @@ def _manifest(man) -> dict:
     return files
 
 
+_QUOTED = re.compile(r"""(['"])/[^'"\n]*/([^/'"\n]*)\1""")      # an absolute path in quotes, and its last part
+_FOLDERS = re.compile(r"""/(?:[^/\s'"]+/)+""")                   # the folders of one that stands bare
+
+
 def _public(b: dict) -> dict:
-    return {k: v for k, v in b.items() if k != "device"}
+    """A batch as its device is told of it: not who handed it in, and what went wrong without where. Ingest keeps the
+    system's own words for a failure and the inbox shows them whole; they name the folders the server keeps things
+    in. Those come out, the file's own name stays, and it is kept short."""
+    told = {k: v for k, v in b.items() if k != "device"}
+    if told.get("error"):
+        said = _FOLDERS.sub("", _QUOTED.sub(r"\1\2\1", str(told["error"])))
+        told["error"] = said if len(said) <= 300 else said[:300] + "..."
+    return told
 
 
 def _status(batch: str) -> dict:
@@ -406,7 +419,10 @@ def expire(days: float = STALE_DAYS, now: float | None = None, log=print) -> lis
 def forget(device: str) -> None:
     """Everything a device has staged, gone. Under the lock a commit holds, so not from under a batch on its way into
     the inbox; and the pieces arriving for the device are stopped first, as a piece come back stops the one before
-    it. One that cannot be stopped is waited for as long as a takeover waits."""
+    it. One that cannot be stopped is waited for as long as a takeover waits.
+
+    That is so in the server. From another process (the CLI on the server's own host) the lock and the senders are
+    not this one's: the token stops at once, the folder goes as it stands."""
     root = DROP_DIR / device_ok(device)
     patience = time.monotonic() + TAKEOVER
     while True:

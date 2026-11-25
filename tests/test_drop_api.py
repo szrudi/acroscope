@@ -169,20 +169,29 @@ class DropApiTest(unittest.TestCase):
         """Where the drop has a host of its own (`ACROSCOPE_DROP_URL`), a request that arrives under that host's name
         gets the drop and nothing else, however its path is spelled: the proxy in front and this server then need not
         read a path alike for that host to be no way to the API."""
+        spare = self.pair("a phone nobody uses")                               # one a slip here may revoke
         paired = self.paired()
         nobody = DropClient(self.url, None)
-        for host in ("drop.example.org", "DROP.example.org", "drop.example.org:443", "drop.example.org.", "drop.example.org.:8070", "drop.example.org:x"):
+        # the name as a proxy reads a Host to pick its site: whatever the case, the port, a final dot, and brackets
+        # round it, which a proxy takes off unseen
+        names = [{"Host": host} for host in ("drop.example.org", "DROP.example.org", "drop.example.org:443", "drop.example.org.", "drop.example.org.:8070",
+                                             "drop.example.org:x", "[drop.example.org]", "[drop.example.org]:443", "[drop.example.org", "drop.example.org]",
+                                             " drop.example.org")]
+        # and where the proxy sends its own Host on, the name it was asked under comes beside it
+        names += [{"Host": "upstream:8070", "X-Forwarded-Host": "drop.example.org"}, {"Host": "upstream:8070", "X-Forwarded-Host": "edge.example.org, Drop.Example.Org:443"}]
+        for hdrs in names:
             for method, path in (("GET", "/api/sessions"), ("HEAD", "/api/sessions"), ("GET", "/"), ("GET", "/config"), ("GET", "/api/devices"),
-                                 ("POST", "/api/devices"), ("DELETE", f"/api/devices/{self.dev['id']}"), ("GET", "/video/x/y.mp4"),
+                                 ("POST", "/api/devices"), ("DELETE", f"/api/devices/{spare['id']}"), ("GET", "/video/x/y.mp4"),
                                  ("PATCH", "/api/x"), ("OPTIONS", "/api/x"), ("GET", "/dropped"), ("GET", "/Drop/device")):
-                status, h, body = nobody.request(method, path, b'{"name": "x"}' if method == "POST" else None, {"Host": host})
-                self.assertEqual((status, h.get("connection")), (404, "close"), (host, method, path))
-                self.assertEqual(body, b"" if method == "HEAD" else b'{"error": "not found"}', (host, method, path))
-            self.assertEqual(self.c.request("GET", "/drop/device", headers={"Host": host})[0], 200, host)     # the drop itself,
-            self.assertEqual(nobody.request("GET", "/drop/device", headers={"Host": host})[0], 401, host)     # which asks for the token
+                status, h, body = nobody.request(method, path, b'{"name": "x"}' if method == "POST" else None, hdrs)
+                self.assertEqual((status, h.get("connection")), (404, "close"), (hdrs, method, path))
+                self.assertEqual(body, b"" if method == "HEAD" else b'{"error": "not found"}', (hdrs, method, path))
+            self.assertEqual(self.c.request("GET", "/drop/device", headers=hdrs)[0], 200, hdrs)     # the drop itself,
+            self.assertEqual(nobody.request("GET", "/drop/device", headers=hdrs)[0], 401, hdrs)     # which asks for the token
         self.assertEqual(self.paired(), paired)                                # nobody was paired or revoked through it
-        for host in ("player.example.org", "drop.example.org.evil.example", "xdrop.example.org", "", "[::1"):
-            self.assertEqual(nobody.request("GET", "/api/sessions", headers={"Host": host})[0], 200, host)   # under any other name, or none that is one, the server is as it was
+        for hdrs in ({"Host": "player.example.org"}, {"Host": "drop.example.org.evil.example"}, {"Host": "xdrop.example.org"}, {"Host": ""}, {"Host": "[::1"},
+                     {"Host": "[::1]:8070"}, {"Host": "player.example.org", "X-Forwarded-Host": "player.example.org"}):
+            self.assertEqual(nobody.request("GET", "/api/sessions", headers=hdrs)[0], 200, hdrs)   # under any other name, or none, the server is as it was
 
     def test_the_device_asks_who_it_is(self):
         status, me = self.c.json("GET", "/drop/device")
@@ -345,6 +354,9 @@ class DropApiTest(unittest.TestCase):
                               (b"PATCH " + up.encode() + b" HTTP/1.1\r\n" + auth + b"Upload-Offset: 0\r\nContent-Type: application/offset+octet-stream\r\n"
                                b"Content-Length: 100\r\nTransfer-Encoding: chunked\r\n\r\n" + piece, b"411"),
                               (b"GET /drop/device HTTP/1.1\r\n" + auth + b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n", b"411"),
+                              # a header given twice is read by its first here and by its last elsewhere
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Content-Length: 2\r\nContent-Length: %d\r\n\r\n" % len(manifest) + manifest, b"400"),
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Transfer-Encoding:\r\nTransfer-Encoding: chunked\r\n\r\n" + chunked, b"411"),
                               (b"GET /drop/device HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", b"401")):
             answer = self.raw(request)
             self.assertEqual(answer[:12], b"HTTP/1.1 " + want, request[:60])
@@ -674,11 +686,12 @@ class InProcessTest(unittest.TestCase):
         # system's words name where the server keeps things
         for boom, said in ((RuntimeError("something else"), "RuntimeError: something else"),
                            (OSError(errno.EACCES, "Permission denied", "/srv/data/drop/d0/x"), "PermissionError: [Errno 13] Permission denied: '/srv/data/drop/d0/x'")):
-            seen = []
-            with mock.patch.object(drop, "append", side_effect=boom), mock.patch.object(server.Handler, "log_message", lambda h, fmt, *args: seen.append(fmt % args)):
+            seen, kinds = [], []
+            with mock.patch.object(drop, "append", side_effect=boom), mock.patch.object(server.Handler, "log_message", lambda h, fmt, *args: (seen.append(fmt % args), kinds.extend(map(type, args)))):
                 status, h, body = self.c.request("PATCH", up, b"0123456789", {**self.octets, "Upload-Offset": "0"})
             self.assertEqual((status, h.get("connection"), json.loads(body)), (500, "close", {"error": "the server failed; its log says why"}))
             self.assertIn("drop: " + said, seen)
+            self.assertEqual(set(kinds), {str})                               # text, which the log cuts when it is long: not the error itself
         self.assertEqual(self.c.patch(up, 0, b"0123456789"), 10)
 
     def test_a_disk_that_fills_under_a_piece_is_said_at_once(self):
@@ -686,11 +699,14 @@ class InProcessTest(unittest.TestCase):
         not wait for bytes the device has no more of: what was read is counted, so only what is really still on the
         connection is waited for."""
         b = "20261011-100000-under"
+        patience = mock.patch.object(routes, "STALL", 6)                     # what an answer must not wait for
+        patience.start()
+        self.addCleanup(patience.stop)
         up = self.c.create(b, "VID00001.mov", 1000)
         with mock.patch.object(drop.os, "fsync", side_effect=OSError(errno.ENOSPC, "No space left on device")):   # every byte read, then no room
             started = time.monotonic()
             status, h, body = self.c.request("PATCH", up, b"a" * 1000, {**self.octets, "Upload-Offset": "0"})
-        self.assertLess(time.monotonic() - started, 1)                       # not after STALL
+        self.assertLess(time.monotonic() - started, 3)                       # not after STALL
         self.assertEqual((status, h.get("connection"), json.loads(body)), (507, None, {"error": "no room on the server's disk"}))
         self.assertEqual(self.c.request("DELETE", up)[0], 204)               # and the file is not left busy
         up = self.c.create(b, "VID00001.mov", 1000)
@@ -715,7 +731,7 @@ class InProcessTest(unittest.TestCase):
         with mock.patch.object(drop, "CHUNK", 100), mock.patch.object(drop, "open", fake, create=True):
             started = time.monotonic()
             status, h, body = self.c.request("PATCH", up, b"a" * 1000, {**self.octets, "Upload-Offset": "0"})
-        self.assertLess(time.monotonic() - started, 1)
+        self.assertLess(time.monotonic() - started, 3)
         self.assertEqual((status, h.get("connection")), (507, "close"))      # 800 bytes of the piece were never read: the connection ends
         self.assertEqual(self.c.offset(up), 100)                             # what the disk took is what is here
         self.assertEqual(self.c.patch(up, 100, b"b" * 900), 1000)
@@ -724,7 +740,7 @@ class InProcessTest(unittest.TestCase):
         """Before a refusal is answered, what was sent of the request's body is read and thrown away so that the answer
         arrives. That takes a moment at most: somebody without a token, feeding a long body a byte at a time, holds
         nothing."""
-        with mock.patch.object(routes, "DRAIN_WAIT", 0.4):
+        with mock.patch.object(routes, "DRAIN_WAIT", 0.4), mock.patch.object(routes, "STALL", 6):
             s = socket.create_connection(self.srv.server_address)
             self.addCleanup(s.close)
             s.sendall(b"POST /drop/x HTTP/1.1\r\nHost: x\r\nContent-Length: 2000000\r\n\r\n")
@@ -747,7 +763,19 @@ class InProcessTest(unittest.TestCase):
             t.join(2)
         self.assertEqual(answer[:12], b"HTTP/1.1 401")
         self.assertIn(b"Connection: close", answer)
-        self.assertLess(took, 1.2)                                           # STALL is 1.5 here, and the body never stops coming
+        self.assertLess(took, 3)                                             # the body never stops coming, and STALL is 6 here
+
+    def test_a_refusal_does_not_wait_for_a_body_that_never_comes(self):
+        """Declared and not sent: the answer waits DRAIN_WAIT for it, not the patience a piece in the middle gets."""
+        with mock.patch.object(routes, "DRAIN_WAIT", 0.4), mock.patch.object(routes, "STALL", 6):
+            s = socket.create_connection(self.srv.server_address)
+            self.addCleanup(s.close)
+            started = time.monotonic()
+            s.sendall(b"POST /drop/x HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n")
+            s.settimeout(10)
+            answer = s.recv(4096)
+        self.assertEqual(answer[:12], b"HTTP/1.1 401")
+        self.assertLess(time.monotonic() - started, 3)
 
     def test_what_is_read_before_a_refusal_is_bounded(self):
         """A refused piece of any size: no more than DRAIN bytes of it are read before the answer, and the connection
@@ -757,11 +785,12 @@ class InProcessTest(unittest.TestCase):
                       _drop_unread=3 << 20, _drop_drain=routes.DRAIN, _drop_unframed=False)
         h.send_header = lambda k, v: sent.append((k, v))
         h.connection.settimeout = timeouts.append
-        routes._send(h, 409, {"error": "x"})
+        with mock.patch.object(routes, "STALL", 60):
+            routes._send(h, 409, {"error": "x"})
         self.assertEqual(h.rfile.tell(), 2 << 20)
         self.assertIn(("Connection", "close"), sent)
-        self.assertEqual(timeouts[-1], routes.STALL)                         # the answer itself is written with the usual patience
-        self.assertTrue(all(0 < t <= routes.DRAIN_WAIT for t in timeouts[:-1]), timeouts)
+        self.assertEqual(timeouts[-1], 60)                                   # the answer itself is written with the usual patience,
+        self.assertTrue(len(timeouts) > 1 and all(0 < t <= routes.DRAIN_WAIT for t in timeouts[:-1]), timeouts)    # each read before it with what is left of DRAIN_WAIT
 
     def test_a_connection_kept_open_is_given_its_patience_back(self):
         """STALL is for the middle of a request. Between two requests a device may keep its connection as long as it
@@ -820,8 +849,14 @@ class InProcessTest(unittest.TestCase):
         api = DropClient(self.c.url.geturl(), None)
         self.assertEqual(api.json("GET", "/api/devices"), (200, {"devices": [{"id": self.dev["id"], "name": "phone", "created_at": self.dev["created_at"],
                                                                               "last_seen_at": None, "revoked_at": None}], "url": None}))
-        for host in ("drop.example.org", "", "."):                           # and no host is the drop's alone, not the one without a name either
+        for host in ("drop.example.org", "", ".", "[", ":", "[]:"):          # and no host is the drop's alone, not the one without a name either
             self.assertEqual(api.request("GET", "/api/devices", headers={"Host": host})[0], 200, host)
+        for url in ("drop.example.org", "https://drop.example.org:8443/", "//drop.example.org", "https://user@Drop.Example.Org."):   # however the address was written
+            with mock.patch.object(server, "DROP_URL", url):
+                self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 404, url)
+                self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "player.example.org"})[0], 200, url)
+        with mock.patch.object(server, "DROP_URL", "https://[x"):              # and one that is no address breaks nothing
+            self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "player.example.org"})[0], 200)
         with mock.patch.object(server, "DROP_URL", "https://drop.example.org"):
             self.assertEqual(api.json("GET", "/api/devices")[1]["url"], "https://drop.example.org")
             self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 404)
@@ -853,6 +888,7 @@ class LogTest(unittest.TestCase):
         self.assertIn(f'"{short}" 404 -', self.line('"%s" %s %s', short, "404", "-"))          # a line of ordinary length is whole
         self.assertIn("x" * 300 + " ", self.line("%s %s", "x" * 300, "404"))                    # to the last character it may have
         self.assertEqual(self.line('"%s" %s %s', short, "204", "-"), "")                       # and what went well is not logged, as ever
+        self.assertIn("Request timed out: TimeoutError('timed out')", self.line("Request timed out: %r", TimeoutError("timed out")))   # nor is a line of one value a line too short
 
 
 if __name__ == "__main__":

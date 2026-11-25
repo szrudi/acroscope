@@ -159,6 +159,18 @@ class UploadTest(_Drop):
             drop.create(DEV, B, "VID00001.mov", 301)
         self.assertEqual(drop.offset(DEV, B, "VID00001.mov"), (120, 300))
 
+    def test_a_declared_file_whose_bytes_went_is_there_again(self):
+        """Declared, and its bytes are gone from under it (somebody tidied the folder): declaring it again is the same
+        upload from byte 0. Otherwise it would be asked for from 0 and have nowhere to go."""
+        drop.create(DEV, B, "VID00001.mov", 300)
+        drop.append(DEV, B, "VID00001.mov", 0, io.BytesIO(b"a" * 120), 120)
+        self.staged("VID00001.mov").unlink()
+        self.assertEqual(drop.offset(DEV, B, "VID00001.mov"), (0, 300))
+        self.assertEqual(drop.create(DEV, B, "VID00001.mov", 300), 0)
+        self.assertEqual(drop.append(DEV, B, "VID00001.mov", 0, io.BytesIO(b"b" * 300), 300), 300)
+        self.assertEqual(self.staged("VID00001.mov").read_bytes(), b"b" * 300)
+        self.assertEqual(drop.create(DEV, B, "VID00001.mov", 300), 300)      # and one that is here is not touched
+
     def test_an_empty_file_is_whole_at_once(self):
         self.assertEqual(drop.create(DEV, B, "VID00001.mov", 0), 0)
         self.assertEqual(drop.offset(DEV, B, "VID00001.mov"), (0, 0))
@@ -617,6 +629,9 @@ class CommitTest(_Drop):
         self.db.set_batch(B, status="running")
         with self.assertRaises(drop.Conflict):
             drop.commit(DEV, B, man)
+        for name, length in (("VID00009.mov", 5), ("VID00001.mov", 500)):    # nor is a file declared in it, new or as it was
+            with self.assertRaises(drop.Conflict, msg=name):
+                drop.create(DEV, B, name, length)
         self.assertEqual(self.tree(self.inbox), [])
 
 
@@ -683,10 +698,11 @@ class UpkeepTest(_Drop):
         t = threading.Thread(target=lambda: got.update(end=drop.append(DEV, B, "VID00001.mov", 0, io.BufferedReader(io.FileIO(r, "rb")), 1000, stop=stop)), daemon=True)
         t.start()
         os.write(w, b"a" * 300)
-        for _ in range(100):
+        for _ in range(250):
             if drop.offset(DEV, B, "VID00001.mov")[0] == 300:
                 break
             time.sleep(0.02)
+        self.assertEqual(drop.offset(DEV, B, "VID00001.mov")[0], 300)
         started = time.monotonic()
         drop.forget(DEV)
         t.join(5)
@@ -705,33 +721,44 @@ class UpkeepTest(_Drop):
                              daemon=True)
         t.start()
         os.write(w, b"a" * 300)
-        for _ in range(100):
-            if drop._busy:
-                break
-            time.sleep(0.02)
+        self.arriving(OTHER)
         started = time.monotonic()
         drop.forget(DEV)
-        self.assertLess(time.monotonic() - started, 1)                       # it waits for nobody else's piece,
+        self.assertLess(time.monotonic() - started, 2)                       # it waits for nobody else's piece (that would be TAKEOVER, 5 s),
         self.assertEqual((stopped, self.tree(self.staging / DEV)), ([], []))   # and stops none
         os.write(w, b"b" * 700)
         t.join(5)
         self.assertEqual(got, {"end": 1000})
 
+    def arriving(self, device: str) -> None:
+        """Wait until a piece for `device` is in flight."""
+        mine = self.staging / device
+        for _ in range(250):
+            if any(mine in f.parents for f in drop._busy):
+                return
+            time.sleep(0.02)
+        self.fail("no piece is arriving")
+
     def test_a_piece_that_cannot_be_stopped_does_not_keep_a_revoke_waiting(self):
         drop.create(DEV, B, "VID00001.mov", 1000)
-        r, w, _ = self.pipe()
-        t = threading.Thread(target=lambda: drop.append(DEV, B, "VID00001.mov", 0, io.BufferedReader(io.FileIO(r, "rb")), 1000), daemon=True)
-        t.start()
-        os.write(w, b"a" * 300)
-        for _ in range(100):
-            if drop._busy:
-                break
-            time.sleep(0.02)
-        with mock.patch.object(drop, "TAKEOVER", 0.3):
-            started = time.monotonic()
-            drop.forget(DEV)
-            self.assertLess(time.monotonic() - started, 2)
-        self.assertEqual(self.tree(self.staging), [])
+        for stop in (None, mock.Mock(side_effect=OSError(errno.ENOTCONN, "Transport endpoint is not connected"))):   # no way to stop it, or one that fails
+            drop.create(DEV, B, "VID00001.mov", 1000)
+            r, w, hang_up = self.pipe()
+            t = threading.Thread(target=lambda: drop.append(DEV, B, "VID00001.mov", 0, io.BufferedReader(io.FileIO(r, "rb")), 1000, stop=stop), daemon=True)
+            t.start()
+            os.write(w, b"a" * 300)
+            self.arriving(DEV)
+            with mock.patch.object(drop, "TAKEOVER", 0.3):
+                started = time.monotonic()
+                drop.forget(DEV)
+                took = time.monotonic() - started
+            self.assertTrue(0.25 < took < 3, took)                           # waited for as long as a takeover waits, and no longer
+            self.assertEqual(self.tree(self.staging), [])
+            hang_up()
+            t.join(5)
+            self.assertEqual((t.is_alive(), drop._busy), (False, {}))
+            if stop:
+                self.assertTrue(stop.called)
 
     def pipe(self):
         """A sender's connection as a pipe: (the end read from, the end written to, hang up). It is hung up once, by
@@ -752,7 +779,7 @@ class UpkeepTest(_Drop):
         again. It stops no other device, and not the housekeeping that would clear it away."""
         self.put("VID00001.mov", CLIP)
         self.put("VID00001.mov", CLIP, B, OTHER)
-        for junk in ("", '{"VID00001.mov": 7', "[1, 2]", "\xff\xfe"):
+        for junk in ("", '{"VID00001.mov": 7', "[1, 2]", "\xff\xfe", '{"VID00001.mov": "780"}', '{"VID00001.mov": -1}', '{"VID00001.mov": null}'):
             (self.staging / DEV / B / "lengths.json").write_bytes(junk.encode("latin-1"))
             self.assertEqual(drop.usage()["staged"], len(CLIP), junk)        # the other device's
             self.assertEqual(drop.create(OTHER, "20261011-110000-cd34", "VID00002.mov", 5), 0, junk)
@@ -777,9 +804,11 @@ class UpkeepTest(_Drop):
                 raise FileNotFoundError(2, "No such file or directory", str(path))
             return real(path)
 
+        (self.staging / "notes.txt").write_text("somebody left this here")   # and what is no device's folder is nobody's batch
         with mock.patch.object(Path, "iterdir", going):
             self.assertEqual(drop.usage()["staged"], len(CLIP))
             self.assertEqual(drop.expire(days=0, now=time.time() + 1, log=lambda m: None), [f"{OTHER}/{B}"])
+        self.assertEqual(drop.create(DEV, B, "VID00002.mov", 5), 0)
 
 
 class StatusTest(_Drop):
@@ -795,6 +824,27 @@ class StatusTest(_Drop):
         self.assertNotIn("device", mine[0])
         self.assertEqual([b["id"] for b in drop.batches_of(OTHER)], ["20261011-110000-cd34"])
         self.assertEqual(drop.batches_of("d9999999999"), [])
+
+    def test_what_went_wrong_is_told_without_the_servers_paths(self):
+        """Ingest keeps the system's own words for a failure, and those name where the server keeps things. The inbox
+        shows them whole; the device is told what failed, by the file's own name."""
+        self.put("VID00001.mov", CLIP)
+        drop.commit(DEV, B, {"files": {"VID00001.mov": len(CLIP)}})
+        said = ("CalledProcessError: Command '['ffprobe', '-v', 'error', '-of', 'json', '/srv/fpv data/originals/.ingest/20261011-100000-ab12/taken/VID00001.mov']' "
+                "returned non-zero exit status 1.")
+        self.db.set_batch(B, status="failed", error=said)
+        told = "CalledProcessError: Command '['ffprobe', '-v', 'error', '-of', 'json', 'VID00001.mov']' returned non-zero exit status 1."
+        self.assertEqual(drop.batches_of(DEV)[0]["error"], told)
+        self.assertEqual(drop.commit(DEV, B, {"files": {"VID00001.mov": len(CLIP)}})["error"], told)      # the commit asked again says the same
+        self.assertEqual(next(b for b in ingest.list_inbox() if b["id"] == B)["error"], said)             # the inbox has it whole
+        self.db.set_batch(B, status="failed", error="OSError: [Errno 28] No space left on device: '/data/videos/2026-10-11-park/2026-10-11_001.mp4' " + "x" * 500)
+        told = drop.batches_of(DEV)[0]["error"]
+        self.assertTrue(told.startswith("OSError: [Errno 28] No space left on device: '2026-10-11_001.mp4' xxx"), told[:80])
+        self.assertTrue(told.endswith("x..."))
+        self.assertEqual(len(told), 303)
+        self.db.set_batch(B, status="failed", error="FileNotFoundError: /data/originals/.ingest/b/taken/VID00001.mov is not there, " + "y" * 235)
+        self.assertEqual(drop.batches_of(DEV)[0]["error"], "FileNotFoundError: VID00001.mov is not there, " + "y" * 235)   # bare too, and what is short enough is whole
+        self.assertEqual(drop.retry(DEV, B)["error"], None)                  # and no error is none
 
     def test_a_device_retries_its_own_failed_batch(self):
         self.put("VID00001.mov", CLIP)

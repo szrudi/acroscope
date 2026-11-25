@@ -49,7 +49,7 @@ class _Body:
         self.h = h
 
     def read1(self, n: int) -> bytes:
-        got = self.h.rfile.read1(min(n, self.h._drop_unread))
+        got = self.h.rfile.read1(n)
         self.h._drop_unread -= len(got)
         return got
 
@@ -148,9 +148,9 @@ def _json_body(h):
 def _route(h, device: dict, parts: list[str]) -> None:
     staging, method = ingest.drop, h.command
     if h._drop_unframed:
-        if h.headers.get("Transfer-Encoding"):
+        if h.headers.get("Transfer-Encoding") is not None:
             raise _Answer(411, "Content-Length: say how long the body is (a chunked one is not taken)")
-        raise _Answer(400, "Content-Length: a whole number of bytes")
+        raise _Answer(400, "Content-Length: a whole number of bytes, said once")
     if method == "OPTIONS":
         return _send(h, 204, headers={"Tus-Version": TUS, "Tus-Extension": "creation,termination", "Tus-Max-Size": str(staging.MAX_FILE)})
     if parts in ([], ["device"]) and method == "GET":
@@ -201,10 +201,12 @@ def handle(h, parts: list[str]) -> None:
     """One request under /drop/ (`parts`: the path after it), answered on the server's handler `h`."""
     staging = ingest.drop
     # what of the request's body is still unread, and how much of that may be read and thrown away before an answer
-    length = h.headers.get("Content-Length")
-    h._drop_unread, h._drop_drain = _bytes(length) or 0, DRAIN
-    # a body whose end cannot be told (chunked, or a length that is no number): refused, and the connection ends with the answer
-    h._drop_unframed = bool(h.headers.get("Transfer-Encoding")) or (length is not None and _bytes(length) is None)
+    lengths = h.headers.get_all("Content-Length") or []
+    length = _bytes(lengths[0]) if len(lengths) == 1 else None
+    h._drop_unread, h._drop_drain = length or 0, DRAIN
+    # a body whose end cannot be told (chunked in any spelling, a length that is no number, or two lengths: one reader
+    # takes the first and another the last): refused, and the connection ends with the answer
+    h._drop_unframed = h.headers.get("Transfer-Encoding") is not None or (bool(lengths) and length is None)
     before = h.connection.gettimeout()
     h.connection.settimeout(STALL)
     try:
@@ -234,7 +236,7 @@ def handle(h, parts: list[str]) -> None:
     except Exception as e:  # noqa: BLE001
         full = isinstance(e, OSError) and e.errno == errno.ENOSPC
         if not full:                                # what went wrong inside is for the log: the device is told that it did
-            h.log_error("drop: %s: %s", type(e).__name__, e)
+            h.log_error("drop: %s: %s", type(e).__name__, str(e))
         _send(h, 507 if full else 500, {"error": "no room on the server's disk" if full else "the server failed; its log says why"})
     finally:
         try:

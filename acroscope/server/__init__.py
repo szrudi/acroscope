@@ -113,6 +113,14 @@ def _under(root: Path, *parts: str) -> Path:
     return p
 
 
+def _names(host: str) -> set[str]:
+    """What a Host may name, read as generously as a proxy reads one to pick its site: without the case, a final dot
+    or brackets (round an address, or round anything: a proxy takes them off unseen), and with or without what
+    follows the last colon (a port, a number or not)."""
+    host = host.strip().lower().replace("[", "").replace("]", "")
+    return {name.rstrip(".") for name in (host, host.rpartition(":")[0]) if name.rstrip(".")}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -125,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def log_message(self, fmt, *args):  # quieter: only non-200s
-        if args and str(args[1]) not in ("200", "201", "204", "206", "304"):     # 201, 204: the drop's, one per piece
+        if len(args) < 2 or str(args[1]) not in ("200", "201", "204", "206", "304"):     # 201, 204: the drop's, one per piece
             # by its start: a request line is up to 64 kB of anybody's making, and every refusal is logged
             super().log_message(fmt, *(a[:300] + "..." if isinstance(a, str) and len(a) > 300 else a for a in args))
 
@@ -221,7 +229,8 @@ class Handler(BaseHTTPRequestHandler):
         (/api/sessions;%2F..%2F..%2Fdrop).
 
         Where the drop has a host of its own, a request under that host's name gets the drop and nothing else: that
-        host is then no way to the API even where the proxy and this server read a path differently."""
+        host is then no way to the API even where the proxy and this server read a path differently. It holds as
+        long as the proxy hands the name on, as the Host or beside it (X-Forwarded-Host)."""
         if any(seg in (".", "..") for seg in unquote(self.path.partition("?")[0]).split("/")):
             self._json({"error": "not found"}, 404, close=True)
             return True
@@ -235,13 +244,11 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _at_the_drops_host(self) -> bool:
-        """The request names the drop's own host (`ACROSCOPE_DROP_URL`), whatever the port, the case or a final dot."""
-        own = (urlparse(DROP_URL).hostname or "").rstrip(".")
-        try:
-            asked = (urlparse("//" + (self.headers.get("Host") or "")).hostname or "").rstrip(".")
-        except ValueError:                      # a Host no URL has
-            return False
-        return bool(own) and asked == own
+        """The request names the drop's own host (`ACROSCOPE_DROP_URL`): in its Host, or in the name a proxy says it
+        was asked under. By the name alone: a port in either says nothing about the site a proxy picked."""
+        own = _names((DROP_URL.partition("://")[2] or DROP_URL).lstrip("/").partition("/")[0].rpartition("@")[2])
+        asked = [self.headers.get("Host") or ""] + [name for line in self.headers.get_all("X-Forwarded-Host") or [] for name in line.split(",")]
+        return any(own & _names(name) for name in asked)
 
     def do_HEAD(self):
         self.do_GET()

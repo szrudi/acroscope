@@ -86,7 +86,9 @@ token every path under `/drop/` answers 401. A body comes with its `Content-Leng
 drop needs a way past it (a background upload cannot sign in): a host of its own that serves `/drop/*` and nothing
 else, with `ACROSCOPE_DROP_URL` set to it so the pairing code sends the app there (unset, the code names the address
 the configuration page was opened at). So that such a host is no way around the login, a request under its name is
-served the drop and nothing else (so `ACROSCOPE_DROP_URL` is never the player's own address), and the server answers
+served the drop and nothing else. The name is what counts, whatever the port: `ACROSCOPE_DROP_URL` names a host that
+is the drop's alone, never the player's, and the proxy hands that name on (as the `Host`, which Caddy does by itself,
+or as `X-Forwarded-Host`). And the server answers
 404 to any path with a `.` or `..` segment on every route, also one behind an encoded slash, a `;` or a `#`
 (`/api/sessions/../../drop/x` matches a proxy's `/drop/*` with its dots resolved and arrives as written). Until the commit the files are staged under `drop/<device>/<batch>/`,
 outside the inbox; the commit checks every file against the manifest, writes `.done` with it and renames the folder to
@@ -97,7 +99,8 @@ under a plain name, the declared sizes count against a quota (`ACROSCOPE_DROP_QU
 and the room the disk keeps (`ACROSCOPE_DROP_MIN_FREE`, 5 GB), and a device reaches only its own staging. The quota is
 on what is staged (a committed batch leaves it, and one device can hold all of it); what a device can put on the disk
 in all is bounded by the room kept free. Nothing is
-read back or listed through this door; a device hears about its own batches (status, error, what they became) and
+read back or listed through this door; a device hears about its own batches (status, what went wrong without the
+server's folders in it, what they became) and
 the recent event names. A piece whose sender goes silent is let go after a minute, or as soon as the device is back with the
 next piece for that file (it starts where the file ends: the old sender is stopped and the new one goes on from
 there); a sender that breaks off in a piece is no error, what came is kept. A staged batch nothing was

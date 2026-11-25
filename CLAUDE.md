@@ -54,12 +54,14 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   `drop.batch_ok`/`name_ok`/`device_ok` before any path is built; a batch id is used once, since the app deletes its
   copy when the server reports that id done; a device sees and retries only its own batches (`batches.device`); a
   body's end is known before any of it is read (a chunked one is refused, the connection ends); an answer carries the
-  drop's own words, never the system's (an `OSError` names the server's paths: those go to the log). The
+  drop's own words, never the system's (an `OSError` names the server's paths: those go to the log; a batch's
+  `error` from ingest is told without its folders, `drop._public`). The
   server's part runs in request threads (the copying is I/O); nothing there decodes or probes what arrived. Tokens are
   in the `devices` table as SHA-256 hashes: `db.add_device` returns the token once, nothing else may print or store it.
   `ACROSCOPE_DROP_URL` is the drop's own address when it has a host of its own: it goes into the pairing code, and a
-  request whose Host is that name gets `/drop/` and nothing else (`Handler._at_the_drops_host`), so the proxy and the
-  server need not read a path alike; never set it to the player's address. Like `ACROSCOPE_SHARE_URL`, it and the
+  request that names it (in `Host` or `X-Forwarded-Host`; by the name alone, read as loosely as a proxy reads one:
+  any port, case, brackets) gets `/drop/` and nothing else (`Handler._at_the_drops_host`), so the proxy and the
+  server need not read a path alike; never the player's name. Like `ACROSCOPE_SHARE_URL`, it and the
   vhost behind it are homelab settings (never in this repo).
 - OSD reader (`acroscope/sources/osd.py`): every layout is a profile derived from Betaflight's own (#10,
   `sources/osdprofile.py` over `sources/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm`
