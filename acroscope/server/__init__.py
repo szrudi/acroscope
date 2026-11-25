@@ -210,20 +210,37 @@ class Handler(BaseHTTPRequestHandler):
     # ---- routes
     def _drop(self) -> bool:
         """A request under /drop/ (the door a paired device uploads through, #75) goes to its own routes, which ask
-        for the device's token; True when the request was answered here. A path with a . or .. segment is nowhere,
-        on every route: a proxy that lets /drop/ past its login matches the path decoded and with its dots resolved,
-        and sends it on as written, so /api/sessions/../../drop/x would pass as the drop's and be routed here as the
-        API's. The dots are looked for as the proxy sees them, in the whole path decoded: an encoded slash hides
-        none (/api/sessions/x%2F..%2F..%2F..%2Fdrop)."""
-        path = urlparse(self.path).path
-        if any(seg in (".", "..") for seg in unquote(path).split("/")):
+        for the device's token; True when the request was answered here.
+
+        A path with a . or .. segment is nowhere, on every route: a proxy that lets /drop/ past its login matches the
+        path decoded and with its dots resolved, and sends it on as written, so /api/sessions/../../drop/x would pass
+        as the drop's and be routed here as the API's. The dots are looked for as the proxy sees them: in everything
+        sent before the query, decoded as a whole. An encoded slash hides none (/api/sessions/x%2F..%2F..%2F..%2Fdrop),
+        and neither does a ; or a # that a URL parser cuts off as a parameter or a fragment
+        (/api/sessions;%2F..%2F..%2Fdrop).
+
+        Where the drop has a host of its own, a request under that host's name gets the drop and nothing else: that
+        host is then no way to the API even where the proxy and this server read a path differently."""
+        if any(seg in (".", "..") for seg in unquote(self.path.partition("?")[0]).split("/")):
             self._json({"error": "not found"}, 404, close=True)
             return True
-        parts = [unquote(p) for p in path.strip("/").split("/") if p]
-        if parts[:1] != ["drop"]:
+        parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/") if p]
+        if parts[:1] == ["drop"]:
+            drop.handle(self, parts[1:])
+            return True
+        if self._at_the_drops_host():
+            self._json({"error": "not found"}, 404, close=True)
+            return True
+        return False
+
+    def _at_the_drops_host(self) -> bool:
+        """The request names the drop's own host (`ACROSCOPE_DROP_URL`), whatever the port, the case or a final dot."""
+        own = (urlparse(DROP_URL).hostname or "").rstrip(".")
+        try:
+            asked = (urlparse("//" + (self.headers.get("Host") or "")).hostname or "").rstrip(".")
+        except ValueError:                      # a Host no URL has
             return False
-        drop.handle(self, parts[1:])
-        return True
+        return bool(own) and asked == own
 
     def do_HEAD(self):
         self.do_GET()

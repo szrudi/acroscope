@@ -85,9 +85,10 @@ Every request carries `Authorization: Bearer <token>` (and the tus ones `Tus-Res
 token every path under `/drop/` answers 401. Where a reverse proxy with a login stands in front of the player, the
 drop needs a way past it (a background upload cannot sign in): a host of its own that serves `/drop/*` and nothing
 else, with `ACROSCOPE_DROP_URL` set to it so the pairing code sends the app there (unset, the code names the address
-the configuration page was opened at). So that such a rule is no way around the login, the server answers 404 to any
-path with a `.` or `..` segment, also one behind an encoded slash, on every route (`/api/sessions/../../drop/x`
-matches a proxy's `/drop/*` with its dots resolved and arrives as written). Until the commit the files are staged under `drop/<device>/<batch>/`,
+the configuration page was opened at). So that such a host is no way around the login, a request under its name is
+served the drop and nothing else (so `ACROSCOPE_DROP_URL` is never the player's own address), and the server answers
+404 to any path with a `.` or `..` segment on every route, also one behind an encoded slash, a `;` or a `#`
+(`/api/sessions/../../drop/x` matches a proxy's `/drop/*` with its dots resolved and arrives as written). Until the commit the files are staged under `drop/<device>/<batch>/`,
 outside the inbox; the commit checks every file against the manifest, writes `.done` with it and renames the folder to
 `inbox/<batch>/`, so ingest finds exactly what the laptop's push leaves there and nothing half-arrived is ever in
 the inbox. A device is trusted like the push user, no further: a batch is named as the laptop names one

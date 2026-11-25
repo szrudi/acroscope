@@ -130,9 +130,12 @@ class DropApiTest(unittest.TestCase):
     def test_dots_in_a_path_lead_nowhere(self):
         """A reverse proxy that lets /drop/ past its login matches on the path with its dots resolved, and sends the
         path on as it was written: /api/sessions/../../drop/x would pass as the drop's and be served as the session
-        list. So a path with a . or .. segment, written plainly or percent-encoded, is nowhere, whatever it names."""
+        list. So a path with a . or .. segment, written plainly or percent-encoded, is nowhere, whatever it names.
+        The dots are looked for in the path as it was sent: behind a ; or a # a URL parser would cut off as a
+        parameter or a fragment, the proxy still sees them."""
         sessions_ = self.api("GET", "/api/sessions")
         self.assertEqual(sessions_[0], 200)
+        paired = self.paired()
         for who in (None, self.dev["token"]):
             c = DropClient(self.url, who)
             for method, path in (("GET", "/api/sessions/../../drop/device"), ("GET", "/api/sessions/%2e%2e/%2E%2E/drop/device"),
@@ -141,15 +144,44 @@ class DropApiTest(unittest.TestCase):
                                  ("GET", "/api/sessions/x%2F..%2F..%2F..%2Fdrop%2Fy"), ("GET", "/api/sessions/x%2f%2e%2e%2f..%2F..%2Fdrop"),
                                  ("GET", "/api/sessions%2F..%2F..%2Fdrop%2Fy"), ("GET", "/api/inbox/x%2F."),
                                  ("POST", "/api/scan/../../drop/x"), ("DELETE", "/api/tags/../../drop/x"), ("PATCH", "/api/x/../../drop/x"),
-                                 ("OPTIONS", "/api/x/../../drop/x")):
+                                 ("OPTIONS", "/api/x/../../drop/x"),
+                                 ("GET", "/api/sessions;%2F..%2F..%2Fdrop%2Fy"), ("GET", "/api/sessions;/../../drop/y"), ("GET", "/api/sessions;x=1/../../drop/y"),
+                                 ("POST", "/api/devices;%2F..%2F..%2Fdrop%2Fy"), ("DELETE", "/api/tags/x;%2F..%2F..%2F..%2Fdrop"),
+                                 ("GET", "/api/sessions#/../../drop/y"), ("GET", "/api/sessions%3F/../../drop/y"), ("GET", "/drop/device;/../../api/sessions")):
                 status, h, body = c.request(method, path, b"{}" if method in ("POST", "PATCH") else None)
                 self.assertEqual((status, h.get("connection")), (404, "close"), (who, method, path))
                 self.assertEqual(body, b"" if method == "HEAD" else b'{"error": "not found"}', (who, method, path))
         self.assertEqual(self.api("GET", "/api/sessions"), sessions_)          # a plain path is served as ever
+        self.assertEqual(self.paired(), paired)                                # and nobody was paired by a path that led nowhere
         self.assertEqual(self.c.request("GET", "/drop/device")[0], 200)
-        self.assertEqual(self.api("GET", "/api/session/..hidden")[0], 404)     # dots inside a name are a name (one that is not there)
+        status, h, body = DropClient(self.url, None).request("GET", "/api/session/..hidden")
+        self.assertEqual((status, h.get("connection")), (404, None))           # dots inside a name are a name: one that is not there,
+        self.assertIn("..hidden", json.loads(body)["error"])                   # as the route itself says
+        self.assertEqual(self.api("GET", "/api/sessions?from=/../x"), sessions_)   # and the query is no path
         self.assertEqual(self.api("DELETE", "/api/tags/deg%2Fs"), (200, {"removed": False}))   # and a slash inside one is a name too
         self.assertEqual(self.api("GET", "/api/sessions/%252e%252e/x")[0], 200)   # encoded twice: not dots to anyone
+
+    def paired(self) -> list:
+        return [(d["id"], d["revoked_at"]) for d in self.api("GET", "/api/devices")[1]["devices"]]
+
+    def test_the_drops_own_host_serves_the_drop_and_nothing_else(self):
+        """Where the drop has a host of its own (`ACROSCOPE_DROP_URL`), a request that arrives under that host's name
+        gets the drop and nothing else, however its path is spelled: the proxy in front and this server then need not
+        read a path alike for that host to be no way to the API."""
+        paired = self.paired()
+        nobody = DropClient(self.url, None)
+        for host in ("drop.example.org", "DROP.example.org", "drop.example.org:443", "drop.example.org.", "drop.example.org.:8070"):
+            for method, path in (("GET", "/api/sessions"), ("HEAD", "/api/sessions"), ("GET", "/"), ("GET", "/config"), ("GET", "/api/devices"),
+                                 ("POST", "/api/devices"), ("DELETE", f"/api/devices/{self.dev['id']}"), ("GET", "/video/x/y.mp4"),
+                                 ("PATCH", "/api/x"), ("OPTIONS", "/api/x"), ("GET", "/dropped"), ("GET", "/Drop/device")):
+                status, h, body = nobody.request(method, path, b'{"name": "x"}' if method == "POST" else None, {"Host": host})
+                self.assertEqual((status, h.get("connection")), (404, "close"), (host, method, path))
+                self.assertEqual(body, b"" if method == "HEAD" else b'{"error": "not found"}', (host, method, path))
+            self.assertEqual(self.c.request("GET", "/drop/device", headers={"Host": host})[0], 200, host)     # the drop itself,
+            self.assertEqual(nobody.request("GET", "/drop/device", headers={"Host": host})[0], 401, host)     # which asks for the token
+        self.assertEqual(self.paired(), paired)                                # nobody was paired or revoked through it
+        for host in ("player.example.org", "drop.example.org.evil.example", "xdrop.example.org", ""):       # under any other name the server is as it was
+            self.assertEqual(nobody.request("GET", "/api/sessions", headers={"Host": host})[0], 200, host)
 
     def test_the_device_asks_who_it_is(self):
         status, me = self.c.json("GET", "/drop/device")
@@ -591,8 +623,11 @@ class InProcessTest(unittest.TestCase):
         api = DropClient(self.c.url.geturl(), None)
         self.assertEqual(api.json("GET", "/api/devices"), (200, {"devices": [{"id": self.dev["id"], "name": "phone", "created_at": self.dev["created_at"],
                                                                               "last_seen_at": None, "revoked_at": None}], "url": None}))
+        self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 200)    # and no host is the drop's alone
         with mock.patch.object(server, "DROP_URL", "https://drop.example.org"):
             self.assertEqual(api.json("GET", "/api/devices")[1]["url"], "https://drop.example.org")
+            self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 404)
+            self.assertEqual(self.c.request("GET", "/drop/device", headers={"Host": "drop.example.org"})[0], 200)
 
     def test_the_scheme_in_any_case(self):
         for scheme in ("bearer", "BEARER"):
