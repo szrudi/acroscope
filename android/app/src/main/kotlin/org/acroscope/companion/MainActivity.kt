@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        take(intent)
+        if (savedInstanceState == null) take(intent)        // turned round or brought back, it is the same link: asked once
         setContent {
             val session = graph.session
             val tree = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r -> r.data?.data?.let(session::allow) }
@@ -68,6 +68,9 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         take(intent)
+        // the app chosen for a plug while it is in front: the plug's broadcast may have come before the choice
+        graph.session.lookAtQuad()
+        graph.session.lookAtCard()
     }
 
     /** A pairing code opened as a link waits for the pilot's yes on the screen. */

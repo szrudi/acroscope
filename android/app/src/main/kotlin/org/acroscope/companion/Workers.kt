@@ -105,6 +105,7 @@ abstract class Job(context: Context, params: WorkerParameters, private val id: I
             val shown = launch { progress.sample(1000).collect { if (it is Work.Running) manager.notify(id, notification(applicationContext, title, it)) } }
             try { run() } finally { shown.cancel() }
         }
+        manager.cancel(id)                      // the ongoing one, posted by hand when the phone refused the foreground
         manager.notify(id + 100, notification(applicationContext, title, done))      // what came of it stays to be read
         return Result.success()
     }

@@ -36,7 +36,8 @@ print(re.search(r"<url>([^<]+)</url>", arc).group(1), re.search(r"<checksum[^>]*
 fi
 
 # installing these means accepting the Android SDK licences
-yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null
+# (fed from a process substitution: `yes | …` ends with yes killed by SIGPIPE, which pipefail takes for a failure)
+"$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses < <(yes) >/dev/null
 "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" "platform-tools" "platforms;android-37.1" "build-tools;36.0.0" | tail -1
 
 echo

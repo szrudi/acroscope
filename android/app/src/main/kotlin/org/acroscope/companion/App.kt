@@ -26,9 +26,12 @@ class Graph(
 }
 
 class App : Application() {
-    /** Built at the first use; a test puts its own here before the activity starts. */
-    var graph: Graph? = null
-        get() = field ?: real().also { field = it }
+    /** Built once at the first use, whichever thread asks first (the screen, or a job WorkManager starts with it). */
+    private val built by lazy { real() }
+
+    /** The app's graph; a test puts its own here before the activity starts. */
+    @Volatile var graph: Graph? = null
+        get() = field ?: built
 
     private fun real(): Graph {
         // the state (with the token) in the app's own storage, the footage where there is room
