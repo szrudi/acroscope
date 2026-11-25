@@ -189,6 +189,9 @@ class DropApiTest(unittest.TestCase):
             self.assertEqual(self.c.request("GET", "/drop/device", headers=hdrs)[0], 200, hdrs)     # the drop itself,
             self.assertEqual(nobody.request("GET", "/drop/device", headers=hdrs)[0], 401, hdrs)     # which asks for the token
         self.assertEqual(self.paired(), paired)                                # nobody was paired or revoked through it
+        # a request target in absolute form names the host it is for, whatever the Host says
+        answer = self.raw(b"GET http://drop.example.org/api/sessions HTTP/1.1\r\nHost: player.example.org\r\n\r\n")
+        self.assertEqual(answer[:12], b"HTTP/1.1 404", answer[:200])
         for hdrs in ({"Host": "player.example.org"}, {"Host": "drop.example.org.evil.example"}, {"Host": "xdrop.example.org"}, {"Host": ""}, {"Host": "[::1"},
                      {"Host": "[::1]:8070"}, {"Host": "player.example.org", "X-Forwarded-Host": "player.example.org"}):
             self.assertEqual(nobody.request("GET", "/api/sessions", headers=hdrs)[0], 200, hdrs)   # under any other name, or none, the server is as it was
@@ -357,7 +360,11 @@ class DropApiTest(unittest.TestCase):
                               # a header given twice is read by its first here and by its last elsewhere
                               (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Content-Length: 2\r\nContent-Length: %d\r\n\r\n" % len(manifest) + manifest, b"400"),
                               (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Transfer-Encoding:\r\nTransfer-Encoding: chunked\r\n\r\n" + chunked, b"411"),
-                              (b"GET /drop/device HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", b"401")):
+                              (b"GET /drop/device HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", b"401"),
+                              # a header line the parser cannot read (a space before its colon): it and every one after
+                              # it are gone from the headers, which the proxy would not have let through
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Transfer-Encoding : chunked\r\n\r\n" + chunked, b"400"),
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Content-Length: %d\xa0\r\n\r\n" % len(manifest) + manifest, b"400")):
             answer = self.raw(request)
             self.assertEqual(answer[:12], b"HTTP/1.1 " + want, request[:60])
             self.assertEqual(answer.count(b"HTTP/1."), 1, answer)            # one request, one answer: nothing of the body was read as another
@@ -662,7 +669,8 @@ class InProcessTest(unittest.TestCase):
         the next piece goes on from there."""
         seen, errors = [], []
         self.srv.handle_error = lambda request, client: errors.append(client)
-        with mock.patch.object(server.Handler, "log_message", lambda h, fmt, *args: seen.append(args)):
+        with mock.patch.object(server.Handler, "log_request", lambda h, code="-", size="-": seen.append((h.requestline, str(code)))), \
+                mock.patch.object(server.Handler, "log_message", lambda h, fmt, *args: seen.append((fmt % args, "logged"))):
             up, s = self.half_sent("20261011-100000-reset")
             s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
             s.close()                                                        # a reset, not a goodbye
@@ -672,7 +680,7 @@ class InProcessTest(unittest.TestCase):
                 time.sleep(0.02)
             self.assertEqual(self.c.patch(up, 300, b"b" * 700), 1000)
         self.assertEqual(errors, [])
-        self.assertEqual([code for line, code, _ in seen if line.startswith("PATCH")], ["204"])
+        self.assertEqual([code for line, code in seen if line.startswith("PATCH") or code == "logged"], ["204"])     # the piece that went on, and no error
 
     def test_a_full_disk_is_said_as_no_room(self):
         """The disk filled up under a piece (the room was there when the file was declared): 507, as when the quota
@@ -851,12 +859,30 @@ class InProcessTest(unittest.TestCase):
                                                                               "last_seen_at": None, "revoked_at": None}], "url": None}))
         for host in ("drop.example.org", "", ".", "[", ":", "[]:"):          # and no host is the drop's alone, not the one without a name either
             self.assertEqual(api.request("GET", "/api/devices", headers={"Host": host})[0], 200, host)
-        for url in ("drop.example.org", "https://drop.example.org:8443/", "//drop.example.org", "https://user@Drop.Example.Org."):   # however the address was written
+        for url in ("drop.example.org", "https://drop.example.org:8443/", "//drop.example.org", "https://user@Drop.Example.Org.", "drop.example.org:8443/x",
+                    "https://drop.example.org?x", "https://drop.example.org#top", "https://u:p@ss@drop.example.org"):   # however the address was written
             with mock.patch.object(server, "DROP_URL", url):
                 self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 404, url)
                 self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "player.example.org"})[0], 200, url)
-        with mock.patch.object(server, "DROP_URL", "https://[x"):              # and one that is no address breaks nothing
-            self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "player.example.org"})[0], 200)
+        # an address is the drop's on its own port only: the server is reached by address too, on its own port
+        for url, theirs, others in (("http://10.0.0.5:8072", ("10.0.0.5:8072",), ("10.0.0.5:8070", "10.0.0.5", "10.0.0.50:8072")),
+                                    ("https://10.0.0.5", ("10.0.0.5", "10.0.0.5:443"), ("10.0.0.5:8070",)),
+                                    ("http://[2001:db8::5]", ("[2001:db8::5]", "[2001:db8::5]:80", "[2001:DB8::5]"), ("[2001:db8::7]", "[2001:db8::5]:8070", "[2001:db8::]"))):
+            with mock.patch.object(server, "DROP_URL", url):
+                for host in theirs:
+                    self.assertEqual(api.request("GET", "/api/devices", headers={"Host": host})[0], 404, (url, host))
+                for host in others:
+                    self.assertEqual(api.request("GET", "/api/devices", headers={"Host": host})[0], 200, (url, host))
+        # one with no host to be read is no drop's address: the server will not start with it, and a request is
+        # never taken for one not the drop's
+        for url in ("https://[x", "https://u:p/w@drop.example.org", "https:/drop.example.org", "https://", ":8070", "drop example.org", "ftp://drop.example.org"):
+            with mock.patch.object(server, "DROP_URL", url):
+                self.assertIsNone(server.drop_host(url), url)
+                self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "player.example.org"})[0], 404, url)
+                with mock.patch.object(server, "ThreadingHTTPServer") as srv, self.assertRaises(SystemExit) as no:
+                    server.serve(port=0)
+                self.assertIn("ACROSCOPE_DROP_URL", str(no.exception.code))
+                srv.assert_not_called()
         with mock.patch.object(server, "DROP_URL", "https://drop.example.org"):
             self.assertEqual(api.json("GET", "/api/devices")[1]["url"], "https://drop.example.org")
             self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 404)
@@ -887,7 +913,13 @@ class LogTest(unittest.TestCase):
         short = "GET /drop/batches/20261011-100000-ab12/files/VID00001.mov HTTP/1.1"
         self.assertIn(f'"{short}" 404 -', self.line('"%s" %s %s', short, "404", "-"))          # a line of ordinary length is whole
         self.assertIn("x" * 300 + " ", self.line("%s %s", "x" * 300, "404"))                    # to the last character it may have
-        self.assertEqual(self.line('"%s" %s %s', short, "204", "-"), "")                       # and what went well is not logged, as ever
+        self.assertIn("drop: KeyError: 200", self.line("drop: %s: %s", "KeyError", "200"))     # an error whose text is a status is an error
+        for code, logged in ((204, False), (201, False), (200, False), (404, True), (500, True)):   # and what went well is not logged, as ever
+            h = server.Handler.__new__(server.Handler)
+            h.client_address, h.requestline = ("192.0.2.7", 40000), short
+            with mock.patch("sys.stderr", io.StringIO()) as err:
+                h.log_request(code)
+            self.assertEqual(bool(err.getvalue()), logged, code)
         self.assertIn("Request timed out: TimeoutError('timed out')", self.line("Request timed out: %r", TimeoutError("timed out")))   # nor is a line of one value a line too short
 
 

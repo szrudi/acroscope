@@ -779,7 +779,8 @@ class UpkeepTest(_Drop):
         again. It stops no other device, and not the housekeeping that would clear it away."""
         self.put("VID00001.mov", CLIP)
         self.put("VID00001.mov", CLIP, B, OTHER)
-        for junk in ("", '{"VID00001.mov": 7', "[1, 2]", "\xff\xfe", '{"VID00001.mov": "780"}', '{"VID00001.mov": -1}', '{"VID00001.mov": null}'):
+        for junk in ("", '{"VID00001.mov": 7', "[1, 2]", "\xff\xfe", '{"VID00001.mov": "780"}', '{"VID00001.mov": -1}', '{"VID00001.mov": null}',
+                     '{"VID00001.mov": 99999999999999999999}', '{"VID00001.mov": %d}' % (drop.MAX_FILE + 1)):
             (self.staging / DEV / B / "lengths.json").write_bytes(junk.encode("latin-1"))
             self.assertEqual(drop.usage()["staged"], len(CLIP), junk)        # the other device's
             self.assertEqual(drop.create(OTHER, "20261011-110000-cd34", "VID00002.mov", 5), 0, junk)
@@ -844,6 +845,16 @@ class StatusTest(_Drop):
         self.assertEqual(len(told), 303)
         self.db.set_batch(B, status="failed", error="FileNotFoundError: /data/originals/.ingest/b/taken/VID00001.mov is not there, " + "y" * 235)
         self.assertEqual(drop.batches_of(DEV)[0]["error"], "FileNotFoundError: VID00001.mov is not there, " + "y" * 235)   # bare too, and what is short enough is whole
+        # the data dir is taken out by name first, whatever is in it; then any folders left, quoted or not
+        with mock.patch.object(drop, "DATA_DIR", Path("/srv/fpv data")), mock.patch.object(drop, "CACHE_DIR", Path("/var/cache/it's")):
+            for said, told in (("FileNotFoundError: No such file: /srv/fpv data/originals/.ingest/b/taken/VID00001.mov", "FileNotFoundError: No such file: VID00001.mov"),
+                               ("PermissionError: [Errno 13] Permission denied: \"/srv/fpv data/videos/it's here/x.mp4\"", 'PermissionError: [Errno 13] Permission denied: "x.mp4"'),
+                               ("CalledProcessError: Command '['ffmpeg', '-i', 'concat:/srv/fpv data/x/1.mov|/srv/fpv data/x/2.mov']' returned 1.",
+                                "CalledProcessError: Command '['ffmpeg', '-i', 'concat:1.mov|2.mov']' returned 1."),
+                               ("ValueError: originals/2026-10-11-park/c1234.mov: no video", "ValueError: c1234.mov: no video"),
+                               ("OSError: /var/cache/it's/arms/c1/0.json, /srv/fpv data/blackbox/x.bbl", "OSError: 0.json, x.bbl")):
+                self.db.set_batch(B, status="failed", error=said)
+                self.assertEqual(drop.batches_of(DEV)[0]["error"], told, said)
         self.assertEqual(drop.retry(DEV, B)["error"], None)                  # and no error is none
 
     def test_a_device_retries_its_own_failed_batch(self):

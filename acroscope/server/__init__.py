@@ -4,6 +4,7 @@ uses these endpoints (remote.Remote). Writes go through the same functions as th
 
 The data dir is only walked in the background (jobs: a scan at start, every SCAN_EVERY seconds, and on request):
 a page open never waits on the Drive mount."""
+import ipaddress
 import json
 import math
 import mimetypes
@@ -14,7 +15,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit
 
 from . import drop, jobs
 from .. import ingest, share, tricks
@@ -113,12 +114,35 @@ def _under(root: Path, *parts: str) -> Path:
     return p
 
 
-def _names(host: str) -> set[str]:
-    """What a Host may name, read as generously as a proxy reads one to pick its site: without the case, a final dot
-    or brackets (round an address, or round anything: a proxy takes them off unseen), and with or without what
-    follows the last colon (a port, a number or not)."""
-    host = host.strip().lower().replace("[", "").replace("]", "")
-    return {name.rstrip(".") for name in (host, host.rpartition(":")[0]) if name.rstrip(".")}
+def drop_host(url: str) -> tuple[str, int | None] | None:
+    """The drop's own host, from `ACROSCOPE_DROP_URL` (http or https, the scheme may be left out): (name, None) for a
+    host name, which is the drop's on any port; (address, port) for an IP address, which is the drop's on that port
+    only (the server is reached by address too, on a port of its own). None when no host can be read from it."""
+    if "://" in url:
+        if url.partition("://")[0].lower() not in ("http", "https"):
+            return None
+    elif not url.startswith("//") and not re.fullmatch(r"[^/:@\s]+(:[0-9]+)?(/.*)?", url):
+        return None
+    try:
+        u = urlsplit(url if "//" in url else "//" + url)
+        name, port = (u.hostname or "").rstrip("."), u.port
+    except ValueError:                     # a port that is no number, brackets that close nothing
+        return None
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return (name, None) if re.fullmatch(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*", name) else None
+    return name, port or {"http": 80, "https": 443}.get(u.scheme.lower(), 80)
+
+
+def _asked(host: str) -> tuple[str, str]:
+    """(name, port) of a Host, read as a proxy reads one to pick its site: a port split off where there is one (after
+    a name with no colon, or after brackets), then brackets taken off whatever they are round, the case and a final
+    dot left out."""
+    host = host.strip().lower()
+    m = re.fullmatch(r"(\[[^\]]*\]|[^:]*):([^:\]]*)", host)
+    name, port = m.groups() if m else (host, "")
+    return name.strip("[]").rstrip("."), port
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -132,10 +156,13 @@ class Handler(BaseHTTPRequestHandler):
         except ConnectionError:
             pass
 
-    def log_message(self, fmt, *args):  # quieter: only non-200s
-        if len(args) < 2 or str(args[1]) not in ("200", "201", "204", "206", "304"):     # 201, 204: the drop's, one per piece
-            # by its start: a request line is up to 64 kB of anybody's making, and every refusal is logged
-            super().log_message(fmt, *(a[:300] + "..." if isinstance(a, str) and len(a) > 300 else a for a in args))
+    def log_request(self, code="-", size="-"):  # quieter: what went well is not logged
+        if str(getattr(code, "value", code)) not in ("200", "201", "204", "206", "304"):     # 201, 204: the drop's, one per piece
+            super().log_request(code, size)
+
+    def log_message(self, fmt, *args):
+        # by its start: a request line is up to 64 kB of anybody's making, and every refusal is logged
+        super().log_message(fmt, *(a[:300] + "..." if isinstance(a, str) and len(a) > 300 else a for a in args))
 
     # ---- helpers
     def _json(self, obj, code=200, close=False):
@@ -244,11 +271,23 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _at_the_drops_host(self) -> bool:
-        """The request names the drop's own host (`ACROSCOPE_DROP_URL`): in its Host, or in the name a proxy says it
-        was asked under. By the name alone: a port in either says nothing about the site a proxy picked."""
-        own = _names((DROP_URL.partition("://")[2] or DROP_URL).lstrip("/").partition("/")[0].rpartition("@")[2])
+        """The request names the drop's own host (`ACROSCOPE_DROP_URL`): in its Host, in the name a proxy says it was
+        asked under, or in a request target in absolute form. A host name by the name alone: a port says nothing about
+        the site a proxy picked. An address with its port: the server is reached by address on its own. An address
+        that names no host (serve does not start with one) leaves nothing but the drop."""
+        if not DROP_URL:
+            return False
+        own = drop_host(DROP_URL)
+        if own is None:
+            return True
         asked = [self.headers.get("Host") or ""] + [name for line in self.headers.get_all("X-Forwarded-Host") or [] for name in line.split(",")]
-        return any(own & _names(name) for name in asked)
+        if self.path.lower().startswith(("http://", "https://")):
+            asked.append(urlsplit(self.path).netloc.rpartition("@")[2])
+        name, port = own
+        for a, p in map(_asked, asked):
+            if a == name and (port is None or p == str(port) or (p == "" and port in (80, 443))):
+                return True
+        return False
 
     def do_HEAD(self):
         self.do_GET()
@@ -578,6 +617,8 @@ def layer_from_store():
 
 
 def serve(host="0.0.0.0", port=8070, warm: bool = True):
+    if DROP_URL and drop_host(DROP_URL) is None:
+        sys.exit(f"acroscope serve: ACROSCOPE_DROP_URL={DROP_URL!r} names no host (http(s)://<host>[:port], the drop's own)")
     if sessions.remote():
         sys.exit("acroscope serve: unset ACROSCOPE_URL, the server owns the database itself")
     tricks.LAYER_SOURCE = layer_from_store           # the OSD's profiles are read by the CLI children (cli.main), never here

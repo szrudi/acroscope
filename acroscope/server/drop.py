@@ -106,7 +106,7 @@ def _send(h, status: int, obj=None, headers: dict | None = None) -> None:
 
 def _bytes(value) -> int | None:
     """A header's count of bytes, or None when it is not one."""
-    return int(value) if value is not None and re.fullmatch(r"[0-9]{1,19}", value.strip()) else None
+    return int(value) if value is not None and re.fullmatch(r"[0-9]{1,19}", value.strip(" \t")) else None
 
 
 def _number(h, name: str) -> int:
@@ -150,6 +150,8 @@ def _route(h, device: dict, parts: list[str]) -> None:
     if h._drop_unframed:
         if h.headers.get("Transfer-Encoding") is not None:
             raise _Answer(411, "Content-Length: say how long the body is (a chunked one is not taken)")
+        if h.headers.defects:
+            raise _Answer(400, "a header line that is no header")
         raise _Answer(400, "Content-Length: a whole number of bytes, said once")
     if method == "OPTIONS":
         return _send(h, 204, headers={"Tus-Version": TUS, "Tus-Extension": "creation,termination", "Tus-Max-Size": str(staging.MAX_FILE)})
@@ -205,8 +207,9 @@ def handle(h, parts: list[str]) -> None:
     length = _bytes(lengths[0]) if len(lengths) == 1 else None
     h._drop_unread, h._drop_drain = length or 0, DRAIN
     # a body whose end cannot be told (chunked in any spelling, a length that is no number, or two lengths: one reader
-    # takes the first and another the last): refused, and the connection ends with the answer
-    h._drop_unframed = h.headers.get("Transfer-Encoding") is not None or (bool(lengths) and length is None)
+    # takes the first and another the last; or headers the parser gave up on, dropping the line it could not read and
+    # every one after it): refused, and the connection ends with the answer
+    h._drop_unframed = h.headers.get("Transfer-Encoding") is not None or (bool(lengths) and length is None) or bool(h.headers.defects)
     before = h.connection.gettimeout()
     h.connection.settimeout(STALL)
     try:

@@ -59,9 +59,10 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   server's part runs in request threads (the copying is I/O); nothing there decodes or probes what arrived. Tokens are
   in the `devices` table as SHA-256 hashes: `db.add_device` returns the token once, nothing else may print or store it.
   `ACROSCOPE_DROP_URL` is the drop's own address when it has a host of its own: it goes into the pairing code, and a
-  request that names it (in `Host` or `X-Forwarded-Host`; by the name alone, read as loosely as a proxy reads one:
-  any port, case, brackets) gets `/drop/` and nothing else (`Handler._at_the_drops_host`), so the proxy and the
-  server need not read a path alike; never the player's name. Like `ACROSCOPE_SHARE_URL`, it and the
+  request that names it (in `Host`, `X-Forwarded-Host` or an absolute-form target; a host name by the name alone,
+  read as loosely as a proxy reads one: any port, case, brackets; an IP address with its port) gets `/drop/` and
+  nothing else (`Handler._at_the_drops_host`, `server.drop_host`), so the proxy and the server need not read a path
+  alike; never the player's name. `serve` refuses a value with no host in it. Like `ACROSCOPE_SHARE_URL`, it and the
   vhost behind it are homelab settings (never in this repo).
 - OSD reader (`acroscope/sources/osd.py`): every layout is a profile derived from Betaflight's own (#10,
   `sources/osdprofile.py` over `sources/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm`

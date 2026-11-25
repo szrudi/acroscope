@@ -28,7 +28,7 @@ from pathlib import Path
 from . import intake
 from .. import ingest
 from ..store import sessions
-from ..config import DROP_DIR, DROP_MIN_FREE, DROP_QUOTA
+from ..config import CACHE_DIR, DATA_DIR, DROP_DIR, DROP_MIN_FREE, DROP_QUOTA
 
 
 BATCH_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[a-z0-9]{1,16}")
@@ -114,7 +114,7 @@ def _lengths(d: Path) -> dict:
         lengths = json.loads((d / "lengths.json").read_text())
     except (FileNotFoundError, NotADirectoryError, ValueError):
         return {}
-    return lengths if isinstance(lengths, dict) and all(_whole(n) for n in lengths.values()) else {}
+    return lengths if isinstance(lengths, dict) and all(_whole(n) and n <= MAX_FILE for n in lengths.values()) else {}
 
 
 def _save_lengths(d: Path, lengths: dict) -> None:
@@ -308,8 +308,10 @@ def _manifest(man) -> dict:
     return files
 
 
-_QUOTED = re.compile(r"""(['"])/[^'"\n]*/([^/'"\n]*)\1""")      # an absolute path in quotes, and its last part
-_FOLDERS = re.compile(r"""/(?:[^/\s'"]+/)+""")                   # the folders of one that stands bare
+# an absolute path in quotes (Python quotes one with an apostrophe in it with "), and its last part
+_QUOTED = re.compile(r"""'/[^'\n]*/([^/'\n]*)'|""" + r'"/[^"\n]*/([^/"\n]*)"')
+# the folders of one that stands bare, from where a word starts: after a space, a quote, a bracket or a separator
+_FOLDERS = re.compile(r"""(?<![^\s'"(\[=,|:])(?:~?/)?(?:[^/\s'"|:,()\[\]]+/)+""")
 
 
 def _public(b: dict) -> dict:
@@ -318,7 +320,10 @@ def _public(b: dict) -> dict:
     in. Those come out, the file's own name stays, and it is kept short."""
     told = {k: v for k, v in b.items() if k != "device"}
     if told.get("error"):
-        said = _FOLDERS.sub("", _QUOTED.sub(r"\1\2\1", str(told["error"])))
+        said = _QUOTED.sub(lambda m: m[0][0] + (m[1] if m[1] is not None else m[2]) + m[0][0], str(told["error"]))
+        for root in sorted({str(DATA_DIR), str(CACHE_DIR)}, key=len, reverse=True):     # by name: a space may be in one
+            said = said.replace(root + "/", "").replace(root, "")
+        said = _FOLDERS.sub("", said)
         told["error"] = said if len(said) <= 300 else said[:300] + "..."
     return told
 
