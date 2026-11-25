@@ -167,6 +167,17 @@ class DropClientTest {
             }
         }
         assertTrue(assertFailsWith<IOException> { client.upload(b, "VID00001.mov", file) } !is DropException)
+        serve { _, _ -> 204 to 400L }                                           // past the end of a file of 250 bytes
+        assertTrue(assertFailsWith<IOException> { client.upload(b, "VID00001.mov", file) } !is DropException)
+    }
+
+    @Test
+    fun `a page in place of the drop's answer to a file is no answer either`() {
+        respond = { x, _ -> x.answer(200, body = "<html>log in</html>") }       // a login page or a portal, after a redirect
+        assertTrue(assertFailsWith<IOException> { client.upload(b, "VID00001.mov", file) } !is DropException)
+        assertTrue(assertFailsWith<IOException> { client.put(b, "import.json", "{}".toByteArray()) } !is DropException)
+        respond = { x, _ -> x.answer(507, body = """{"error": "full"}""") }    // the server's own refusal is still one
+        assertEquals(507, assertFailsWith<DropException> { client.upload(b, "VID00001.mov", file) }.status)
     }
 
     @Test

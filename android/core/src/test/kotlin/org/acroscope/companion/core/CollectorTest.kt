@@ -205,6 +205,17 @@ class CollectorTest {
     }
 
     @Test
+    fun `a copy cut off by a process that died does not stay on the phone, and one in hand is left alone`() {
+        event("park")
+        store.scratch.mkdirs()
+        val dead = File(store.scratch, "in-123.part").apply { writeBytes(ByteArray(1000)); setLastModified(System.currentTimeMillis() - 3_600_000) }
+        val busy = File(store.scratch, "in-456.part").apply { writeBytes(ByteArray(1000)) }               // another collect's, being written
+        collector.collect(card(Clip("VID00001.mov", movie(100))), free = Long.MAX_VALUE)
+        assertFalse(dead.exists())
+        assertTrue(busy.exists())
+    }
+
+    @Test
     fun `a clip without its index is collected and flagged`() {
         event("park")
         val out = collector.collect(card(Clip("VID00001.mov", movie(100)), Clip("VID00002.mov", movie(100, finished = false)), Clip("VID00003.avi", "RIFF....".toByteArray()), Clip("VID00004.MOV", movie(100, finished = false))), free = Long.MAX_VALUE)

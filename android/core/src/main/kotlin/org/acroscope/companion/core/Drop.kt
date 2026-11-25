@@ -88,6 +88,8 @@ class DropClient(
     }
 
     private fun refuse(what: String, a: Answer): Nothing {
+        // a success that is not the one asked for is some other page (a login, a portal, after a redirect): no answer
+        if (a.status < 400) throw IOException("$what: the server answered ${a.status}, which is not the drop's answer")
         val said = try { Json.parseToJsonElement(a.body).jsonObject["error"]?.jsonPrimitive?.contentOrNull } catch (e: Exception) { null }
         throw DropException(a.status, said ?: "$what: the server answered ${a.status}")
     }
@@ -135,7 +137,7 @@ class DropClient(
         val meta = "filename " + Base64.getEncoder().encodeToString(name.toByteArray())
         val a = call("POST", "${path(batch)}/files", ByteArray(0).toRequestBody(null), mapOf("Upload-Length" to length.toString(), "Upload-Metadata" to meta))
         if (a.status != 201) refuse("declaring $name", a)
-        return a.headers["location"] ?: throw DropException(a.status, "declaring $name: the server named no upload")
+        return a.headers["location"] ?: throw IOException("declaring $name: the server named no upload")
     }
 
     private fun offset(upload: String): Long {

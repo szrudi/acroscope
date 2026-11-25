@@ -46,8 +46,10 @@ class MainActivityTest {
 
     @Test
     fun `a quad chosen for the app while it is in front is looked at`() {
+        w.quads.now = QuadState.Ready("OTTO")                                  // something to see at the start, so the start's look can be waited for
+        w.card()
         val started = Robolectric.buildActivity(MainActivity::class.java).setup()
-        until { w.session.quad.value == QuadView.None }
+        until { w.session.quad.value is QuadView.Ready && w.session.card.value is CardView.Open }
         w.quads.now = QuadState.NeedsPermission("OTTO") {}
         w.cards.now = CardState.NeedsAccess("COBRA", Intent(Intent.ACTION_OPEN_DOCUMENT_TREE))
         started.newIntent(Intent(UsbManager.ACTION_USB_DEVICE_ATTACHED))      // "always open with" this app: it comes as an intent

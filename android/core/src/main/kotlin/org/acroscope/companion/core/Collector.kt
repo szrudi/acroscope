@@ -50,6 +50,8 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
         const val MARGIN = 256L shl 20
         /** Event names remembered. */
         const val RECENT = 12
+        /** A copy on its way in not written to for this long was left by a process that died. */
+        const val STALE_MS = 10 * 60_000L
         private val STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssxxx")
         private val CONFIGURATOR = Regex("BTFL_BLACKBOX_LOG_(.*_)?[0-9]{8}_[0-9]{6}_.*\\.bbl", RegexOption.IGNORE_CASE)   // the craft left out when it has none
         private val LOG_MAGIC = "H Product:Blackbox".toByteArray()
@@ -121,9 +123,13 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
         }
     }
 
-    /** A file on its way in, under a name of its own beside the batches' folders (the same disk: it is renamed in). */
+    /** A file on its way in, under a name of its own beside the batches' folders (the same disk: it is renamed in).
+     *  What a process that died left there goes first: a copy in hand is written to all the time, one left alone
+     *  for [STALE_MS] is nobody's. */
     private fun part(): File {
         store.scratch.mkdirs()
+        val now = System.currentTimeMillis()
+        store.scratch.listFiles { f -> f.name.startsWith("in-") && f.name.endsWith(".part") && now - f.lastModified() > STALE_MS }?.forEach { it.delete() }
         return File.createTempFile("in-", ".part", store.scratch)
     }
 

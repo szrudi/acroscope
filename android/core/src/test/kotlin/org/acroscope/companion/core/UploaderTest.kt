@@ -256,7 +256,7 @@ class UploaderTest {
     }
 
     @Test
-    fun `a clip collected while its batch is handed in goes into another batch, not out with the first`() {
+    fun `a clip collected while its batch goes up is put in a batch when it is whole, and not lost with the first`() {
         paired()
         event("park")
         batch(a, "park", "x.bbl" to 5)

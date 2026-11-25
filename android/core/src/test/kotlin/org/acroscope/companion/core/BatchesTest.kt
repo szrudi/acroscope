@@ -78,6 +78,21 @@ class BatchesTest {
     }
 
     @Test
+    fun `a batch being handed in keeps its event, date and files, and can still be discarded`() {
+        given()
+        store.updateBatch(id) { it.copy(closed = true) }                        // its commit asked for: the server may have it as it is
+        for (change in listOf<() -> Unit>({ batches.edit(id, "home", "2026-12-11") }, { batches.remove(id, "VID00001.mov") })) {
+            val e = assertFailsWith<IllegalStateException> { change() }
+            assertTrue("server" in e.message!!, e.message)
+        }
+        assertEquals("park" to 3, store.now.batch(id)!!.let { it.event to it.items.size })
+        assertTrue(File(store.dir(id), "VID00001.mov").exists())
+        batches.discard(id)                                                     // the way out stays: whatever the server has, it keeps
+        assertNull(store.now.batch(id))
+        assertFalse(store.dir(id).exists())
+    }
+
+    @Test
     fun `finished batches are forgotten past the last few`() {
         val done = (10..39).map { Batch("202612$it-090507-ab12cd", "park", "2026-12-$it", "", stage = Stage.DONE) }
         val open = listOf(Batch("20261201-090507-pend01", "park", "2026-12-01", "", listOf(Item("x.bbl", 1, Kind.LOG, ""))),

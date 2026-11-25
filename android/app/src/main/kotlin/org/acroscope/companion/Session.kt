@@ -312,13 +312,15 @@ class Session(private val g: Graph) {
     /** Erase the flash of the quad whose log was just saved. Up to a minute; the quad must stay plugged in. */
     fun eraseQuad() = scope.launch {
         val h = held ?: return@launch
-        if (erase.value is Work.Running) return@launch
-        if (!kept(h)) {                                     // the log it would stand on is gone: no erase, and none offered
-            showQuad()
-            return@launch
+        synchronized(seeing) {                              // two taps: one erase
+            if (erase.value is Work.Running) return@launch
+            if (!kept(h)) {                                 // the log it would stand on is gone: no erase, and none offered
+                showQuad()
+                return@launch
+            }
+            erase.value = Work.Running("erasing the quad's flash (up to a minute)", 0, 0)
         }
         val box = h.box
-        erase.value = Work.Running("erasing the quad's flash (up to a minute)", 0, 0)
         val done = try {
             wire.withLock { box.erase() }
             Work.Finished("the quad's flash is erased", true)
