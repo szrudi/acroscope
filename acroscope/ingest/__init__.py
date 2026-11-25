@@ -206,7 +206,10 @@ def process_batch(batch: str, log=print) -> dict:
                     at = round(x * 100)
                     if at != tick["pct"]:
                         tick["pct"] = at
-                        db.set_batch(batch, progress=tick)
+                        try:     # fix_clock takes any exception for an OSD it cannot read: a failed progress write is not one
+                            db.set_batch(batch, progress=tick)
+                        except Exception:  # noqa: BLE001  (a database locked past its timeout: the next write tries again)
+                            pass
                 k = clock.fix_clock(part, res["kept"], lambda m: log(f"{batch}: {m}"), read)
                 k = None if k in (None, 1.0) else k
                 duration = video.probe(part)["duration"] if k else res["duration"]

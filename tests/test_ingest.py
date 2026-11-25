@@ -552,6 +552,32 @@ atexit.register(lambda: open(os.environ["ACROSCOPE_DATA"] + "/progress.json", "w
             self.assertEqual(steps[0], ("compress", 0))
             self.assertTrue(all(p["done"] == i and p["total"] == 2 for p in seen if p.get("clip") == clip))
 
+    def test_a_failed_progress_write_does_not_decide_the_clock(self):
+        """Review on #83: the clock step's progress is written from inside the OSD reading, and fix_clock takes any
+        exception there for an OSD it cannot read. A progress write that fails (a database locked past its timeout)
+        is skipped: the clip is still re-timed."""
+        batch = "lockedprogress"
+        self.two_clip_batch(batch)
+        (self.data / "inbox" / batch / "import.json").write_text(json.dumps({"date": "2026-10-11", "session": "locked progress"}))
+        self.env["ACROSCOPE_DB"] = str(self.root / "tl.db")
+        r = self.run_patched(batch, """real = db.Db.set_batch
+def set_batch(self, batch, **fields):
+    if (fields.get("progress") or {}).get("step") == "clock" and fields["progress"]["pct"] == 50:
+        raise sqlite3.OperationalError("database is locked")
+    return real(self, batch, **fields)
+db.Db.set_batch = set_batch
+def read_timers(path, fps=2.0, layout=None, progress=None):
+    for x in (0.0, 0.5, 1.0):
+        progress(x)
+    return {"layout": "x", "rows": []}
+osd.read_timers = read_timers
+clock.clock_fit = lambda rows, kept=None: 2.0
+ingest._cli = lambda *a: None""")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        db = Db(self.root / "tl.db")
+        vids = db.load(db.batches()[0]["session"])["videos"]
+        self.assertEqual([v.get("timescale") for v in vids], [2.0, 2.0])
+
     def test_a_crash_in_the_clock_step_is_redone_by_the_retry(self):
         """Review on #30: the clock step ran after the clip was recorded, so a crash in it (the OSD read is the slow
         part) left the clip done for the retry and never re-timed. It runs on the encode before the clip is recorded,
