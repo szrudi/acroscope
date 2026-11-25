@@ -78,6 +78,7 @@ dependencies {
     implementation(libs.work.runtime)
     implementation(libs.coroutines.android)
 
+    testImplementation(testFixtures(project(":core")))
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.robolectric)

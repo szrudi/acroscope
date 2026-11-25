@@ -43,12 +43,20 @@ class FakeCards(var now: CardState = CardState.None, var files: List<CardFile> =
     }
 }
 
+class FakeQuads(var now: QuadState = QuadState.None, var fc: org.acroscope.companion.core.FakeFc? = null) : Quads {
+    var opened = 0
+    override fun state(): QuadState = now
+    override fun open(): org.acroscope.companion.core.SerialPort { opened++; return fc ?: throw IOException("no flight controller is plugged in") }
+}
+
 /** The jobs run where they are asked for: on the caller's thread, to their end. */
 class InlineRunner : Runner {
     lateinit var graph: Graph
     val ran = mutableListOf<String>()
-    override fun collect(tree: Uri) { ran += "collect"; graph.session.collectNow(tree) { false } }
+    override fun collect(tree: Uri?) { ran += "collect"; graph.session.collectNow(tree) { false } }
     override fun upload() { ran += "upload"; graph.session.uploadNow { false } }
+    override fun auto() { ran += "auto" }
+    override fun follow() { ran += "follow" }
 }
 
 class FakeDrop : Drop {
@@ -72,11 +80,11 @@ class FakeDrop : Drop {
 }
 
 /** The app with a scratch store, a card and a server that are stand-ins, and jobs that run inline. */
-class World(val drop: FakeDrop = FakeDrop(), val cards: FakeCards = FakeCards(), var clock: ZonedDateTime = ZonedDateTime.now()) {
+class World(val drop: FakeDrop = FakeDrop(), val cards: FakeCards = FakeCards(), val quads: FakeQuads = FakeQuads(), var clock: ZonedDateTime = ZonedDateTime.now()) {
     val root: File = Files.createTempDirectory("world").toFile()
     val runner = InlineRunner()
     val pairings = mutableListOf<Pairing>()
-    val graph = Graph(Store(File(root, "state"), File(root, "files")), cards, runner, drop = { pairings += it; drop }, clock = { clock }).also { runner.graph = it }
+    val graph = Graph(Store(File(root, "state"), File(root, "files")), cards, quads, runner, drop = { pairings += it; drop }, clock = { clock }).also { runner.graph = it }
     val store get() = graph.store
     val session get() = graph.session
 

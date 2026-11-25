@@ -59,10 +59,15 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   `ACROSCOPE_SHARE_URL`, it and the vhost behind it are homelab settings (never in this repo).
 - The companion app (#75, `android/`, its own README): Kotlin, two Gradle modules. `core` is plain JVM with no Android
   import in it (names and rules mirrored from the server in `Names`, the collector, the batch edits, the upload client
-  `DropClient` and its orchestration); `app` is the Android shell (card access through the storage access framework,
+  `DropClient` and its orchestration, and `Msp`/`Blackbox`: the laptop's `bf-blackbox.py` ported with its vectors,
+  tested against the stand-in controller `FakeFc`); `app` is the Android shell (card access through the storage access framework,
   WorkManager jobs, one Compose screen). Rules to keep: the card is only ever read; a batch's copy on the phone goes
   when the server reports the batch done, never when the upload ends; nothing about an upload is remembered on the
-  phone (the client asks the server where each file ends); a change to the drop's protocol changes `DropClient` and
+  phone (the client asks the server where each file ends); the quad's flash is erased only on the pilot's press and
+  only by the connection that saved and verified its log (`Blackbox.erase` refuses otherwise; a collect never
+  erases); the upload by itself (`Auto`, `AutoUploadWorker`, WorkManager's unmetered constraint) retries in silence
+  what a later try can mend and tells the pilot, once, what only they can, and it is the same upload the button
+  runs; a change to the drop's protocol changes `DropClient` and
   `tests/drop_client.py` in the same PR, and `DropContractTest` (the Kotlin client against an `acroscope serve` child
   from this checkout, `ACROSCOPE_PYTHON` naming the Python) is what says they still agree. Building on joan:
   `android/scripts/setup.sh` once (JDK 21 in `~/.jdks`, the SDK in `~/Android/Sdk`, no root), then
@@ -71,7 +76,8 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   left up and no limits froze the machine on 2026-11-23, so always `--no-daemon`, never beside the Python suite, and
   `./gradlew --stop` if a daemon was used. No emulator here (no KVM): the screen is tested under Robolectric with
   stand-ins (`ScreenTest`; a dialog window holding a text field never comes to rest there, so text fields live in
-  the screen itself), and what only a phone can say (the card in a reader, the jobs surviving the app being left)
+  the screen itself), and what only a phone can say (the card in a reader, a real flight controller on `UsbSerial`, the jobs surviving
+  the app being left)
   is said in the PR and checked on Rudi's Pixel. The debug keystore in `android/` is committed on purpose (debug
   builds from any machine update each other); a release key is never in the repo.
 - OSD reader (`acroscope/sources/osd.py`): every layout is a profile derived from Betaflight's own (#10,

@@ -1,5 +1,6 @@
 // The app's logic without Android: what is tested on any machine with a JDK.
 plugins {
+    `java-test-fixtures`                        // the stand-in flight controller, for the app's tests too
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
 }
