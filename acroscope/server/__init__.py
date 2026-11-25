@@ -126,7 +126,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):  # quieter: only non-200s
         if args and str(args[1]) not in ("200", "201", "204", "206", "304"):     # 201, 204: the drop's, one per piece
-            super().log_message(fmt, *args)
+            # by its start: a request line is up to 64 kB of anybody's making, and every refusal is logged
+            super().log_message(fmt, *(a[:300] + "..." if isinstance(a, str) and len(a) > 300 else a for a in args))
 
     # ---- helpers
     def _json(self, obj, code=200, close=False):

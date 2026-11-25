@@ -832,5 +832,27 @@ class InProcessTest(unittest.TestCase):
             self.assertEqual(status, 200, scheme)
 
 
+class LogTest(unittest.TestCase):
+    def line(self, fmt: str, *args) -> str:
+        h = server.Handler.__new__(server.Handler)
+        h.client_address = ("192.0.2.7", 40000)
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            h.log_message(fmt, *args)
+        return err.getvalue()
+
+    def test_a_long_request_line_is_logged_by_its_start(self):
+        """A request line is up to 64 kB of anybody's making, and every refusal is logged: the log keeps its start."""
+        said = self.line('"%s" %s %s', "GET /drop/" + "a" * 60_000 + " HTTP/1.1", "401", "-")
+        self.assertLess(len(said), 500)
+        self.assertIn('"GET /drop/aaaa', said)
+        self.assertTrue(said.rstrip().endswith('..." 401 -'), said[-40:])
+        self.assertIn("192.0.2.7", said)
+        self.assertLess(len(self.line("drop: %s: %s", "OSError", "x" * 60_000)), 500)       # what an error says of itself likewise
+        short = "GET /drop/batches/20261011-100000-ab12/files/VID00001.mov HTTP/1.1"
+        self.assertIn(f'"{short}" 404 -', self.line('"%s" %s %s', short, "404", "-"))          # a line of ordinary length is whole
+        self.assertIn("x" * 300 + " ", self.line("%s %s", "x" * 300, "404"))                    # to the last character it may have
+        self.assertEqual(self.line('"%s" %s %s', short, "204", "-"), "")                       # and what went well is not logged, as ever
+
+
 if __name__ == "__main__":
     unittest.main()
