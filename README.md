@@ -99,7 +99,8 @@ the recent event names. A piece whose sender goes silent is let go after a minut
 added to for 7 days is dropped by the nightly housekeeping. `tests/drop_client.py` is the device's side in sixty lines.
 
 **The companion app** (`android/`, see its [README](android/README.md)) is the device this door was built for: an
-Android app that collects the DVR clips from the goggles' card and a saved blackbox log out in the field, keeps
+Android app that collects the DVR clips from the goggles' card and the blackbox log (off the quad over USB, or a
+saved file) out in the field, keeps
 them on the phone, and hands them in at home. Its upload client is tested against a real `acroscope serve` from this
 same checkout, so the two sides of the protocol change together.
 

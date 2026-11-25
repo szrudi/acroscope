@@ -63,7 +63,9 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   tested against the stand-in controller `FakeFc`); `app` is the Android shell (card access through the storage access framework,
   WorkManager jobs, one Compose screen). Rules to keep: the card is only ever read; a batch's copy on the phone goes
   when the server reports the batch done, never when the upload ends; nothing about an upload is remembered on the
-  phone (the client asks the server where each file ends); the quad's flash is erased only on the pilot's press and
+  phone (the client asks the server where each file ends); a batch is closed (`Batch.closed`, stored before the
+  commit is asked for, never lifted) only once every file it holds is up, a collect never joins a closed batch, and
+  a file is put in its batch (renamed into the folder, added to the list) in one `store.update`; the quad's flash is erased only on the pilot's press and
   only by the connection that saved and verified its log (`Blackbox.erase` refuses otherwise; a collect never
   erases); the upload by itself (`Auto`, `AutoUploadWorker`, WorkManager's unmetered constraint) retries in silence
   what a later try can mend and tells the pilot, once, what only they can, and it is the same upload the button
