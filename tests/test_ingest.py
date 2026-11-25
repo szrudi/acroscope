@@ -66,7 +66,7 @@ def compress(src, dst, *a, **k):
     kept["v"] = res["kept"]
     return res
 encode.compress = compress
-osd.read_timers = lambda path, fps=2.0, layout=None: {"layout": "x", "rows": osd_rows(kept["v"], 2.2)}
+osd.read_timers = lambda path, fps=2.0, layout=None, progress=None: {"layout": "x", "rows": osd_rows(kept["v"], 2.2)}
 ingest._cli = lambda *a: None
 """
 
@@ -246,6 +246,15 @@ class IngestTest(_Scratch):
             self.assertIsNone(clock.fix_clock(src, [[0.0, 4.0]], log=lambda m: None))
         with mock.patch.object(clock, "clock_fit", return_value=None), mock.patch.object(ingest.osd, "read_timers", return_value=rt):
             self.assertIsNone(clock.fix_clock(src, [[0.0, 4.0]], log=lambda m: None))
+        heard = []                                                             # the reading says how far it is
+
+        def read(path, fps=2.0, layout=None, progress=None):
+            progress(0.5)
+            progress(1.0)
+            return rt
+        with mock.patch.object(clock, "clock_fit", return_value=1.0), mock.patch.object(ingest.osd, "read_timers", read):
+            clock.fix_clock(src, [[0.0, 4.0]], log=lambda m: None, progress=heard.append)
+        self.assertEqual(heard, [0.5, 1.0])
 
     def test_a_failed_retime_leaves_nothing(self):
         """A retime that fails leaves no .retime.part (one a crash left before is gone too)."""
@@ -512,6 +521,63 @@ class IngestTest(_Scratch):
         for x in vids:
             self.assertTrue(list((self.root / "cache" / "osd" / "2026-10-11-carry").glob(x["file"] + ".*.json")), x["file"])
 
+    def test_the_clock_step_counts_for_itself(self):
+        """Reading the OSD for the clock takes minutes on a real clip, and the batch's progress stood at the compress
+        step's 100 % all that time. The step has its own count: from 0, by how far the reading is, each value written
+        once."""
+        batch = "steps"
+        self.two_clip_batch(batch)
+        (self.data / "inbox" / batch / "import.json").write_text(json.dumps({"date": "2026-10-11", "session": "steps"}))
+        self.env["ACROSCOPE_DB"] = str(self.root / "ts.db")
+        r = self.run_patched(batch, """import atexit, json
+seen, real = [], db.Db.set_batch
+def set_batch(self, batch, **fields):
+    if fields.get("progress"):
+        seen.append(dict(fields["progress"]))
+    return real(self, batch, **fields)
+db.Db.set_batch = set_batch
+def fix(path, kept, log=print, progress=None):        # the reader, saying how far it is: a quarter, half, half again, the end
+    for x in (0.0, 0.25, 0.5, 0.5, 1.0):
+        progress(x)
+    return 1.0
+clock.fix_clock = fix
+ingest._cli = lambda *a: None
+atexit.register(lambda: open(os.environ["ACROSCOPE_DATA"] + "/progress.json", "w").write(json.dumps(seen)))""")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        seen = json.loads((self.data / "progress.json").read_text())
+        for i, clip in enumerate(("2026-10-11_001", "2026-10-11_002")):
+            steps = [(p["step"], p["pct"]) for p in seen if p.get("clip") == clip]
+            self.assertEqual(steps[-1][0], "clock", steps)
+            self.assertEqual([pct for step, pct in steps if step == "clock"], [0, 25, 50, 100], steps)
+            self.assertEqual(steps[0], ("compress", 0))
+            self.assertTrue(all(p["done"] == i and p["total"] == 2 for p in seen if p.get("clip") == clip))
+
+    def test_a_failed_progress_write_does_not_decide_the_clock(self):
+        """Review on #83: the clock step's progress is written from inside the OSD reading, and fix_clock takes any
+        exception there for an OSD it cannot read. A progress write that fails (a database locked past its timeout)
+        is skipped: the clip is still re-timed."""
+        batch = "lockedprogress"
+        self.two_clip_batch(batch)
+        (self.data / "inbox" / batch / "import.json").write_text(json.dumps({"date": "2026-10-11", "session": "locked progress"}))
+        self.env["ACROSCOPE_DB"] = str(self.root / "tl.db")
+        r = self.run_patched(batch, """real = db.Db.set_batch
+def set_batch(self, batch, **fields):
+    if (fields.get("progress") or {}).get("step") == "clock" and fields["progress"]["pct"] == 50:
+        raise sqlite3.OperationalError("database is locked")
+    return real(self, batch, **fields)
+db.Db.set_batch = set_batch
+def read_timers(path, fps=2.0, layout=None, progress=None):
+    for x in (0.0, 0.5, 1.0):
+        progress(x)
+    return {"layout": "x", "rows": []}
+osd.read_timers = read_timers
+clock.clock_fit = lambda rows, kept=None: 2.0
+ingest._cli = lambda *a: None""")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        db = Db(self.root / "tl.db")
+        vids = db.load(db.batches()[0]["session"])["videos"]
+        self.assertEqual([v.get("timescale") for v in vids], [2.0, 2.0])
+
     def test_a_crash_in_the_clock_step_is_redone_by_the_retry(self):
         """Review on #30: the clock step ran after the clip was recorded, so a crash in it (the OSD read is the slow
         part) left the clip done for the retry and never re-timed. It runs on the encode before the clip is recorded,
@@ -521,14 +587,14 @@ class IngestTest(_Scratch):
         (self.data / "inbox" / batch / "import.json").write_text(json.dumps({"date": "2026-10-11", "session": "clock crash"}))
         self.env["ACROSCOPE_DB"] = str(self.root / "tc.db")
         r = self.run_patched(batch, """n = [0]
-def fix(path, kept, log=print):
+def fix(path, kept, log=print, progress=None):
     n[0] += 1
     if n[0] == 2:
         os._exit(9)
     return 1.0
 clock.fix_clock = fix""")
         self.assertEqual(r.returncode, 9, r.stderr)
-        r = self.run_patched(batch, """def fix(path, kept, log=print):
+        r = self.run_patched(batch, """def fix(path, kept, log=print, progress=None):
     clock.retime(path, 2.0)
     return 2.0
 clock.fix_clock = fix""")

@@ -376,8 +376,27 @@ class ClipTest(unittest.TestCase):
             # without the shipped profiles: here they would be the synthetic font at the same cells, and win the tie
             with mock.patch.object(osd, "PROFILE_SOURCE", lambda: (doc, "t")), mock.patch("acroscope.config.CACHE_DIR", Path(tmp) / "cache"), \
                     mock.patch.object(osd, "SHIPPED", Path(tmp) / "none.json"):
-                self.assertEqual(osd.detect_layout(clip), "synth")
-                rt = osd.read_timers(clip, 2.0, layout="synth")
+                heard = []
+                self.assertEqual(osd.detect_layout(clip, progress=heard.append), "synth")
+                self.assertEqual(heard, sorted(heard))                          # the detection's passes say how far they are too
+                self.assertGreater(len(heard), 10)
+                self.assertEqual(heard[-1], 1.0)
+                heard = []
+                rt = osd.read_timers(clip, 2.0, layout="synth", progress=heard.append)
+                d = osd.video.probe(clip)["duration"]
+                self.assertEqual(heard, [min(1.0, r["t"] / d) for r in rt["rows"]] + [1.0])   # how far into the clip, each frame, then done
+                self.assertGreater(len(heard), 40)
+                self.assertEqual(osd.read_timers(clip, 2.0, layout="synth", progress=heard.append), rt)
+                self.assertEqual(len(heard), len(rt["rows"]) + 1)               # the cached reading: nothing read, nothing said
+                reading = heard
+                # a reading that detects the layout first: one bar over the detection's passes and the reading's
+                osd._timers_cache(clip, 2.0).unlink()
+                heard = []
+                self.assertEqual(osd.read_timers(clip, 2.0, progress=heard.append), rt)
+                self.assertEqual(heard, sorted(heard))
+                self.assertEqual(heard[-1], 1.0)
+                self.assertTrue(any(0.3 < x < 0.5 for x in heard), heard)      # one layout: half detecting, half reading
+                self.assertEqual([round(x, 6) for x in heard[-len(reading):]], [round(0.5 + x / 2, 6) for x in reading])
                 runs = osd.video_arms(rt)
                 self.assertEqual(len(runs), 1)
                 # drawn armed from 4.0 s; the reader's frame sampling (ffmpeg's fps filter hands over a frame up to 0.2 s

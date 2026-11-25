@@ -332,14 +332,32 @@ MIN_COUNTING = 3                   # detect_layout: fewer counting pairs at 1 s/
 RATES = (0.5, 0.75, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0)
 
 
-def detect_layout(path: Path, fps: float = 0.5) -> str:
+def _share(progress, lo: float, hi: float):
+    """`progress` (hearing 0 to 1) for a part of the work that runs from `lo` to `hi` of the whole; None without one."""
+    return progress and (lambda x: progress(lo + (hi - lo) * x))
+
+
+def _reading(path: Path, fps: float, layout: str, progress=None):
+    """_frames, with `progress` told how far into the clip (0 to 1) each frame is once it is handled, and 1 at the end
+    (the last frame is half a step before it)."""
+    d = video.probe(path)["duration"] if progress else 0
+    for t, buf in _frames(path, fps, layout=layout):
+        yield t, buf
+        if progress and d:
+            progress(min(1.0, t / d))
+    if progress:
+        progress(1.0)
+
+
+def detect_layout(path: Path, fps: float = 0.5, progress=None) -> str:
     """The layout whose readings make sense: sampled at `fps` over the whole clip, score a layout by the pairs of
     consecutive readings that count on at 1 s/s. Wrong cells read like digits too, and static text reads the same
     wrong digits every time, so standing still does not count; only counting does. A layout with two timers scores
     only the pairs where both count together (twice each, as two timers): while armed they always do, so a layout
     that reads one of another layout's rows as its own and nothing in its other row scores nothing, however well it
     reads that one row (2026-10-10 001: the v3 profile read the arm timer on row 11 as its total, in Impact more
-    cleanly than the learned otto-bold templates, and won with a dead second row)."""
+    cleanly than the learned otto-bold templates, and won with a dead second row). `progress` hears how far the
+    passes are, 0 to 1, a pass per layout."""
     step = 1 / fps
     layouts(fresh=True)
 
@@ -348,11 +366,9 @@ def detect_layout(path: Path, fps: float = 0.5) -> str:
         return [a is not None and b is not None and s - tol <= b - a <= s + tol for a, b in zip(vals, vals[1:])]
     if not layouts():
         raise ValueError("no OSD layout to read with: " + ("; ".join(f"{n}: {e}" for n, e in derived_errors().items()) or "no profiles"))
-    reads = {}
-    for name in layouts():
-        tpl = _load_templates(name)
-        if tpl:
-            reads[name] = [read_frame(buf, tpl, name) for _, buf in _frames(path, fps, layout=name)]
+    tpls = {name: tpl for name in layouts() if (tpl := _load_templates(name))}
+    reads = {name: [read_frame(buf, tpl, name) for _, buf in _reading(path, fps, name, _share(progress, i / len(tpls), (i + 1) / len(tpls)))]
+             for i, (name, tpl) in enumerate(tpls.items())}
 
     def score(name, rate):
         arm, total = steps([r[0] for r in reads[name]], rate), steps([r[1] for r in reads[name]], rate)
@@ -386,16 +402,22 @@ def carry_reading(was: Path, now: Path, fps: float = 2.0) -> None:
         dst.write_text(src.read_text())
 
 
-def read_timers(path: Path, fps: float = 2.0, layout: str | None = None) -> dict:
-    """Read the timers through the clip: {layout, rows: [{t, top, bottom, conf}]} (cached per clip)."""
+def read_timers(path: Path, fps: float = 2.0, layout: str | None = None, progress=None) -> dict:
+    """Read the timers through the clip: {layout, rows: [{t, top, bottom, conf}]} (cached per clip). `progress` hears
+    how far the work is, 0 to 1, as the frames are read: nothing, when the reading is the cached one."""
     layouts(fresh=True)                    # the profiles as stored now, for the whole clip and the cache's stamp alike
     cp = _timers_cache(path, fps)
     if cp.exists():
         return json.loads(cp.read_text())
-    layout = layout or detect_layout(path)
+    if not layout:
+        # the detection reads the whole clip once per layout before the reading does: a pass takes about as long at its
+        # 0.5 fps as the reading at 2, ffmpeg decoding every frame either way, so each pass is an equal share of the bar
+        n = len(layouts())
+        layout = detect_layout(path, progress=_share(progress, 0, n / (n + 1)))
+        progress = _share(progress, n / (n + 1), 1)
     tpl = _load_templates(layout)
     rows = []
-    for t, buf in _frames(path, fps, layout=layout):
+    for t, buf in _reading(path, fps, layout, progress):
         top, bot, conf = read_frame(buf, tpl, layout)
         rows.append({"t": round(t, 2), "top": top, "bottom": bot, "conf": round(conf, 3)})
     out = {"layout": layout, "rows": rows}

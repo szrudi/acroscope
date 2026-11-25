@@ -199,8 +199,18 @@ def process_batch(batch: str, log=print) -> dict:
             try:
                 res = encode.compress(taken, part, pct)
                 # the clock on the encode, before the clip is recorded: a crash here is redone by the retry
-                db.set_batch(batch, progress={**prog, "step": "clock"})
-                k = clock.fix_clock(part, res["kept"], lambda m: log(f"{batch}: {m}"))
+                tick = {**prog, "step": "clock", "pct": 0}       # the step's own count: reading the OSD takes minutes
+                db.set_batch(batch, progress=tick)
+
+                def read(x, tick=tick):
+                    at = round(x * 100)
+                    if at != tick["pct"]:
+                        tick["pct"] = at
+                        try:     # fix_clock takes any exception for an OSD it cannot read: a failed progress write is not one
+                            db.set_batch(batch, progress=tick)
+                        except Exception:  # noqa: BLE001  (a database locked past its timeout: the next write tries again)
+                            pass
+                k = clock.fix_clock(part, res["kept"], lambda m: log(f"{batch}: {m}"), read)
                 k = None if k in (None, 1.0) else k
                 duration = video.probe(part)["duration"] if k else res["duration"]
                 if os.geteuid() == 0:
