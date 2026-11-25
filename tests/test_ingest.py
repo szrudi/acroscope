@@ -246,10 +246,15 @@ class IngestTest(_Scratch):
             self.assertIsNone(clock.fix_clock(src, [[0.0, 4.0]], log=lambda m: None))
         with mock.patch.object(clock, "clock_fit", return_value=None), mock.patch.object(ingest.osd, "read_timers", return_value=rt):
             self.assertIsNone(clock.fix_clock(src, [[0.0, 4.0]], log=lambda m: None))
-        heard = []                                                             # the reading says how far into the clip it is
-        with mock.patch.object(clock, "clock_fit", return_value=1.0), mock.patch.object(ingest.osd, "read_timers", return_value=rt) as read:
+        heard = []                                                             # the reading says how far it is
+
+        def read(path, fps=2.0, layout=None, progress=None):
+            progress(0.5)
+            progress(1.0)
+            return rt
+        with mock.patch.object(clock, "clock_fit", return_value=1.0), mock.patch.object(ingest.osd, "read_timers", read):
             clock.fix_clock(src, [[0.0, 4.0]], log=lambda m: None, progress=heard.append)
-        self.assertIs(read.call_args.kwargs["progress"].__self__, heard)
+        self.assertEqual(heard, [0.5, 1.0])
 
     def test_a_failed_retime_leaves_nothing(self):
         """A retime that fails leaves no .retime.part (one a crash left before is gone too)."""
@@ -518,24 +523,22 @@ class IngestTest(_Scratch):
 
     def test_the_clock_step_counts_for_itself(self):
         """Reading the OSD for the clock takes minutes on a real clip, and the batch's progress stood at the compress
-        step's 100 % all that time. The step has its own count: from 0, by how far into the clip the reading is, each
-        value written once."""
+        step's 100 % all that time. The step has its own count: from 0, by how far the reading is, each value written
+        once."""
         batch = "steps"
         self.two_clip_batch(batch)
         (self.data / "inbox" / batch / "import.json").write_text(json.dumps({"date": "2026-10-11", "session": "steps"}))
         self.env["ACROSCOPE_DB"] = str(self.root / "ts.db")
         r = self.run_patched(batch, """import atexit, json
-from acroscope.sources import video
 seen, real = [], db.Db.set_batch
 def set_batch(self, batch, **fields):
     if fields.get("progress"):
         seen.append(dict(fields["progress"]))
     return real(self, batch, **fields)
 db.Db.set_batch = set_batch
-def fix(path, kept, log=print, progress=None):        # the reader, saying its frames: a quarter in, half, half again, the end
-    d = video.probe(path)["duration"]
-    for t in (0.0, d / 4, d / 2, d / 2, d):
-        progress(t)
+def fix(path, kept, log=print, progress=None):        # the reader, saying how far it is: a quarter, half, half again, the end
+    for x in (0.0, 0.25, 0.5, 0.5, 1.0):
+        progress(x)
     return 1.0
 clock.fix_clock = fix
 ingest._cli = lambda *a: None

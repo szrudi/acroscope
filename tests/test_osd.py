@@ -109,6 +109,28 @@ class DetectLayoutRateTest(unittest.TestCase):
                 mock.patch.object(osd, "_frames", frames), mock.patch.object(osd, "read_frame", lambda buf, tpl, name: next(seq[name])):
             return osd.detect_layout(Path("clip.mp4"))
 
+    def test_the_passes_share_the_bar(self):
+        """Review on #83: the detection reads the whole clip once per layout before the reading starts, and said nothing
+        all that time, so the clock step's bar stood at 0 for most of it. Each pass (each layout's, then the reading's)
+        is an equal share of one count from 0 to 1."""
+        import tempfile
+        from unittest import mock
+        three = {"A": {}, "B": {}, "C": {}}
+        frames = lambda path, fps, layout=None: ((i / fps, layout) for i in range(int(60 * fps)))   # a 60 s clip
+        heard = []
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(osd, "layouts", lambda fresh=False: three), \
+                mock.patch.object(osd, "_load_templates", lambda n: {"x": 1}), mock.patch.object(osd, "_frames", frames), \
+                mock.patch.object(osd, "read_frame", lambda buf, tpl, name: (None, None, 1.0)), \
+                mock.patch.object(osd.video, "probe", lambda path: {"duration": 60.0}), \
+                mock.patch.object(osd, "_timers_cache", lambda path, fps: Path(tmp) / "t.json"):
+            rt = osd.read_timers(Path("clip.mp4"), 2.0, progress=heard.append)
+        self.assertEqual(len(rt["rows"]), 120)
+        self.assertEqual(heard, sorted(heard))
+        passes = [[x for x in heard if i / 4 <= x < (i + 1) / 4] for i in range(4)]
+        self.assertEqual([len(p) for p in passes], [30, 31, 31, 121])     # a pass's frames (30, then 120), each end the next's start
+        self.assertEqual(heard[-1], 1.0)
+        self.assertAlmostEqual(heard[1], 2 / 60 / 4)                         # the second frame of the first pass
+
     def test_a_fast_clock_finds_its_layout(self):
         fast = [(round(i * 4.4, 1), round(i * 4.4, 1), 1.0) for i in range(30)]                  # 2.2x: 4.4 s a sample
         junk = [(7.0, 3.0, 1.0)] * 30                                                            # static text read as digits

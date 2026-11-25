@@ -202,8 +202,8 @@ def process_batch(batch: str, log=print) -> dict:
                 tick = {**prog, "step": "clock", "pct": 0}       # the step's own count: reading the OSD takes minutes
                 db.set_batch(batch, progress=tick)
 
-                def read(t, tick=tick, total=res["duration"]):
-                    at = min(100, round(t / total * 100)) if total else 0
+                def read(x, tick=tick):
+                    at = round(x * 100)
                     if at != tick["pct"]:
                         tick["pct"] = at
                         db.set_batch(batch, progress=tick)
