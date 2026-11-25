@@ -348,6 +348,25 @@ class UploaderTest {
     }
 
     @Test
+    fun `a file taken out of a batch while it goes up is not sent, and not named`() {
+        paired()
+        batch(a, "park", "VID00001.mov" to 10, "VID00002.mov" to 20)
+        drop.onUpload = { name -> if (name == "VID00001.mov") Batches(store).remove(a, "VID00002.mov") }
+        assertEquals(UploadResult.Done(1), uploader.run())
+        assertEquals(setOf("VID00001.mov", Names.SIDECAR), drop.committed[a]!!.keys)
+    }
+
+    @Test
+    fun `a file changed on the phone while its batch goes up stops the batch before it is sent`() {
+        paired()
+        batch(a, "park", "VID00001.mov" to 10, "VID00002.mov" to 20)
+        drop.onUpload = { name -> if (name == "VID00001.mov") File(store.dir(a), "VID00002.mov").writeBytes(ByteArray(3)) }
+        val r = uploader.run()
+        assertTrue(r is UploadResult.Broken && "VID00002.mov" in r.message, r.toString())
+        assertFalse(drop.calls.any { it == "upload $a VID00002.mov" || it.startsWith("commit") }, drop.calls.toString())
+    }
+
+    @Test
     fun `a run told to stop stops, and its batch waits`() {
         paired()
         batch(a, "park", "VID00001.mov" to 10)

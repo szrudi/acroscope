@@ -155,7 +155,7 @@ class DropClientTest {
     fun `an upload whose answers lack the offset is no answer`() {
         respond = { x, _ -> if (x.requestMethod == "POST") x.answer(201, mapOf("Location" to "/drop/batches/$b/files/VID00001.mov")) else x.answer(200) }
         assertTrue(assertFailsWith<IOException> { client.upload(b, "VID00001.mov", file) } !is DropException)     // HEAD without Upload-Offset
-        serve { _, _ -> 204 to 0L }                                             // a piece taken, and the file said to end where it did
+        serve { _, n -> if (n < 5) 204 to 0L else 500 to 0L }                   // a piece taken, and the file said to end where it did
         assertTrue(assertFailsWith<IOException> { client.upload(b, "VID00001.mov", file) } !is DropException)
         assertEquals(1, requests.count { it.startsWith("PATCH") })              // not sent again and again
         requests.clear()
