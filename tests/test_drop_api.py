@@ -171,7 +171,7 @@ class DropApiTest(unittest.TestCase):
         read a path alike for that host to be no way to the API."""
         paired = self.paired()
         nobody = DropClient(self.url, None)
-        for host in ("drop.example.org", "DROP.example.org", "drop.example.org:443", "drop.example.org.", "drop.example.org.:8070"):
+        for host in ("drop.example.org", "DROP.example.org", "drop.example.org:443", "drop.example.org.", "drop.example.org.:8070", "drop.example.org:x"):
             for method, path in (("GET", "/api/sessions"), ("HEAD", "/api/sessions"), ("GET", "/"), ("GET", "/config"), ("GET", "/api/devices"),
                                  ("POST", "/api/devices"), ("DELETE", f"/api/devices/{self.dev['id']}"), ("GET", "/video/x/y.mp4"),
                                  ("PATCH", "/api/x"), ("OPTIONS", "/api/x"), ("GET", "/dropped"), ("GET", "/Drop/device")):
@@ -181,8 +181,8 @@ class DropApiTest(unittest.TestCase):
             self.assertEqual(self.c.request("GET", "/drop/device", headers={"Host": host})[0], 200, host)     # the drop itself,
             self.assertEqual(nobody.request("GET", "/drop/device", headers={"Host": host})[0], 401, host)     # which asks for the token
         self.assertEqual(self.paired(), paired)                                # nobody was paired or revoked through it
-        for host in ("player.example.org", "drop.example.org.evil.example", "xdrop.example.org", ""):       # under any other name the server is as it was
-            self.assertEqual(nobody.request("GET", "/api/sessions", headers={"Host": host})[0], 200, host)
+        for host in ("player.example.org", "drop.example.org.evil.example", "xdrop.example.org", "", "[::1"):
+            self.assertEqual(nobody.request("GET", "/api/sessions", headers={"Host": host})[0], 200, host)   # under any other name, or none that is one, the server is as it was
 
     def test_the_device_asks_who_it_is(self):
         status, me = self.c.json("GET", "/drop/device")
@@ -820,7 +820,8 @@ class InProcessTest(unittest.TestCase):
         api = DropClient(self.c.url.geturl(), None)
         self.assertEqual(api.json("GET", "/api/devices"), (200, {"devices": [{"id": self.dev["id"], "name": "phone", "created_at": self.dev["created_at"],
                                                                               "last_seen_at": None, "revoked_at": None}], "url": None}))
-        self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 200)    # and no host is the drop's alone
+        for host in ("drop.example.org", "", "."):                           # and no host is the drop's alone, not the one without a name either
+            self.assertEqual(api.request("GET", "/api/devices", headers={"Host": host})[0], 200, host)
         with mock.patch.object(server, "DROP_URL", "https://drop.example.org"):
             self.assertEqual(api.json("GET", "/api/devices")[1]["url"], "https://drop.example.org")
             self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 404)

@@ -203,10 +203,8 @@ def handle(h, parts: list[str]) -> None:
     # what of the request's body is still unread, and how much of that may be read and thrown away before an answer
     length = h.headers.get("Content-Length")
     h._drop_unread, h._drop_drain = _bytes(length) or 0, DRAIN
-    # a body whose end cannot be told (chunked, or a length that is no number): nothing of it is read or counted
+    # a body whose end cannot be told (chunked, or a length that is no number): refused, and the connection ends with the answer
     h._drop_unframed = bool(h.headers.get("Transfer-Encoding")) or (length is not None and _bytes(length) is None)
-    if h._drop_unframed:
-        h._drop_unread = 0
     before = h.connection.gettimeout()
     h.connection.settimeout(STALL)
     try:

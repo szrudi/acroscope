@@ -696,6 +696,27 @@ class UpkeepTest(_Drop):
         self.assertEqual(self.tree(self.staging / DEV), [])
         self.assertTrue(self.staged("VID00001.mov", B, OTHER).exists())      # another device's is not touched
 
+    def test_a_revoke_leaves_another_devices_upload_alone(self):
+        drop.create(OTHER, B, "VID00001.mov", 1000)
+        self.put("VID00001.mov", CLIP)
+        r, w, hang_up = self.pipe()
+        got, stopped = {}, []
+        t = threading.Thread(target=lambda: got.update(end=drop.append(OTHER, B, "VID00001.mov", 0, io.BufferedReader(io.FileIO(r, "rb")), 1000, stop=lambda: stopped.append(1))),
+                             daemon=True)
+        t.start()
+        os.write(w, b"a" * 300)
+        for _ in range(100):
+            if drop._busy:
+                break
+            time.sleep(0.02)
+        started = time.monotonic()
+        drop.forget(DEV)
+        self.assertLess(time.monotonic() - started, 1)                       # it waits for nobody else's piece,
+        self.assertEqual((stopped, self.tree(self.staging / DEV)), ([], []))   # and stops none
+        os.write(w, b"b" * 700)
+        t.join(5)
+        self.assertEqual(got, {"end": 1000})
+
     def test_a_piece_that_cannot_be_stopped_does_not_keep_a_revoke_waiting(self):
         drop.create(DEV, B, "VID00001.mov", 1000)
         r, w, _ = self.pipe()
