@@ -2,6 +2,8 @@ package org.acroscope.companion.core
 
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /** Where an upload run is: the file in hand, and the bytes that are up of everything pending. */
 data class UploadProgress(val batch: String, val name: String, val done: Long, val total: Long)
@@ -26,36 +28,81 @@ sealed interface UploadResult {
  * each file ends before it sends a byte. The sidecar goes last and whole, so an event or a date changed after a
  * first try is what the server gets. The phone's copy of a batch is deleted when the server reports the batch
  * done, not when the upload ends.
+ *
+ * Collecting goes on while a run sends: a file that joins a batch before it is closed goes up with it, one that
+ * comes later starts another batch, which the same run sends after it. A batch is closed only once every file it
+ * holds is up, and its manifest is what it holds then.
  */
 class Uploader(private val store: Store, private val drop: (Pairing) -> Drop) {
+    /** One run at a time: the button, the job by itself and a run asked for twice would send the same files. */
+    private val running = ReentrantLock()
 
-    fun run(progress: (UploadProgress) -> Unit = {}, stop: () -> Boolean = { false }): UploadResult {
+    private class Broken(message: String) : Exception(message)
+
+    fun run(progress: (UploadProgress) -> Unit = {}, stop: () -> Boolean = { false }): UploadResult = running.withLock {
         val pairing = store.now.settings.pairing ?: return UploadResult.NotPaired
         store.update { s -> s.copy(batches = s.batches.filterNot { it.stage == Stage.PENDING && it.items.isEmpty() }) }
-        val pending = store.now.pending
-        for (b in pending) for (i in b.items) {
-            val f = File(store.dir(b.id), i.name)
-            if (f.length() != i.size) return UploadResult.Broken("${i.name} of ${b.session} is not on the phone as it was collected")
-        }
-        val total = pending.sumOf { it.bytes }
+        for (b in store.now.pending) for (i in b.items) broken(b, i)?.let { return UploadResult.Broken(it) }
+        val sent = mutableMapOf<String, MutableSet<Item>>()
         var before = 0L
+        // the bytes sent so far and the bytes still to send: a file collected meanwhile makes the total grow
+        fun total() = before + store.now.pending.sumOf { b -> b.items.filterNot { it in sent[b.id].orEmpty() }.sumOf { it.size } }
+
+        /** One batch handed in: its files until none is left unsent, then closed, its sidecar, the commit. False
+         *  when it is gone meanwhile (discarded on the phone). */
+        fun handIn(server: Drop, id: String): Boolean {
+            val mine = sent.getOrPut(id) { mutableSetOf() }
+            while (true) {
+                val b = store.now.batch(id)?.takeIf { it.stage == Stage.PENDING } ?: return false
+                val left = b.items.filterNot { it in mine }
+                if (left.isEmpty()) {
+                    var closed = false
+                    store.update { s ->
+                        val now = s.batch(id)
+                        if (now == null || !now.items.all { it in mine }) s
+                        else s.copy(batches = s.batches.map { if (it.id == id) it.copy(closed = true).also { closed = true } else it })
+                    }
+                    if (closed) break else continue
+                }
+                for (i in left.sortedWith(compareBy({ it.kind != Kind.LOG }, { it.name }))) {      // the logs first: small, and ingest wants them first
+                    if (store.now.batch(id)?.items?.contains(i) != true) continue                    // taken out meanwhile
+                    broken(b, i)?.let { throw Broken(it) }
+                    val base = before
+                    val all = total()
+                    server.upload(id, i.name, File(store.dir(id), i.name), { progress(UploadProgress(id, i.name, base + it, all)) }, stop)
+                    before += i.size
+                    mine += i
+                }
+            }
+            val now = store.now.batch(id) ?: return false
+            val sidecar = now.sidecar(store.now.settings.device).toByteArray()
+            server.put(id, Names.SIDECAR, sidecar)
+            val status = server.commit(id, now.items.associate { it.name to it.size } + (Names.SIDECAR to sidecar.size.toLong()))
+            store.updateBatch(id) { it.copy(stage = Stage.COMMITTED, server = status) }
+            return true
+        }
+
         var committed = 0
         try {
             val server = drop(pairing)
-            for (b in pending) {
-                for (i in b.items.sortedWith(compareBy({ it.kind != Kind.LOG }, { it.name }))) {      // the logs first: small, and ingest wants them first
-                    val base = before
-                    server.upload(b.id, i.name, File(store.dir(b.id), i.name), { progress(UploadProgress(b.id, i.name, base + it, total)) }, stop)
-                    before += i.size
+            val tried = mutableSetOf<String>()
+            while (true) {
+                val b = store.now.pending.firstOrNull { it.id !in tried } ?: break                  // live: a batch started during the run goes up in it
+                tried += b.id
+                try {
+                    if (handIn(server, b.id)) committed++
+                } catch (e: DropException) {
+                    // a batch id the server has as handed in: when it is this phone's (a commit whose answer was
+                    // lost), the batch is with the server and what is behind it goes on
+                    if (e.status != 409) throw e
+                    val status = server.batches()[b.id] ?: throw e
+                    store.updateBatch(b.id) { it.copy(stage = Stage.COMMITTED, server = status) }
+                    committed++
                 }
-                val now = store.now.batch(b.id) ?: continue
-                val sidecar = now.sidecar(store.now.settings.device).toByteArray()
-                server.put(b.id, Names.SIDECAR, sidecar)
-                val status = server.commit(b.id, now.items.associate { it.name to it.size } + (Names.SIDECAR to sidecar.size.toLong()))
-                store.updateBatch(b.id) { it.copy(stage = Stage.COMMITTED, server = status) }
-                committed++
             }
             follow(server)
+        } catch (e: Broken) {
+            return UploadResult.Broken(e.message!!)
         } catch (e: DropStopped) {
             return UploadResult.Stopped
         } catch (e: DropException) {
@@ -63,8 +110,12 @@ class Uploader(private val store: Store, private val drop: (Pairing) -> Drop) {
         } catch (e: IOException) {
             return UploadResult.Unreachable(e.message ?: e.javaClass.simpleName)
         }
-        return UploadResult.Done(committed)
+        UploadResult.Done(committed)
     }
+
+    /** Why a file of a batch cannot go up as it is: gone from the phone, or not the size it was collected with. */
+    private fun broken(b: Batch, i: Item): String? =
+        if (File(store.dir(b.id), i.name).length() != i.size) "${i.name} of ${b.session} is not on the phone as it was collected" else null
 
     /** Ask the server how the committed batches are doing; a batch it reports done loses its copy on the phone. */
     fun refresh() {

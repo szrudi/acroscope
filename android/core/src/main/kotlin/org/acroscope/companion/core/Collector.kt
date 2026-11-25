@@ -39,8 +39,10 @@ data class Outcome(val items: List<Item>, val error: String?)
 
 /**
  * Collecting: clips from the DVR's card and logs saved from a quad, copied into the pending batch of the event the
- * pilot chose. Each file is copied under a `.part` name and renamed once it is whole, and is only then noted, so a
- * card pulled in the middle leaves nothing half behind. The card is never written to.
+ * pilot chose. Each file is copied under a `.part` name aside, and only once it is whole is it put in its batch: the
+ * batch chosen, the file renamed into its folder and put on its list in one change of the state, so a card pulled in
+ * the middle leaves nothing half behind, a batch's folder holds only what its list names, and a batch closed for
+ * handing in meanwhile is not joined. The card is never written to.
  */
 class Collector(private val store: Store, private val clock: () -> ZonedDateTime, private val random: Random = Random.Default) {
     companion object {
@@ -66,28 +68,25 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
         if (plan.clips.isEmpty()) return Outcome(emptyList(), null)
         if (plan.bytes + MARGIN > free)
             return Outcome(emptyList(), "not enough room on the phone: ${plan.clips.size} clips need ${plan.bytes shr 20} MB, ${free shr 20} MB are free")
+        val event = store.now.settings.event
         val items = mutableListOf<Item>()
         var done = 0L
         for ((i, clip) in plan.clips.withIndex()) {
             if (stop()) return Outcome(items, "stopped")
-            val batch = batchFor(clip.name)
-            val dir = store.dir(batch.id)
-            val part = File(dir, clip.name + ".part")
+            var part: File? = null
             try {
-                dir.mkdirs()
+                part = part()
                 val before = done
                 val copied = copy(clip.open(), part) { n -> done = before + n; progress(Progress(clip.name, i + 1, plan.clips.size, done, plan.bytes)) }
                 if (copied != clip.size) throw IOException("${copied} of ${clip.size} bytes came off the card")
+                val item = Item(clip.name, clip.size, Kind.CLIP, stamp(), unfinalised = hasIndex(part, clip.name) == Mp4.Index.MISSING)
+                place(part) { s -> batchFor(s, event, clip.name).let { b -> Triple(b, item, Seen(clip.name, clip.size, clip.modified)) } }
+                items += item
             } catch (e: IOException) {
-                part.delete()
-                if (dir.list().isNullOrEmpty()) dir.delete()
                 return Outcome(items, "${clip.name}: ${e.message}")
+            } finally {
+                part?.delete()
             }
-            val file = File(dir, clip.name)
-            if (!part.renameTo(file)) return Outcome(items, "${clip.name}: could not be put in place")
-            val item = Item(clip.name, clip.size, Kind.CLIP, stamp(), unfinalised = hasIndex(file) == Mp4.Index.MISSING)
-            note(batch, item, Seen(clip.name, clip.size, clip.modified))
-            items += item
         }
         return Outcome(items, null)
     }
@@ -99,11 +98,9 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
      */
     fun addLog(name: String, modified: Long?, open: () -> InputStream): Item {
         require(Names.isLog(name)) { "$name: not a blackbox log (.bbl)" }
-        val batch = batchFor(null)
-        val dir = store.dir(batch.id)
-        val part = File(dir, "log.part")
+        val event = store.now.settings.event
+        val part = part()
         try {
-            dir.mkdirs()
             copy(open(), part) {}
             val head = part.inputStream().use { it.readNBytes(64 shl 10) }
             require(head.size >= LOG_MAGIC.size && head.copyOf(LOG_MAGIC.size).contentEquals(LOG_MAGIC)) { "$name: not a blackbox log (it does not start like one)" }
@@ -111,36 +108,67 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
                 val at = if (modified != null && modified > 0) Instant.ofEpochMilli(modified).atZone(clock().zone) else clock()
                 Names.log(header(head, "Craft name"), header(head, "Board information").substringAfterLast(' ').ifEmpty { "UNKNOWN" }, at.toLocalDateTime())
             }
-            val known = store.now.batch(batch.id)?.items.orEmpty()
-            known.firstOrNull { it.name == wanted && it.size == part.length() }?.let { part.delete(); return it }
-            val final = generateSequence(1) { it + 1 }.map { if (it == 1) wanted else wanted.removeSuffix(".bbl") + "_$it.bbl" }.first { n -> known.none { it.name == n } }
-            if (!part.renameTo(File(dir, final))) throw IOException("$final: could not be put in place")
-            return Item(final, File(dir, final).length(), Kind.LOG, stamp()).also { note(batch, it, null) }
+            val length = part.length()
+            return place(part) { s ->
+                val batch = batchFor(s, event, null)
+                val known = s.batch(batch.id)?.items.orEmpty()
+                known.firstOrNull { it.name == wanted && it.size == length }?.let { return@place Triple(batch, it, null) }   // already there: nothing moves
+                val final = generateSequence(1) { it + 1 }.map { if (it == 1) wanted else wanted.removeSuffix(".bbl") + "_$it.bbl" }.first { n -> known.none { it.name == n } }
+                Triple(batch, Item(final, length, Kind.LOG, stamp()), null)
+            }
         } finally {
             part.delete()
-            if (dir.list().isNullOrEmpty()) dir.delete()
         }
     }
 
-    /** The pending batch a file goes to: the newest one of the chosen event started today, or a new one. A clip
-     *  named like one already there is another recording (the card was formatted in between): it starts a batch
-     *  of its own, later than the first, so the day's clips stay in the order they were flown. */
-    private fun batchFor(clip: String?): Batch {
+    /** A file on its way in, under a name of its own beside the batches' folders (the same disk: it is renamed in). */
+    private fun part(): File {
+        store.scratch.mkdirs()
+        return File.createTempFile("in-", ".part", store.scratch)
+    }
+
+    /**
+     * `part` into its batch, in one change of the state: `choose` picks the batch, the item and what the card is
+     * to remember from the state as it is then; the file is renamed into the batch's folder and the item put on its
+     * list. An item the batch holds already is returned as it is, and nothing moves. When the state cannot be
+     * written, the file goes again: the clip is still on the card and still new there.
+     */
+    private fun place(part: File, choose: (State) -> Triple<Batch, Item, Seen?>): Item {
+        var placed: Item? = null
+        var moved: File? = null
+        try {
+            store.update { s ->
+                val (batch, item, seen) = choose(s)
+                placed = item
+                if (s.batch(batch.id)?.items?.contains(item) == true) return@update s
+                val dir = store.dir(batch.id)
+                dir.mkdirs()
+                val file = File(dir, item.name)
+                if (!part.renameTo(file)) throw IOException("${item.name}: could not be put in place")
+                moved = file
+                // the event's name is remembered for the next time it is flown, the latest first
+                val recent = if (batch.event.isBlank()) s.settings.recentEvents else (listOf(batch.event) + s.settings.recentEvents).distinct().take(RECENT)
+                val batches = if (s.batch(batch.id) == null) s.batches + batch else s.batches
+                s.copy(batches = batches.map { if (it.id == batch.id) it.copy(items = it.items + item) else it }, seen = if (seen == null) s.seen else s.seen + seen,
+                    settings = s.settings.copy(recentEvents = recent))
+            }
+        } catch (e: Exception) {
+            moved?.let { f -> f.delete(); f.parentFile?.let { if (it.list().isNullOrEmpty()) it.delete() } }
+            throw e
+        }
+        return placed!!
+    }
+
+    /** The pending batch a file goes to, chosen from `s`: the newest of the chosen event started today when it is
+     *  not being handed in and, for a clip, when the clip sorts after every clip in it; else a new one. A clip that
+     *  does not sort after them is another recording (the card was formatted in between): it starts a batch of its
+     *  own, later than the first, so the day's clips stay in the order they were flown. */
+    private fun batchFor(s: State, event: String, clip: String?): Batch {
         val now = clock()
-        val event = store.now.settings.event
-        return store.now.pending.lastOrNull { b ->
-            b.event == event && b.createdAt.take(10) == now.toLocalDate().toString() && b.items.none { it.name == clip }
-        } ?: Batch(Names.batchId(now.toLocalDateTime(), random), event, now.toLocalDate().toString(), stamp())
-    }
-
-    private fun note(batch: Batch, item: Item, seen: Seen?) {
-        store.update { s ->
-            val batches = if (s.batch(batch.id) == null) s.batches + batch else s.batches
-            // the event's name is remembered for the next time it is flown, the latest first
-            val recent = if (batch.event.isBlank()) s.settings.recentEvents else (listOf(batch.event) + s.settings.recentEvents).distinct().take(RECENT)
-            s.copy(batches = batches.map { if (it.id == batch.id) it.copy(items = it.items + item) else it }, seen = if (seen == null) s.seen else s.seen + seen,
-                settings = s.settings.copy(recentEvents = recent))
-        }
+        val today = now.toLocalDate().toString()
+        val newest = s.pending.lastOrNull { it.event == event && it.createdAt.take(10) == today }
+        if (newest != null && !newest.closed && (clip == null || newest.items.none { it.kind == Kind.CLIP && it.name >= clip })) return newest
+        return Batch(Names.batchId(now.toLocalDateTime(), random), event, today, stamp())
     }
 
     private fun stamp(): String = clock().format(STAMP)
@@ -163,8 +191,8 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
         return n
     }
 
-    private fun hasIndex(file: File): Mp4.Index {
-        if (!file.name.lowercase().let { it.endsWith(".mov") || it.endsWith(".mp4") }) return Mp4.Index.NOT_A_MOVIE
+    private fun hasIndex(file: File, name: String): Mp4.Index {
+        if (!name.lowercase().let { it.endsWith(".mov") || it.endsWith(".mp4") }) return Mp4.Index.NOT_A_MOVIE
         return RandomAccessFile(file, "r").use { f ->
             Mp4.index(f.length()) { at, n -> ByteArray(n).let { b -> f.seek(at); val got = f.read(b); if (got <= 0) ByteArray(0) else b.copyOf(got) } }
         }

@@ -166,6 +166,25 @@ class DropContractTest {
     }
 
     @Test
+    fun `a batch whose commit answer was lost is found handed in by the next run`() {
+        val store = Store(Files.createTempDirectory("lost").toFile())
+        store.update { it.copy(settings = it.settings.copy(url = url, token = device.second, device = "contract phone")) }
+        val b = batch()
+        val dir = store.dir(b).apply { mkdirs() }
+        File(dir, "VID00001.mov").writeBytes(bytes(2_500))
+        store.update { it.copy(batches = it.batches + Batch(b, "park", "2026-12-12", "2026-12-12T09:05:07+01:00", listOf(Item("VID00001.mov", 2_500, Kind.CLIP, "2026-12-12T09:06:00+01:00")))) }
+        val real = client
+        val lossy = object : Drop by real {
+            override fun commit(batch: String, files: Map<String, Long>): ServerStatus { real.commit(batch, files); throw java.io.IOException("connection reset") }
+        }
+        assertEquals(UploadResult.Unreachable("connection reset"), Uploader(store) { lossy }.run())
+        assertTrue(File(root, "data/inbox/$b").exists())                                       // the server has it
+        assertEquals(Stage.PENDING, store.now.batch(b)!!.stage)                                // the phone does not know
+        val again = Uploader(store) { real }.run()
+        assertEquals(Stage.COMMITTED, store.now.batch(b)!!.stage, again.toString())
+    }
+
+    @Test
     fun `recent events come from the server's sessions`() {
         assertEquals(listOf("park"), client.events())
     }

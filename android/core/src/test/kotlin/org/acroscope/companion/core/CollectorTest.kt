@@ -146,10 +146,69 @@ class CollectorTest {
     }
 
     @Test
+    fun `a clip goes on in the newest batch only when it sorts after the clips there`() {
+        event("park")
+        collector.collect(card(Clip("VID00001.mov", movie(100))), free = Long.MAX_VALUE)
+        now = now.plusHours(1)
+        collector.collect(card(Clip("VID00001.mov", movie(111), modified = 5000), Clip("VID00002.mov", movie(122), modified = 5000)), free = Long.MAX_VALUE)
+        now = now.plusHours(1)
+        // a third recording whose first clip the pilot deleted on the goggles: the oldest batch has no VID00002, and
+        // still it must not take it, or the server would number it before the second recording
+        collector.collect(card(Clip("VID00002.mov", movie(133), modified = 9000)), free = Long.MAX_VALUE)
+        assertEquals(listOf(listOf(movie(100).size), listOf(movie(111).size, movie(122).size), listOf(movie(133).size)),
+            store.now.batches.map { b -> b.items.map { it.size.toInt() } })
+        assertEquals(store.now.batches.map { it.id }.sorted(), store.now.batches.map { it.id })
+    }
+
+    @Test
+    fun `a card formatted in between with no name in common still starts a batch of its own`() {
+        event("park")
+        collector.collect(card(Clip("VID00003.mov", movie(100)), Clip("VID00004.mov", movie(100))), free = Long.MAX_VALUE)
+        now = now.plusHours(2)
+        collector.collect(card(Clip("VID00001.mov", movie(111), modified = 5000), Clip("VID00002.mov", movie(111), modified = 5000)), free = Long.MAX_VALUE)
+        assertEquals(listOf(listOf("VID00003.mov", "VID00004.mov"), listOf("VID00001.mov", "VID00002.mov")), store.now.batches.map { b -> b.items.map { it.name } })
+    }
+
+    @Test
+    fun `a batch being handed in takes nothing more`() {
+        event("park")
+        collector.collect(card(Clip("VID00001.mov", movie(100))), free = Long.MAX_VALUE)
+        val first = store.now.batches.single().id
+        store.updateBatch(first) { it.copy(closed = true) }
+        now = now.plusMinutes(1)
+        collector.collect(card(Clip("VID00002.mov", movie(100))), free = Long.MAX_VALUE)
+        collector.addLog("x.bbl", null) { ByteArrayInputStream(log()) }
+        assertEquals(listOf(listOf("VID00001.mov"), listOf("VID00002.mov", "BTFL_BLACKBOX_LOG_OTTO_20261212_090607_BETAFPVG473_V2.bbl")),
+            store.now.batches.map { b -> b.items.map { it.name } })
+        assertEquals(listOf("VID00001.mov"), store.dir(first).list()!!.toList())
+    }
+
+    @Test
+    fun `a batch's folder holds only what its list names, also while a clip is being copied`() {
+        event("park")
+        collector.collect(card(Clip("VID00001.mov", movie(100))), free = Long.MAX_VALUE)
+        val id = store.now.batches.single().id
+        var during: List<String>? = null
+        val watched = object : CardFile {
+            override val name = "VID00002.mov"
+            override val size = movie(100).size.toLong()
+            override val modified = 1000L
+            override fun open(): InputStream = object : InputStream() {
+                val inner = ByteArrayInputStream(movie(100))
+                override fun read(): Int = throw UnsupportedOperationException()
+                override fun read(b: ByteArray, off: Int, len: Int): Int { if (during == null) during = store.dir(id).list()!!.sorted(); return inner.read(b, off, len) }
+            }
+        }
+        collector.collect(card(watched), free = Long.MAX_VALUE)
+        assertEquals(listOf("VID00001.mov"), during)
+        assertEquals(listOf("VID00001.mov", "VID00002.mov"), store.dir(id).list()!!.sorted())
+    }
+
+    @Test
     fun `a clip without its index is collected and flagged`() {
         event("park")
-        val out = collector.collect(card(Clip("VID00001.mov", movie(100)), Clip("VID00002.mov", movie(100, finished = false)), Clip("VID00003.avi", "RIFF....".toByteArray())), free = Long.MAX_VALUE)
-        assertEquals(listOf(false, true, false), out.items.map { it.unfinalised })   // an .avi has no such index: not judged
+        val out = collector.collect(card(Clip("VID00001.mov", movie(100)), Clip("VID00002.mov", movie(100, finished = false)), Clip("VID00003.avi", "RIFF....".toByteArray()), Clip("VID00004.MOV", movie(100, finished = false))), free = Long.MAX_VALUE)
+        assertEquals(listOf(false, true, false, true), out.items.map { it.unfinalised })   // an .avi has no such index: not judged; the extension's case is not
     }
 
     @Test
@@ -193,7 +252,13 @@ class CollectorTest {
         assertTrue("room" in out.error!!, out.error)
         assertEquals(0, a.opened)
         assertEquals(emptyList(), store.now.batches)
+        assertTrue("room" in collector.collect(card(a), free = a.size + (200L shl 20)).error!!)   // a quarter of a gigabyte stays free
         assertNull(collector.collect(card(a), free = need).error)               // to the byte
+        // every clip of the collect counts, not the first alone
+        val more = card(Clip("VID00002.mov", movie(1000)), Clip("VID00003.mov", movie(1000)), Clip("VID00004.mov", movie(1000)))
+        val out2 = collector.collect(more, free = movie(1000).size * 2 + Collector.MARGIN)
+        assertTrue("room" in out2.error!!, out2.error)
+        assertEquals(emptyList(), out2.items)
     }
 
     @Test

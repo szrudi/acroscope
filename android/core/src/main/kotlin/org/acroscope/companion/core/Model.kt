@@ -46,6 +46,9 @@ data class Batch(
     val items: List<Item> = emptyList(),
     val stage: Stage = Stage.PENDING,
     val server: ServerStatus? = null,
+    /** Being handed in: nothing more is collected into it. Set before the commit is asked for and never lifted, since
+     *  after a commit whose answer was lost the server may have it as it was then. */
+    val closed: Boolean = false,
 ) {
     val bytes: Long get() = items.sumOf { it.size }
     val session: String get() = Names.session(date, event)
@@ -84,5 +87,4 @@ data class State(
     val seen: List<Seen> = emptyList(),
 ) {
     fun batch(id: String): Batch? = batches.firstOrNull { it.id == id }
-    val pending: List<Batch> get() = batches.filter { it.stage == Stage.PENDING }.sortedBy { it.id }
-}
+    val pending: List<Batch> get() = batches.filter { it.stage == Stage.PENDING }.sortedBy { it.id }}
