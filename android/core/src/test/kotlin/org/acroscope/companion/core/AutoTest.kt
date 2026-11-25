@@ -19,6 +19,8 @@ class AutoTest {
             UploadResult.Unreachable("no route to host") to Next.LATER,         // not at home
             UploadResult.Refused(507, "the drop is full") to Next.LATER,        // no room there right now
             UploadResult.Refused(423, "another upload is writing it") to Next.LATER,
+            UploadResult.Refused(408, "nothing came for 60 s") to Next.LATER,         // a piece that stalled on the way
+            UploadResult.Refused(429, "too many requests") to Next.LATER,
             UploadResult.Refused(500, "boom") to Next.LATER,                    // a server on a bad day
             UploadResult.Refused(502, "Bad Gateway") to Next.LATER,
             UploadResult.Refused(401, "this door takes a paired device's token") to Next.PILOT,   // revoked: nothing an unattended run can do

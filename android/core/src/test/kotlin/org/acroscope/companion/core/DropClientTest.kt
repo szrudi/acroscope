@@ -88,7 +88,7 @@ class DropClientTest {
         serve { at, _ -> 423 to at }                                            // held by something that never lets go
         val e = assertFailsWith<DropException> { client.upload(b, "VID00001.mov", file) }
         assertEquals(423, e.status)
-        assertTrue(pauses.size in 30..60, pauses.size.toString())                // past the server's own minute of patience, then given up
+        assertEquals(45, pauses.size)                                           // 90 s: past the server's own minute of patience, then given up
     }
 
     @Test
@@ -130,6 +130,43 @@ class DropClientTest {
         val e = assertFailsWith<DropException> { client.device() }
         assertEquals(502, e.status)
         assertTrue("502" in e.message!!, e.message)
+    }
+
+    @Test
+    fun `an answer that is not the drop's is no answer, not a refusal and not a crash`() {
+        val pages = listOf(
+            "<html>log in to the Wi-Fi</html>",                                   // a portal or a login page, with a 200
+            """{"name": "field phone"}""",                                       // a JSON object without what was asked for
+            """{"id": 7, "name": [], "quota": "lots", "staged": 0, "max_file": 1}""",
+            """[{"id": "$b"}]""",                                                // a list of batches without their status
+            """{"events": "park"}""",
+            "",
+        )
+        for (page in pages) {
+            respond = { x, _ -> x.answer(200, body = page) }
+            for (call in listOf<() -> Unit>({ client.device() }, { client.events() }, { client.batches() }, { client.commit(b, mapOf("x.bbl" to 1L)) }, { client.retry(b) })) {
+                val e = assertFailsWith<IOException>(page) { call() }
+                assertTrue(e !is DropException, "$page: $e")                    // tried again later, like no answer at all
+            }
+        }
+    }
+
+    @Test
+    fun `an upload whose answers lack the offset is no answer`() {
+        respond = { x, _ -> if (x.requestMethod == "POST") x.answer(201, mapOf("Location" to "/drop/batches/$b/files/VID00001.mov")) else x.answer(200) }
+        assertTrue(assertFailsWith<IOException> { client.upload(b, "VID00001.mov", file) } !is DropException)     // HEAD without Upload-Offset
+        serve { _, _ -> 204 to 0L }                                             // a piece taken, and the file said to end where it did
+        assertTrue(assertFailsWith<IOException> { client.upload(b, "VID00001.mov", file) } !is DropException)
+        assertEquals(1, requests.count { it.startsWith("PATCH") })              // not sent again and again
+        requests.clear()
+        respond = { x, _ ->
+            when (x.requestMethod) {
+                "POST" -> x.answer(201, mapOf("Location" to "/drop/batches/$b/files/VID00001.mov"))
+                "HEAD" -> x.answer(200, mapOf("Upload-Offset" to "0"))
+                else -> x.answer(204, mapOf("Upload-Offset" to "many"))
+            }
+        }
+        assertTrue(assertFailsWith<IOException> { client.upload(b, "VID00001.mov", file) } !is DropException)
     }
 
     @Test

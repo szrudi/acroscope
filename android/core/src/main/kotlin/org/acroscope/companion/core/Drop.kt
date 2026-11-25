@@ -92,30 +92,44 @@ class DropClient(
         throw DropException(a.status, said ?: "$what: the server answered ${a.status}")
     }
 
+    /**
+     * What an answer says, read by `block`. An answer that does not say it (a portal's or a login page's 200, a
+     * field or a header missing, a number that is none) is not the drop's: an IOException like no answer at all,
+     * so it is tried again later, never a crash and never the server's refusal.
+     */
+    private inline fun <T> read(what: String, block: () -> T): T = try {
+        block()
+    } catch (e: IOException) {
+        throw e
+    } catch (e: RuntimeException) {
+        throw IOException("$what: the answer is not the drop's (${e.message ?: e.javaClass.simpleName})")
+    }
+
     private fun json(method: String, path: String, body: JsonObject? = null): JsonObject {
         val a = call(method, path, body?.toString()?.toRequestBody(JSON) ?: if (method == "POST") ByteArray(0).toRequestBody(null) else null)
         if (a.status != 200) refuse("$method $path", a)
-        return Json.parseToJsonElement(a.body).let { if (it is JsonArray) buildJsonObject { put("list", it) } else it.jsonObject }
+        return read("$method $path") { Json.parseToJsonElement(a.body).let { if (it is JsonArray) buildJsonObject { put("list", it) } else it.jsonObject } }
     }
 
-    private fun status(o: JsonObject): ServerStatus {
+    private fun status(what: String, o: JsonObject): ServerStatus = read(what) {
         val result = o["result"] as? JsonObject
         fun names(key: String) = (result?.get(key) as? JsonArray)?.map { it.jsonPrimitive.content } ?: emptyList()
-        return ServerStatus(o["status"]!!.jsonPrimitive.content, o["session"]?.jsonPrimitive?.contentOrNull, o["error"]?.jsonPrimitive?.contentOrNull, names("clips"), names("logs"))
+        ServerStatus(o["status"]!!.jsonPrimitive.content, o["session"]?.jsonPrimitive?.contentOrNull, o["error"]?.jsonPrimitive?.contentOrNull, names("clips"), names("logs"))
     }
 
     private fun path(batch: String) = "/drop/batches/$batch"
 
     private fun enc(name: String) = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
 
-    override fun device(): Device = json("GET", "/drop/device").let {
+    override fun device(): Device = json("GET", "/drop/device").let { read("GET /drop/device") {
         Device(it["id"]!!.jsonPrimitive.content, it["name"]!!.jsonPrimitive.content, it["quota"]!!.jsonPrimitive.long, it["staged"]!!.jsonPrimitive.long, it["max_file"]!!.jsonPrimitive.long)
+    } }
+
+    override fun events(): List<String> = json("GET", "/drop/events").let { read("GET /drop/events") { it["events"]!!.jsonArray.map { e -> e.jsonPrimitive.content } } }
+
+    override fun batches(): Map<String, ServerStatus> = json("GET", "/drop/batches").let { o ->
+        read("GET /drop/batches") { o["list"]!!.jsonArray.associate { it.jsonObject["id"]!!.jsonPrimitive.content to status("GET /drop/batches", it.jsonObject) } }
     }
-
-    override fun events(): List<String> = json("GET", "/drop/events")["events"]!!.jsonArray.map { it.jsonPrimitive.content }
-
-    override fun batches(): Map<String, ServerStatus> =
-        json("GET", "/drop/batches")["list"]!!.jsonArray.associate { it.jsonObject["id"]!!.jsonPrimitive.content to status(it.jsonObject) }
 
     private fun create(batch: String, name: String, length: Long): String {
         val meta = "filename " + Base64.getEncoder().encodeToString(name.toByteArray())
@@ -127,7 +141,7 @@ class DropClient(
     private fun offset(upload: String): Long {
         val a = call("HEAD", upload)
         if (a.status != 200) refuse("asking where $upload ends", a)
-        return a.headers["upload-offset"]!!.toLong()
+        return read("asking where $upload ends") { a.headers["upload-offset"]!!.toLong() }
     }
 
     private fun slice(file: File, at: Long, count: Long, sent: (Long) -> Unit) = object : RequestBody() {
@@ -167,7 +181,13 @@ class DropClient(
             if (stop()) throw DropStopped()
             val a = call("PATCH", upload, slice(file, at, minOf(piece, length - at), progress), mapOf("Upload-Offset" to at.toString()))
             when (a.status) {
-                204 -> { at = a.headers["upload-offset"]!!.toLong(); busy = 0 }
+                204 -> {
+                    val next = read("sending $name") { a.headers["upload-offset"]!!.toLong() }
+                    // a piece taken must move the end on: one that does not would be sent again and again
+                    if (next <= at || next > length) throw IOException("sending $name: the server says it ends at $next after a piece from $at")
+                    at = next
+                    busy = 0
+                }
                 409 -> at = offset(upload)                                    // the server has more or less than was thought: go on from where it is
                 423 -> { if (++busy > BUSY_TRIES) refuse("sending $name", a); pause(2000) }   // an earlier piece of ours is still being let go
                 else -> refuse("sending $name", a)
@@ -185,7 +205,7 @@ class DropClient(
     }
 
     override fun commit(batch: String, files: Map<String, Long>): ServerStatus =
-        status(json("POST", "${path(batch)}/commit", buildJsonObject { putJsonObject("files") { files.forEach { (n, s) -> put(n, s) } } }))
+        status("committing $batch", json("POST", "${path(batch)}/commit", buildJsonObject { putJsonObject("files") { files.forEach { (n, s) -> put(n, s) } } }))
 
-    override fun retry(batch: String): ServerStatus = status(json("POST", "${path(batch)}/retry"))
+    override fun retry(batch: String): ServerStatus = status("retrying $batch", json("POST", "${path(batch)}/retry"))
 }
