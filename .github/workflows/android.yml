@@ -32,9 +32,17 @@ jobs:
         env:
           ACROSCOPE_PYTHON: python
         run: ./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:assembleDebug
-      # the client's tests against the server skip where there is no Python: here there is one, so none may
+      # the client's tests against the server skip where there is no Python: here there is one, so none may. A folder
+      # without reports fails too (a glob that matches nothing would make grep fail, and that is no pass)
       - name: no test was skipped
-        run: "! grep -l 'skipped=\"[1-9]' android/core/build/test-results/test/*.xml android/app/build/test-results/testDebugUnitTest/*.xml"
+        run: |
+          reports="android/core/build/test-results/test android/app/build/test-results/testDebugUnitTest"
+          for d in $reports; do
+            ls "$d"/TEST-*.xml > /dev/null 2>&1 || { echo "no test reports in $d"; exit 1; }
+          done
+          status=0
+          grep -l 'skipped="[1-9]' $(for d in $reports; do echo "$d"/TEST-*.xml; done) || status=$?
+          if [ "$status" -ne 1 ]; then echo "a test was skipped, or the reports could not be read"; exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
           name: acroscope-companion-debug

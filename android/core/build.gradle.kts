@@ -19,6 +19,10 @@ dependencies {
 }
 
 tasks.test {
+    // DropContractTest runs the server from this checkout: its code and the Python named to run it are inputs, so a
+    // change on the server's side runs the tests again instead of finding them up to date or in the build cache
+    inputs.files(fileTree("../../acroscope") { exclude("**/__pycache__/**") }).withPropertyName("server").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.property("python", providers.environmentVariable("ACROSCOPE_PYTHON").orElse(""))
     testLogging {
         events("failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
