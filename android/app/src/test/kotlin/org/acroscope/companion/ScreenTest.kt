@@ -683,6 +683,22 @@ class ScreenTest {
     }
 
     @Test
+    fun `a link's code is shown as it would pair, and one that would not pair cannot be said yes to`() {
+        show()
+        val token = "sII2Bs1adMHfku5e1T3FYIh9W1U7m8OASln7pIJCU08"
+        w.session.pairRequest.value = "acroscope://pair?url=https%3A%2F%2Fdrop.example.org%2F&token=$token"
+        wait { seen("pair-host") }
+        assertEquals("https://drop.example.org", text("pair-host").removeSurrounding("[", "]"))   // what pairing would take, said the same way
+        tag("pair-yes").assertIsEnabled()
+        for ((code, why) in listOf("acroscope://pair?url=https%3A%2F%2Fdrop.example.org&token=$token&url=https%3A%2F%2Fother.example.org" to "twice", "acroscope://pair?url=%&token=$token" to "damaged")) {
+            w.session.pairRequest.value = code
+            wait { why in text("pair-host") }
+            tag("pair-yes").assertIsNotEnabled()
+        }
+        assertEquals(emptyList(), w.pairings)
+    }
+
+    @Test
     fun `sizes are said as the rest of the app says them`() {
         collected()
         show()

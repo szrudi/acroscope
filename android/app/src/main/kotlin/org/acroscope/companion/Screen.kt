@@ -48,6 +48,7 @@ import kotlinx.coroutines.delay
 import org.acroscope.companion.core.Format
 import org.acroscope.companion.core.Heat
 import org.acroscope.companion.core.Names
+import org.acroscope.companion.core.Pairing
 import org.acroscope.companion.core.Stage
 import java.time.LocalDate
 
@@ -175,9 +176,11 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
             }
         }
         linked?.let { code ->
+            // the server pairing would take, read the one way pairing reads it; a code that would not pair says why
+            val read = remember(code) { runCatching { Pairing.parse(code) } }
             AlertDialog(onDismissRequest = { g.session.pairRequest.value = null }, title = { Text("Pair with this server?") },
-                text = { Text(code.substringAfter("url=").substringBefore("&").let { java.net.URLDecoder.decode(it, "UTF-8") }, Modifier.testTag("pair-host")) },
-                confirmButton = { TextButton({ g.session.pair(code); g.session.pairRequest.value = null }, Modifier.testTag("pair-yes")) { Text("Pair") } },
+                text = { Text(read.fold({ it.url }, { it.message ?: "this is not a pairing code" }), Modifier.testTag("pair-host")) },
+                confirmButton = { TextButton({ g.session.pair(code); g.session.pairRequest.value = null }, Modifier.testTag("pair-yes"), enabled = read.isSuccess) { Text("Pair") } },
                 dismissButton = { TextButton({ g.session.pairRequest.value = null }) { Text("No") } })
         }
     }

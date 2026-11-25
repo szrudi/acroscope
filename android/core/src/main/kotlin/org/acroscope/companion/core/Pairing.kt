@@ -11,14 +11,20 @@ import java.net.URLDecoder
 data class Pairing(val url: String, val token: String) {
     companion object {
         private val TOKEN = Regex("[A-Za-z0-9_-]{32,128}")
-        private val PRIVATE = Regex("localhost|127\\..*|10\\..*|192\\.168\\..*|172\\.(1[6-9]|2[0-9]|3[01])\\..*")
+        private const val OCTET = "(\\.[0-9]{1,3})"
+        /** This machine or a home network, by address: a name that starts like one is a name, wherever it points. */
+        private val PRIVATE = Regex("localhost|127$OCTET{3}|10$OCTET{3}|192\\.168$OCTET{2}|172\\.(1[6-9]|2[0-9]|3[01])$OCTET{2}")
 
         /** The pairing a code holds; an IllegalArgumentException says what is wrong with one that holds none. */
         fun parse(code: String): Pairing {
             val text = code.trim()
             require(text.startsWith("acroscope://pair?")) { "this is not a pairing code (it starts with acroscope://pair?)" }
-            val q = text.substringAfter('?').split('&').filter { '=' in it }
-                .associate { it.substringBefore('=') to URLDecoder.decode(it.substringAfter('='), "UTF-8") }
+            val pairs = text.substringAfter('?').split('&').filter { '=' in it }.map { it.substringBefore('=') to it.substringAfter('=') }
+            // one value per key: with two, what the pilot is shown and what is paired with could differ
+            pairs.groupBy { it.first }.filterValues { it.size > 1 }.keys.firstOrNull()?.let { throw IllegalArgumentException("the code names its $it twice") }
+            val q = pairs.associate { (k, v) ->
+                k to try { URLDecoder.decode(v, "UTF-8") } catch (e: IllegalArgumentException) { throw IllegalArgumentException("the code is damaged (its $k has a % that escapes nothing)") }
+            }
             val token = q["token"] ?: ""
             require(TOKEN.matches(token)) { "the code has no valid token" }
             val uri = try { URI(q["url"] ?: "") } catch (e: Exception) { null }

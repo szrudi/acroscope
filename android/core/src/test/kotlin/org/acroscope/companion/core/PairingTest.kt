@@ -18,7 +18,7 @@ class PairingTest {
 
     @Test
     fun `a server on this machine or the home network may be plain http`() {
-        for (url in listOf("http://127.0.0.1:8070", "http://localhost:8070", "http://10.0.2.2:8070", "http://192.168.1.20:8070", "http://10.10.10.17:8070", "http://172.16.0.9"))
+        for (url in listOf("http://127.0.0.1:8070", "http://localhost:8070", "http://10.0.2.2:8070", "http://192.168.1.20:8070", "http://10.10.10.17:8070", "http://172.16.0.9", "http://172.31.255.1"))
             assertEquals(url, Pairing.parse("acroscope://pair?url=${java.net.URLEncoder.encode(url, "UTF-8")}&token=$token").url)
     }
 
@@ -35,7 +35,18 @@ class PairingTest {
             "acroscope://pair?url=https%3A%2Fonly-a-path&token=$token" to "no server address",          // a scheme and no host
             "acroscope://pair?url=http%3A%2F%2Facroscope.example.org&token=$token" to "must be https",   // a token over plain http across the internet
             "acroscope://pair?url=http%3A%2F%2F172.32.0.9&token=$token" to "must be https",              // just past the private 172.16 to 172.31
+            "acroscope://pair?url=http%3A%2F%2F172.15.0.9&token=$token" to "must be https",              // just before it
             "acroscope://pair?url=http%3A%2F%2F11.0.0.1&token=$token" to "must be https",
+            // a name that starts like a private address is a name, wherever it points
+            "acroscope://pair?url=http%3A%2F%2F10.example.com&token=$token" to "must be https",
+            "acroscope://pair?url=http%3A%2F%2F192.168.1.1.example.com&token=$token" to "must be https",
+            "acroscope://pair?url=http%3A%2F%2F127.0.0.1.example.com&token=$token" to "must be https",
+            "acroscope://pair?url=http%3A%2F%2Flocalhost.example.com&token=$token" to "must be https",
+            // a key said twice: which one counts is not left to chance (a page could show one and pair with the other)
+            "acroscope://pair?url=https%3A%2F%2Fhome.example.org&token=$token&url=https%3A%2F%2Fother.example.org" to "twice",
+            "acroscope://pair?url=https%3A%2F%2Fx.example.org&token=$token&token=$token" to "twice",
+            "acroscope://pair?url=%&token=$token" to "damaged",                                           // an escape cut off
+            "acroscope://pair?url=https%3A%2F%2Fx.example.org%zz&token=$token" to "damaged",
             "acroscope://pair?url=https%3A%2F%2Fx.example.org&token=short" to "token",
             "acroscope://pair?url=https%3A%2F%2Fx.example.org&token=${token}%20x" to "token",
             "acroscope://other?url=https%3A%2F%2Fx.example.org&token=$token" to "code",
