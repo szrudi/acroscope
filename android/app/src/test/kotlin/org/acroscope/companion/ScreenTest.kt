@@ -240,7 +240,7 @@ class ScreenTest {
     private fun saved(): org.acroscope.companion.core.FakeFc {
         val fc = org.acroscope.companion.core.FakeFc(flightLog)
         w.quads.fc = fc
-        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/002")
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/002", serial = "3A0047001851")
         show()
         wait { "its log will be saved" in text("quad") }
         click("start")
@@ -290,6 +290,124 @@ class ScreenTest {
         assertTrue(up.deleted)
         assertFalse(waiting.deleted)                                             // still to go up: it stays
         wait { !seen("free-note") && !seen("free") }                             // nothing left that went up
+    }
+
+    /** A quad back on a new line after it dropped off USB, its flash as given; `chip`: what the chip still holds. */
+    private fun back(flash: ByteArray = ByteArray(0), chip: ByteArray = flash) =
+        org.acroscope.companion.core.FakeFc(flash).also { it.chip = chip }
+
+    /** The erase started on a quad that then drops off USB: the app waits for it. */
+    private fun gone(): org.acroscope.companion.core.FakeFc {
+        val fc = saved()
+        fc.goneAfterErase = true                                                // it drops off USB as the chip erases
+        click("erase")
+        wait { seen("erase-warning") && "restarted" in text("erase-warning") }  // the app waits for it to come back
+        return fc
+    }
+
+    @Test
+    fun `while the erase waits for its quad, nothing else takes a quad`() {
+        w.session.returnMs = 3000
+        gone()
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/003", serial = "2F0031000B51")   // another one by the name: not the erase's
+        w.quads.fc = back(flightLog)
+        kotlinx.coroutines.runBlocking { w.session.lookAtQuad().join() }
+        wait { "erasing its flash" in text("quad") }
+        tag("start").assertIsNotEnabled()
+        val ran = w.runner.ran.size
+        w.session.startCollect()
+        assertEquals(ran, w.runner.ran.size)
+        assertEquals("nothing to collect", w.session.collectNow(null) { false }.message)   // its log is not saved meanwhile
+        val opened = w.quads.opened
+        w.session.feel()
+        assertEquals(opened, w.quads.opened)                                     // nor its temperature read
+    }
+
+    @Test
+    fun `a quad that restarts under the erase and comes back empty is erased`() {
+        gone()
+        w.quads.fc = back()                                                      // back, on a new line, its flash empty
+        wait { seen("erase-status") && "flash is erased" in text("erase-status") }
+        assertTrue("dropped" in text("erase-status"), text("erase-status"))
+    }
+
+    @Test
+    fun `a quad that restarts under the erase and comes back with its log is not erased`() {
+        gone()
+        w.quads.fc = back(flightLog)                                             // back, the log still on it
+        wait { seen("erase-status") && "came back with its log still on it" in text("erase-status") }
+        assertFalse("plugged in?" in text("erase-status"))
+    }
+
+    @Test
+    fun `a quad that comes back still erasing is waited for`() {
+        w.session.returnMs = 1500
+        gone()
+        val fc = back().also { it.ready = false }                                // its chip goes on erasing through the restart
+        w.quads.fc = fc
+        wait { "still busy" in text("erase-warning") }
+        Thread.sleep(2000)                                                       // longer than it had to come back
+        assertTrue(seen("erase-warning"))
+        fc.ready = true
+        wait { seen("erase-status") && "flash is erased" in text("erase-status") }
+    }
+
+    @Test
+    fun `a quad that says it is empty with its old log still on the chip is not erased`() {
+        gone()
+        w.quads.fc = back(ByteArray(0), chip = flightLog)                        // erased in pieces, cut off by the restart
+        wait { seen("erase-status") && "still on the chip" in text("erase-status") }
+    }
+
+    @Test
+    fun `another quad by the same name is not taken for the one erased`() {
+        w.session.returnMs = 1500
+        gone()
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/003", serial = "2F0031000B51")   // the other one, the same board
+        w.quads.fc = back()
+        rule.waitUntil(8000) { seen("erase-status") }
+        assertFalse((w.session.erase.value as Work.Finished).ok, text("erase-status"))
+        assertTrue("did not come back" in text("erase-status") && "Betaflight app" in text("erase-status"), text("erase-status"))
+    }
+
+    @Test
+    fun `a quad that does not say its serial number after one that did is not taken for it`() {
+        w.session.returnMs = 1500
+        gone()
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/003")
+        w.quads.fc = back()
+        rule.waitUntil(8000) { seen("erase-status") }
+        assertFalse((w.session.erase.value as Work.Finished).ok, text("erase-status"))
+    }
+
+    @Test
+    fun `a quad back that the app may not talk to yet is asked about, and then looked at`() {
+        gone()
+        w.quads.now = QuadState.NeedsPermission("OTTO") {}
+        wait { "allow the app" in text("erase-warning") }
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/003", serial = "3A0047001851")
+        w.quads.fc = back()
+        wait { seen("erase-status") && "flash is erased" in text("erase-status") }
+    }
+
+    @Test
+    fun `a quad back whose flash cannot be read back is not called erased`() {
+        w.session.returnMs = 1500
+        w.session.eraseMs = 3000
+        gone()
+        w.quads.fc = back().also { fc -> fc.spoil = { c, r -> if (c == org.acroscope.companion.core.Msp.DATAFLASH_READ) org.acroscope.companion.core.Msp.frame(c, org.acroscope.companion.core.Msp.le32(0) + byteArrayOf(0, 0, 0), '>') else r } }
+        wait { "could not be read back" in text("erase-warning") }
+        rule.waitUntil(8000) { seen("erase-status") }
+        assertTrue("could not be read back" in text("erase-status") && "Betaflight app" in text("erase-status"), text("erase-status"))
+    }
+
+    @Test
+    fun `a quad that does not come back leaves its flash not known`() {
+        w.session.returnMs = 1500
+        gone()
+        w.quads.now = QuadState.None
+        rule.waitUntil(8000) { seen("erase-status") }
+        assertTrue("did not come back" in text("erase-status") && "Betaflight app" in text("erase-status"), text("erase-status"))
     }
 
     @Test
