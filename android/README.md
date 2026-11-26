@@ -3,7 +3,10 @@
 The phone's side of acroscope (#75): collect the DVR clips and the blackbox log in the field, keep them on the
 phone, hand them to the server at home. It does what the laptop's import script does, without the laptop.
 
-What it does now (0.1):
+The minor version counts the app's steps in #75: 0.1 collects from the card and uploads by hand, 0.2 adds the log
+over USB, 0.3 the upload by itself; the patch number counts fixes after that.
+
+What it does now (0.3):
 
 - **Pick the event** (home, park, whoop race…). It becomes the session's name after the date; names used before,
   on this phone or on the server, are a tap away.
