@@ -20,7 +20,8 @@ interface CardFile {
     fun delete(): Unit = throw IOException("the card cannot be changed")
 }
 
-/** A DVR's card: the files in its DCIM folder. */
+/** A DVR's card: the files in its DCIM folder. `label` tells one card from another (its volume's id, which a format
+ *  gives anew). */
 interface Card {
     val label: String
     fun files(): List<CardFile>
@@ -29,8 +30,8 @@ interface Card {
 /** What a collect would take from a card: the clips not collected yet, in the DVR's recording order (their names
  *  sort that way, and ingest numbers the day's clips in that order), how many were collected before, and what
  *  else lies in the folder. `done`: the clips collected before that went up in a batch the server reported done
- *  (name, size and time as the collect kept them), which the pilot may delete from the card; [Collector.free]
- *  checks each one's [Fingerprint] before it goes. */
+ *  (name, size, time and [Fingerprint] as the collect kept them), which the pilot may delete from the card;
+ *  [Collector.free] reads each one's fingerprint off the card again before it goes. */
 data class Plan(val clips: List<CardFile>, val collected: Int, val others: List<String>, val done: List<CardFile> = emptyList()) {
     val bytes: Long get() = clips.sumOf { it.size }
     val doneBytes: Long get() = done.sumOf { it.size }
@@ -65,34 +66,52 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
         private val LOG_MAGIC = "H Product:Blackbox".toByteArray()
     }
 
-    fun plan(card: Card): Plan {
-        val s = store.now
+    fun plan(card: Card, s: State = store.now): Plan {
         val seen = s.seen.toSet()
         val (clips, others) = card.files().partition { Names.isClip(it.name) }
-        val (old, new) = clips.partition { Seen(it.name, it.size, it.modified) in seen }
-        // done with: collected (name, size and time), in a batch the server reported done that kept them, and the
-        // name and size in no batch still on its way, whatever became of it on the server since
-        val up = up(s)
+        val kept = kept(s.batches)
+        val up = kept(s.batches.filter { it.stage == Stage.DONE })
+        fun key(c: CardFile) = Seen(c.name, c.size, c.modified)
+        // collected before: seen by name, size and time, unless that name, size and time went up as another recording
+        // (a DVR with no clock, a card formatted) and no batch holds this one: it is new, whatever its directory says.
+        // Only what went up is read for it, once per card and clip: the rest of a card is not read again.
+        fun twin(c: CardFile) = key(c) in up && fingerprint(card, c)?.let { it !in kept[key(c)].orEmpty() } == true
+        val (old, new) = clips.partition { c -> key(c) in seen && !twin(c) }
+        // done with: a recording that went up in a batch the server reported done, whose name and size no batch still
+        // on its way holds, whatever became of it on the server since
         val waiting = s.batches.filter { it.stage != Stage.DONE }.flatMap { b -> b.items.map { it.name to it.size } }.toSet()
-        val done = old.filter { Seen(it.name, it.size, it.modified) in up && (it.name to it.size) !in waiting }
+        val done = old.filter { c -> (c.name to c.size) !in waiting && up[key(c)]?.let { fingerprint(card, c) in it } == true }
         return Plan(new.sortedBy { it.name }, old.size, others.map { it.name }.sorted(), done.sortedBy { it.name })
     }
 
-    /** What went up in the batches the server reported done, by name, size and time, with each one's fingerprints. */
-    private fun up(s: State): Map<Seen, Set<String>> = s.batches.filter { it.stage == Stage.DONE }.flatMap { it.items }
+    /** What the batches hold, by name, size and time, with each one's fingerprints (items that kept them). */
+    private fun kept(batches: List<Batch>): Map<Seen, Set<String>> = batches.flatMap { it.items }
         .mapNotNull { i -> if (i.modified == null || i.fingerprint == null) null else Seen(i.name, i.size, i.modified) to i.fingerprint }
         .groupBy({ it.first }, { it.second }).mapValues { it.value.toSet() }
 
+    /** A clip's fingerprint on this card, read once per card and clip while the app runs; null when it cannot be read. */
+    private fun fingerprint(card: Card, clip: CardFile): String? {
+        val at = "${card.label}/${clip.name}/${clip.size}/${clip.modified}"
+        prints[at]?.let { return it }
+        val read = try { Fingerprint.of(clip.size, clip::open) } catch (e: Exception) { return null }
+        prints[at] = read
+        return read
+    }
+
+    private val prints = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /**
      * Delete from the card the clips the pilot agreed to that [plan] still finds done with, each only when its
-     * fingerprint on the card is the one that went up. One the card will not let go does not stop the rest.
+     * fingerprint read off the card now (not the one [plan] remembers) is one that went up. One the card will not
+     * let go, or not let be read, does not stop the rest.
      */
     fun free(card: Card, agreed: Collection<Seen>): Freed {
         var count = 0
         var bytes = 0L
         val failed = mutableListOf<String>()
-        val up = up(store.now)
-        for (clip in plan(card).done) {
+        val s = store.now
+        val up = kept(s.batches.filter { it.stage == Stage.DONE })
+        for (clip in plan(card, s).done) {
             val key = Seen(clip.name, clip.size, clip.modified)
             if (key !in agreed) continue
             try {
@@ -103,7 +122,7 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
                 clip.delete()
                 count++
                 bytes += clip.size
-            } catch (e: IOException) {
+            } catch (e: Exception) {
                 failed += "${clip.name}: ${e.message ?: e.javaClass.simpleName}"
             }
         }

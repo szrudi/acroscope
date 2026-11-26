@@ -40,6 +40,7 @@ class FingerprintTest {
         val clip = bytes(3 * piece)
         assertNotEquals(of(clip), of(clip.copyOf(clip.size - 1)))
         assertNotEquals(of(clip), of(clip.copyOf(clip.size - 1), size = clip.size.toLong()))
+        assertNotEquals(of(ByteArray(3 * piece)), of(ByteArray(3 * piece + 1)))   // the same bytes read, only the size apart
         assertFailsWith<java.io.IOException> { Fingerprint.of(10L * piece) { ByteArrayInputStream(clip) as InputStream } }
     }
 

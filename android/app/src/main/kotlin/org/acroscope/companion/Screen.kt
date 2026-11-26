@@ -148,7 +148,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                                 OutlinedButton(openStorage, Modifier.testTag("eject"), enabled = collect !is Work.Running && free !is Work.Running) { Text("Eject the card…") }
                         }
                         (card as? CardView.Open)?.takeIf { it.done.isNotEmpty() }?.let { c ->
-                            var freeing by remember(c.tree) { mutableStateOf(false) }     // asked of this card only: gone with it
+                            var freeing by remember(c.tree, c.done) { mutableStateOf(false) }     // asked of these clips only
                             val what = "${c.done.size} clip${if (c.done.size == 1) "" else "s"} (${Format.bytes(c.doneBytes)})"
                             Dim("on the card, $what went up to the server and can go", Modifier.testTag("free-note"))
                             when {
@@ -158,7 +158,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                                 freeing -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text("Delete $what from the card? They went up to the server; the phone kept no copy.", Modifier.testTag("free-ask"))
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button({ freeing = false; g.session.freeCard(c) }, Modifier.testTag("free-yes"),
+                                        Button({ freeing = false; g.session.freeCard(c) }, Modifier.testTag("free-yes"), enabled = collect !is Work.Running && free !is Work.Running,
                                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Delete") }
                                         TextButton({ freeing = false }, Modifier.testTag("free-no")) { Text("Cancel") }
                                     }

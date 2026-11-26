@@ -77,6 +77,8 @@ class Session(private val g: Graph) {
     @Volatile private var held: Held? = null
     /** The quad's view is worked out and shown in one step: one worked out before a save ended must not cover it. */
     private val seeing = Any()
+    /** The card's view likewise: one read before a free deleted must not land after the view read once it did. */
+    private val looking = Any()
     /** The quad's core temperature as last read, in °C: while it is plugged in and the screen is there to show it. */
     val heat = MutableStateFlow<Int?>(null)
     /** How much log is on the quad's flash as last read, in bytes: 0 is an empty flash, null is not known (not asked
@@ -125,9 +127,12 @@ class Session(private val g: Graph) {
         is QuadView.Saved -> view.name
     }
 
-    fun lookAtCard() = scope.launch {
+    fun lookAtCard() = scope.launch { showCard(plug = true) }
+
+    /** Read the card and show it; `plug`: a look from outside, where another card (or none) takes the last lines. */
+    private fun showCard(plug: Boolean) = synchronized(looking) {
         val now = see()
-        if (plugged(now) != plugged(card.value)) settle(collect, free)
+        if (plug && plugged(now) != plugged(card.value)) settle(collect, free)
         card.value = now
     }
 
@@ -242,7 +247,7 @@ class Session(private val g: Graph) {
         } catch (e: Exception) {
             Work.Finished("nothing was deleted: ${e.message ?: e.javaClass.simpleName}", false)
         }
-        card.value = see()
+        showCard(plug = false)
     }
 
     fun setEvent(name: String) {
@@ -290,7 +295,7 @@ class Session(private val g: Graph) {
         }
         val done = Work.Finished(said.joinToString("\n").ifEmpty { "nothing to collect" }, ok)
         collect.value = done
-        card.value = see()
+        showCard(plug = false)
         showQuad()
         kick()
         return done

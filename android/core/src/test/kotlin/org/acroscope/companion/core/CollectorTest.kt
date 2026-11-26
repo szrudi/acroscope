@@ -33,11 +33,13 @@ class CollectorTest {
         var opened = 0
         var deleted = false
         var refuse = false
+        var openFails: RuntimeException? = null
         override fun delete() {
             if (refuse) throw IOException("the card is write-protected")
             deleted = true
         }
         override fun open(): InputStream {
+            openFails?.let { throw it }
             opened++
             val inner = ByteArrayInputStream(data)
             return object : InputStream() {
@@ -53,8 +55,8 @@ class CollectorTest {
         }
     }
 
-    private fun card(vararg files: CardFile) = object : Card {
-        override val label = "COBRA"
+    private fun card(vararg files: CardFile, id: String = "1234-ABCD:") = object : Card {
+        override val label = id
         override fun files(): List<CardFile> = files.toList()
     }
 
@@ -444,17 +446,58 @@ class CollectorTest {
         assertEquals(emptyList(), collector.plan(card(mine)).done)
     }
 
+    /** A DVR with no clock, the card formatted: the same number, a recording of the same length, the same time. */
+    private fun twinOf(c: Clip) = Clip(c.name, c.data.copyOf().also { it[40] = (it[40] + 1).toByte() }, c.modified)
+
     @Test
-    fun `another recording by the same name, size and time is not deleted`() {
+    fun `another recording by the same name, size and time is new, not done with`() {
         val up = Clip("VID00001.mov", movie(100))
         collected(Stage.DONE, up)
-        // a DVR with no clock, the card formatted: the same number, a recording of the same length, the same time
-        val twin = Clip("VID00001.mov", movie(100).also { it[40] = (it[40] + 1).toByte() })
-        val c = card(twin)
-        assertEquals(1, collector.plan(c).done.size)                             // it looks the part
-        val freed = collector.free(c, agreed(c))
+        collector.plan(card(up))                                                 // its fingerprint read, and remembered
+        val twin = twinOf(up)
+        val c = card(twin, id = "5678-EF01:")                                    // the format gave the card a new id
+        val plan = collector.plan(c)
+        assertEquals(emptyList(), plan.done)
+        assertEquals(listOf(twin), plan.clips)
+        assertEquals(0, plan.collected)
+        assertEquals(listOf("VID00001.mov"), collector.collect(c, free = Long.MAX_VALUE).items.map { it.name })
+        assertEquals(emptyList(), collector.plan(c).clips)                       // and once collected, it is not again
+        assertEquals(Freed(0, 0, emptyList()), collector.free(c, listOf(Seen(twin.name, twin.size, twin.modified))))
         assertFalse(twin.deleted)
-        assertEquals(Freed(0, 0, listOf("VID00001.mov: not the recording that went up")), freed)
+    }
+
+    @Test
+    fun `another recording that the card's id and the plan's memory take for the one that went up is caught at the delete`() {
+        val up = Clip("VID00001.mov", movie(100))
+        collected(Stage.DONE, up)
+        val asked = agreed(card(up))                                             // remembered for this card and clip
+        val twin = twinOf(up)
+        val c = card(twin)                                                       // a format that kept the card's id
+        assertEquals(1, collector.plan(c).done.size)
+        assertEquals(Freed(0, 0, listOf("VID00001.mov: not the recording that went up")), collector.free(c, asked))
+        assertFalse(twin.deleted)
+    }
+
+    @Test
+    fun `a clip that cannot be read at the delete is named, and the others still go`() {
+        val locked = Clip("VID00001.mov", movie(100))
+        val up = Clip("VID00002.mov", movie(110))
+        collected(Stage.DONE, locked, up)
+        val asked = agreed(card(locked, up))
+        locked.openFails = SecurityException("the grant is gone")
+        assertEquals(Freed(1, up.size, listOf("VID00001.mov: the grant is gone")), collector.free(card(locked, up), asked))
+        assertTrue(up.deleted)
+        assertFalse(locked.deleted)
+    }
+
+    @Test
+    fun `a done clip that cannot be read is not offered`() {
+        val up = Clip("VID00001.mov", movie(100))
+        collected(Stage.DONE, up)
+        up.openFails = SecurityException("the grant is gone")
+        val plan = collector.plan(card(up))
+        assertEquals(emptyList(), plan.done)
+        assertEquals(1, plan.collected)                                          // still collected: not taken for new
     }
 
     @Test

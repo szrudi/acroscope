@@ -23,7 +23,7 @@ What it does now (0.3):
   how many and how much. Nothing is deleted by itself, nothing still on its way, and nothing but the clips the
   question named. A clip is told by its name, size and time on the card, and by a fingerprint of its first and last
   MiB taken at the collect and checked against the card again right before it goes, so another recording that
-  happens to share the name, size and time stays. It needs the card's folder allowed once more, this time with
+  happens to share the name, size and time stays, and is collected as new. It needs the card's folder allowed once more, this time with
   changes (**Allow changes to the card**). While it deletes, the card is not to be ejected and nothing else starts
   on it. A clip deleted on the server since counts as done too: the card's copy only has to last until the server
   has the clip. What it does not reach: clips collected before 0.3.6 (no fingerprint was kept), and clips of batches

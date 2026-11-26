@@ -359,6 +359,25 @@ class ScreenTest {
     }
 
     @Test
+    fun `the question goes when what it names changes, and waits out a collect`() {
+        val (up, waiting) = upAndWaiting(writable = true)
+        show()
+        click("free")
+        assertTrue("Delete 1 clip" in text("free-ask"), text("free-ask"))
+        w.session.collect.value = Work.Running("reading the card", 0, 0)
+        wait { "reading the card" in text("collect-status") }
+        tag("free-yes").assertIsNotEnabled()                                    // not now: it would do nothing
+        w.session.collect.value = Work.Idle
+        wait { seen("free-yes") }
+        tag("free-yes").assertIsEnabled()
+        w.store.updateBatch(w.store.now.batches.last().id) { it.copy(stage = Stage.DONE) }   // the second clip went up too
+        kotlinx.coroutines.runBlocking { w.session.lookAtCard().join() }
+        wait { "2 clips" in text("free-note") }
+        assertFalse(seen("free-ask"))                                            // asked about one: not taken for a yes to two
+        assertFalse(up.deleted || waiting.deleted)
+    }
+
+    @Test
     fun `while clips are deleted the card is not to be ejected, and nothing else starts on it`() {
         val (up, waiting) = upAndWaiting(writable = true)
         w.card(up, waiting, FakeFile("VID00003.mov", movie(130)), writable = true)
