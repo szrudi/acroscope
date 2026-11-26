@@ -17,6 +17,8 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
     var eraseNeverEnds = false
     var busyWrites = 0                                   // writes after an erase that the controller does not take (its USB stalls)
     var goneAfterErase = false                           // the controller left USB under the erase: every write after it fails
+    var busyBefore = 0                                   // writes before an erase that the controller does not take
+    var chip: ByteArray? = null                          // what the chip holds, whatever the summary says: read past it is erased (0xFF)
     var halfDone = mutableListOf<Pair<Boolean, Long>>()   // summaries after an erase that say (ready, used) as given, before it is done
     var closed = false
     var most: Int? = null                                // a read answers at most this many bytes, whatever was asked
@@ -29,6 +31,7 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
     override fun write(bytes: ByteArray) {
         if (erasing && goneAfterErase) throw SerialGone("the flight controller takes nothing: is it still plugged in?")
         if (erasing && busyWrites > 0) { busyWrites--; throw SerialBusy() }
+        if (!erasing && busyBefore > 0) { busyBefore--; throw SerialBusy() }
         incoming += bytes
         while (incoming.size >= 9) {
             check(String(incoming, 0, 3, Charsets.US_ASCII) == "\$X<") { "not a request" }
@@ -63,7 +66,12 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
                 val t = if (temps.size > 1) temps.removeAt(0) else temps[0]
                 Msp.frame(command, ByteArray(15) + byteArrayOf(1, 0x55, 26) + ByteArray(4) + byteArrayOf(0) + byteArrayOf(t.toByte(), (t shr 8).toByte()), '>')
             }
-            Msp.DATAFLASH_READ -> {
+            Msp.DATAFLASH_READ -> chip?.let { c ->
+                val at = Msp.u32(payload, 0).toInt()
+                val n = Msp.u16(payload, 4)
+                val bytes = ByteArray(n) { i -> if (at + i < c.size) c[at + i] else 0xFF.toByte() }
+                Msp.frame(command, Msp.le32(at.toLong()) + byteArrayOf(n.toByte(), (n shr 8).toByte(), 0) + bytes, '>')
+            } ?: run {
                 val at = Msp.u32(payload, 0).toInt()
                 val n = minOf(Msp.u16(payload, 4) + more, most ?: Int.MAX_VALUE, flash.size - at)
                 Msp.frame(command, Msp.le32(at.toLong()) + byteArrayOf(n.toByte(), (n shr 8).toByte(), 0) + flash.copyOfRange(at, at + n), '>')

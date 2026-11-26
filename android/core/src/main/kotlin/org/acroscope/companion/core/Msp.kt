@@ -17,10 +17,21 @@ class MspRejected(val command: Int) : IOException("the flight controller rejecte
 class MspTimeout : IOException("the flight controller stopped answering")
 
 /** The flight controller took nothing for a while but is still there: busy, as while its flash chip erases. */
-class SerialBusy : IOException("the flight controller takes nothing for now")
+class SerialBusy : IOException("the flight controller takes nothing: it is busy, or no longer plugged in")
 
 /** The line to the flight controller is gone: unplugged, or it dropped off USB to restart. */
 class SerialGone(message: String) : IOException(message)
+
+/** What a USB transfer to the flight controller that failed means, by how long it took: at once, the line is gone (a
+ *  cable pulled, the board restarting); after its time, the controller took or said nothing (busy, or silent). */
+object Transfers {
+    fun failedWrite(tookMs: Long, timeoutMs: Int): IOException =
+        if (tookMs < timeoutMs / 2) SerialGone("the flight controller takes nothing: is it still plugged in?") else SerialBusy()
+
+    /** Null: only silence. */
+    fun failedRead(tookMs: Long, timeoutMs: Int): IOException? =
+        if (tookMs < timeoutMs / 2) SerialGone("the flight controller is gone") else null
+}
 
 /**
  * MSP v2 as Betaflight speaks it over USB: `$X<`, a flag byte, the command and the payload's size (u16, little

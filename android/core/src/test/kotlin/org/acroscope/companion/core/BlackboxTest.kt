@@ -173,7 +173,41 @@ class BlackboxTest {
     fun `a controller that is gone under the erase is not taken for erased`() {
         box.download(dir)
         fc.goneAfterErase = true
-        assertFailsWith<IOException> { box.erase() }
+        assertFailsWith<SerialGone> { box.erase() }
+        assertEquals(1, paused.size)                                             // at once, not after five minutes of asking
+    }
+
+    @Test
+    fun `an erase the controller did not take is asked for again`() {
+        box.download(dir)
+        fc.busyBefore = 1                                                        // the erase's own question did not go out
+        box.erase()
+        assertEquals(0, fc.flash.size)
+        assertEquals(1, fc.asked.count { it == Msp.DATAFLASH_ERASE.toString() })   // taken the second time
+    }
+
+    @Test
+    fun `a flash that reads as erased where the log was is blank`() {
+        val other = FakeFc().also { it.chip = ByteArray(0) }                      // a new line, after the erase's own was lost
+        val back = Blackbox(other, { ZonedDateTime.parse("2026-12-12T08:45:00+01:00") })
+        assertEquals(true, back.blank(log.size.toLong()))
+        assertEquals(listOf("read@0+4096", "read@${log.size / 2}+4096", "read@${log.size - 4096}+4096"), other.asked)
+    }
+
+    @Test
+    fun `a flash that says it is empty with the old log still on the chip is not blank`() {
+        val big = ByteArray(3 * 4096) { 0x41 }
+        for ((n, at) in listOf(0, big.size / 2, big.size - 1).withIndex()) {         // erased in pieces and cut off: any part left
+            val chip = ByteArray(big.size) { 0xFF.toByte() }.also { it[at] = 0x41 }
+            val other = FakeFc().also { it.chip = chip }
+            assertEquals(false, Blackbox(other, { ZonedDateTime.parse("2026-12-12T08:45:00+01:00") }).blank(big.size.toLong()), "left at $at ($n)")
+        }
+    }
+
+    @Test
+    fun `a flash that cannot be read back is not known to be blank`() {
+        val other = FakeFc().also { it.chip = ByteArray(0); it.spoil = { c, r -> if (c == Msp.DATAFLASH_READ) Msp.frame(c, Msp.le32(0) + byteArrayOf(0, 0, 0), '>') else r } }   // a read that brings nothing
+        assertEquals(null, Blackbox(other, { ZonedDateTime.parse("2026-12-12T08:45:00+01:00") }).blank(log.size.toLong()))
     }
 
     @Test

@@ -143,7 +143,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             (card as? CardView.Locked)?.let { c -> Button({ openCard(c.request) }, Modifier.testTag("allow")) { Text("Allow the card") } }
                             (quad as? QuadView.Locked)?.let { q -> Button(q.ask, Modifier.testTag("allow-quad")) { Text("Allow the quad") } }
-                            Button({ focus.clearFocus(); beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = something && collect !is Work.Running && free !is Work.Running) { Text("Start") }
+                            Button({ focus.clearFocus(); beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = something && collect !is Work.Running && free !is Work.Running && erase !is Work.Running) { Text("Start") }
                             if (card is CardView.Open || card is CardView.Unreadable)
                                 OutlinedButton(openStorage, Modifier.testTag("eject"), enabled = collect !is Work.Running && free !is Work.Running) { Text("Eject the card…") }
                         }

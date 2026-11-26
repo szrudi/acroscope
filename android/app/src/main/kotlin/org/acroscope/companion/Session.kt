@@ -74,7 +74,7 @@ class Session(private val g: Graph) {
     /** The line to a quad whose log was just saved, kept open: only that connection may erase the flash. With it,
      *  which device it is (a quad swapped meanwhile is another) and the log it saved (the erase is on offer only
      *  while that log is still on the phone). */
-    private class Held(val port: SerialPort, val box: Blackbox, val device: String, val log: Item)
+    private class Held(val port: SerialPort, val box: Blackbox, val device: String, val log: Item, val serial: String? = null)
     @Volatile private var held: Held? = null
     /** The quad's view is worked out and shown in one step: one worked out before a save ended must not cover it. */
     private val seeing = Any()
@@ -209,6 +209,7 @@ class Session(private val g: Graph) {
     /** One reading of the quad's temperature and of how much log its flash holds, unless a save or an erase has its
      *  line: those say it themselves. */
     fun feel(looping: Boolean = false) {
+        if (erase.value is Work.Running) return                 // the erase has the quad, its line lost or not
         if (!wire.tryLock()) return
         try {
             if (looping && !watched) return             // the screen was left while this reading waited its turn
@@ -228,28 +229,56 @@ class Session(private val g: Graph) {
         }
     }
 
-    /** How long a quad that dropped off USB under the erase is waited for. */
+    /** How long a quad that dropped off USB under the erase has to come back, and how long the erase may take in all
+     *  (as [Blackbox.erase] gives it). */
     @Volatile var returnMs = 30_000L
+    @Volatile var eraseMs = 300_000L
 
     /**
      * A quad can restart under the erase (some boards drop off USB when the chip is done, or while it erases): the
-     * erase's own line is then gone. Wait for the quad to come back by the same name, and read its flash on a new
-     * line: empty is erased.
+     * erase's own line is then gone. Wait for that quad to come back (its name, and its serial number when both
+     * say one), then ask its flash on a new line until the erase's time is up. Erased takes the summary saying ready
+     * and empty, and the chip reading as erased where the log was ([Blackbox.blank]); anything short of that is
+     * said as it is, and not known is not called erased.
      */
-    private suspend fun emptyWhenBack(name: String?): Boolean {
-        if (name == null) return false
+    private suspend fun whenBack(h: Held, name: String?, deadline: Long): Work.Finished {
+        val unknown = "whether its flash is erased is not known: plug it in and look at its line before flying"
+        if (name == null) return Work.Finished("the quad dropped off USB during the erase; $unknown", false)
         erase.value = Work.Running("the quad dropped off USB during the erase (it may have restarted): keep it plugged in, waiting for it to come back", 0, 0)
         val until = System.currentTimeMillis() + returnMs
-        while (System.currentTimeMillis() < until) {
+        var back = false
+        while (System.currentTimeMillis() < if (back) maxOf(deadline, until) else until) {
             delay(1000)
-            val s = g.quads.state() as? QuadState.Ready ?: continue
-            if (s.name != name) continue
-            val flash = wire.withLock {
-                runCatching { g.quads.open().use { Blackbox(it, g.clock).flash() } }.getOrNull()
-            } ?: continue
-            if (flash.present && flash.ready) return flash.used == 0L
+            when (val s = g.quads.state()) {
+                is QuadState.NeedsPermission -> if (s.name == name) {
+                    back = true
+                    erase.value = Work.Running("the quad is back: allow the app to talk to it again, then it looks at the flash", 0, 0)
+                }
+                is QuadState.Ready -> {
+                    if (s.name != name || (h.serial != null && s.serial != null && s.serial != h.serial)) continue
+                    back = true
+                    val (f, blank) = wire.withLock {
+                        runCatching {
+                            g.quads.open().use { port ->
+                                val box = Blackbox(port, g.clock)
+                                val f = box.flash()
+                                f to if (f.present && f.ready && f.used == 0L) box.blank(h.log.size) else null
+                            }
+                        }.getOrNull()
+                    } ?: continue
+                    when {
+                        !f.present || !f.ready -> erase.value = Work.Running("the quad is back, its flash still busy: keep it plugged in", 0, 0)
+                        f.used != 0L -> return Work.Finished("the quad came back with its log still on it (${Format.bytes(f.used)}): the flash was not erased", false)
+                        blank == true -> return Work.Finished("the quad's flash is erased (its USB line dropped on the way)", true)
+                        blank == false -> return Work.Finished("the quad came back saying its flash is empty, but part of its old log is still on the chip: erase it in the Betaflight app before flying", false)
+                    }
+                }
+                QuadState.None -> {}
+            }
         }
-        return false
+        return Work.Finished(
+            if (back) "the quad came back, but its flash did not say it was erased in time; $unknown"
+            else "the quad dropped off USB during the erase and did not come back within ${returnMs / 1000} s; $unknown", false)
     }
 
     fun allow(tree: Uri) {
@@ -282,7 +311,7 @@ class Session(private val g: Graph) {
     /** One press collects whatever is there: the quad's log, the card's clips, or both. */
     fun startCollect() {
         val open = (card.value as? CardView.Open)?.takeIf { it.clips > 0 }
-        val log = quad.value is QuadView.Ready && flash.value != 0L
+        val log = quad.value is QuadView.Ready && flash.value != 0L && erase.value !is Work.Running   // an erase has the quad
         synchronized(seeing) {
             if ((open == null && !log) || collect.value is Work.Running || free.value is Work.Running) return
             settle(erase, upload, free)
@@ -295,7 +324,7 @@ class Session(private val g: Graph) {
     fun collectNow(tree: Uri?, stop: () -> Boolean): Work.Finished {
         val said = mutableListOf<String>()
         var ok = true
-        if (g.quads.state() is QuadState.Ready && held == null) {
+        if (g.quads.state() is QuadState.Ready && held == null && erase.value !is Work.Running) {
             try {
                 said += wire.withLock {
                     unwatch()                       // the save opens the line itself, and keeps it for the erase
@@ -357,7 +386,7 @@ class Session(private val g: Graph) {
             }
             val item = try { g.collector.addLog(saved.file.name, null) { saved.file.inputStream() } } finally { saved.file.delete() }
             synchronized(seeing) {
-                held = Held(port, box, plugged?.id ?: name, item)
+                held = Held(port, box, plugged?.id ?: name, item, plugged?.serial)
                 quad.value = QuadView.Saved(name, item.name)
             }
             return "log saved (${Format.bytes(item.size)})" + (saved.peakTemp?.let { ", the core got to $it °C" } ?: "")
@@ -380,12 +409,13 @@ class Session(private val g: Graph) {
         }
         val box = h.box
         val name = (quad.value as? QuadView.Saved)?.name
+        val deadline = System.currentTimeMillis() + eraseMs
         val done = try {
             wire.withLock { box.erase() }
             Work.Finished("the quad's flash is erased", true)
         } catch (e: Exception) {
             letGo()
-            if (e is SerialGone && emptyWhenBack(name)) Work.Finished("the quad's flash is erased (it restarted on the way)", true)
+            if (e is SerialGone) whenBack(h, name, deadline)
             else Work.Finished("the flash was not erased: ${e.message ?: e.javaClass.simpleName}", false)
         }
         erase.value = done
