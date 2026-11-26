@@ -855,6 +855,8 @@ class StatusTest(_Drop):
                                ("OSError: /var/cache/it's/arms/c1/0.json, /srv/fpv data/blackbox/x.bbl", "OSError: 0.json, x.bbl")):
                 self.db.set_batch(B, status="failed", error=said)
                 self.assertEqual(drop.batches_of(DEV)[0]["error"], told, said)
+        self.db.set_batch(B, status="failed", error="E" * 300)
+        self.assertEqual(drop.batches_of(DEV)[0]["error"], "E" * 300)       # 300 is short enough
         self.assertEqual(drop.retry(DEV, B)["error"], None)                  # and no error is none
 
     def test_a_device_retries_its_own_failed_batch(self):

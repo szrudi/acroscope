@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -799,6 +800,18 @@ class InProcessTest(unittest.TestCase):
         self.assertIn(("Connection", "close"), sent)
         self.assertEqual(timeouts[-1], 60)                                   # the answer itself is written with the usual patience,
         self.assertTrue(len(timeouts) > 1 and all(0 < t <= routes.DRAIN_WAIT for t in timeouts[:-1]), timeouts)    # each read before it with what is left of DRAIN_WAIT
+
+    def test_the_drain_ends_at_its_deadline(self):
+        """The deadline can pass between two reads (a read that returned just in time): the drain ends there, and no
+        read is given what is left of a deadline already past."""
+        timeouts, clock = [], iter(i * 0.15 for i in range(1000))
+        h = mock.Mock(rfile=io.BufferedReader(io.BytesIO(b"x" * (3 << 20))), wfile=io.BytesIO(), command="PATCH",
+                      _drop_unread=3 << 20, _drop_drain=routes.DRAIN, _drop_unframed=False)
+        h.connection.settimeout = timeouts.append
+        with mock.patch.object(routes, "DRAIN_WAIT", 0.4), mock.patch.object(routes, "time", types.SimpleNamespace(monotonic=lambda: next(clock))):
+            routes._drain(h)
+        self.assertEqual(h.rfile.tell(), 2 << 16)                            # two reads in 0.4 s of a clock 0.15 s a look
+        self.assertTrue(all(t > 0 for t in timeouts), timeouts)
 
     def test_a_connection_kept_open_is_given_its_patience_back(self):
         """STALL is for the middle of a request. Between two requests a device may keep its connection as long as it
