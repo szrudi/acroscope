@@ -127,7 +127,7 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   explicitly): what `acroscope tricks set | unset | on | off | skill` and the player's configuration page (#45)
   write, checked by `tricks.check_layer` before it is stored. A tricks file is the exchange format, not storage
   (Rudi, 2026-10-17): `tricks export | import` and the page's share row, `toml_out.py` writes it. `GET /api/tricks` is `tricks.describe()`. The player's `/config` page
-  (`acroscope/static/config.html`, one file like the player, eight tabs) edits that layer whole through
+  (`acroscope/static/config.html`, one file like the player, five tabs; the tricks layer is the detection tab) edits that layer whole through
   `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
   against what the server then holds.
 - Sharing (#57, `acroscope/share/`): `acroscope share <session> <moment>` renders `shares/<token>/` (a cut of the

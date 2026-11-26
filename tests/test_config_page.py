@@ -30,6 +30,12 @@ except ImportError:
 LIBS = Path(os.environ.get("ACROSCOPE_BROWSER_LIBS", "~/.cache/acroscope-browser")).expanduser() / "usr" / "lib" / "x86_64-linux-gnu"
 PHONE = {"viewport": {"width": 412, "height": 927}, "is_mobile": True, "has_touch": True}
 DESKTOP = {"viewport": {"width": 1440, "height": 900}}
+# the page's fetch made slow for one kind of request, in the page itself (a Playwright route handler would hold up every
+# other request behind it)
+# the answers to the first request matching each part held back 1.5 s after the server gave them (the server's view
+# taken now, seen late)
+SLOW_ANSWER_ONCE = """(parts) => { const f = window.fetch, left = [...parts]; window.fetch = (u, o) => { const i = left.findIndex(x => String(u).includes(x)); if (i < 0) return f(u, o); left.splice(i, 1); return f(u, o).then(r => new Promise(res => setTimeout(() => res(r), 1500))); }; }"""
+SLOW_FETCH = """(part) => { const f = window.fetch; window.fetch = (u, o) => String(u).includes(part) ? new Promise(r => setTimeout(r, 1500)).then(() => f(u, o)) : f(u, o); }"""
 S = "2026-10-04-motor-jitter-testing"
 OS = "2026-10-05-osd"                     # a session with a clip whose OSD is drawn in the synthetic font (the OSD tab)
 
@@ -137,18 +143,41 @@ class ConfigPageTest(unittest.TestCase):
 
     # ---- the page itself -----------------------------------------------------------------------------------------
 
+    def until(self, expect, seconds=5.0):
+        """Wait for the server to hold `expect` (for writes that are not one redraw each)."""
+        end = time.time() + seconds
+        while time.time() < end and self.layer() != expect:
+            time.sleep(0.1)
+        self.assertEqual(self.layer(), expect)
+
+    def fold(self, page, name):
+        """Open one of the detection tab's folded parts (every parameter, check, advanced)."""
+        if not page.eval_on_selector(f"details[data-fold={name}]", "e => e.open"):
+            page.click(f"details[data-fold={name}] > summary")
+
+    def skill(self, page, value):
+        page.click(f"#skill label.seg:has(input[value={value}])")
+
     def test_tabs_and_the_way_in(self):
         page = self.open()
-        self.assertEqual(page.eval_on_selector_all("#tabs span", "els => els.map(e => e.dataset.tab)"), ["profile", "drones", "tricks", "settings", "tags", "shares", "osd", "devices"])
-        self.assertEqual(page.get_attribute("section.on", "data-panel"), "profile")
-        self.assertIn("15 of 15 tricks on", page.text_content("#status"))
-        for t in ("drones", "tricks", "settings", "tags", "osd", "devices", "shares"):
+        self.assertEqual(page.eval_on_selector_all("#tabs span", "els => els.map(e => e.dataset.tab)"), ["tags", "shares", "detection", "osd", "devices"])
+        self.assertEqual(page.get_attribute("section.on", "data-panel"), "tags")
+        self.assertIn("15/15 tricks on", page.text_content("#status"))
+        for t in ("shares", "detection", "osd", "devices", "tags"):
             page.click(f"#tabs [data-tab={t}]")
             self.assertEqual(page.get_attribute("section.on", "data-panel"), t)
             if t == "osd":
                 page.wait_for_selector("#oDump")                         # its panel loads the profiles first
             self.assertTrue(page.eval_on_selector(f"section[data-panel={t}]", "e => e.innerHTML.length > 100"), t)
-        self.assertEqual(page.evaluate("() => location.hash"), "#shares")
+        self.assertEqual(page.evaluate("() => location.hash"), "#tags")
+        # the four tabs that went into detection keep their links, and a remembered one
+        for old in ("profile", "drones", "tricks", "settings"):
+            p = self.open(f"/config#{old}")
+            self.assertEqual(p.get_attribute("section.on", "data-panel"), "detection", old)
+        p.evaluate("() => localStorage.setItem('acro.cfgtab', 'drones')")
+        p.goto(self.url + "/config")
+        p.wait_for_function("() => typeof D !== 'undefined' && D !== null && document.querySelector('section.on')")
+        self.assertEqual(p.get_attribute("section.on", "data-panel"), "detection")
         tags = self.open("/config#tags")
         self.assertEqual(tags.get_attribute("section.on", "data-panel"), "tags")
         # from the player: the header's gear, and the tag bar's button, both to this page
@@ -161,83 +190,424 @@ class ConfigPageTest(unittest.TestCase):
         self.assertIsNone(player.query_selector("#tagmgr"))                 # the manager left the player
 
     def test_phone_layout(self):
-        page = self.open(size=PHONE)
+        page = self.open("/config#detection", size=PHONE)
         self.assertTrue(page.evaluate("() => document.body.classList.contains('phone')"))
         r = page.evaluate("() => { const t = document.getElementById('tabs').getBoundingClientRect(); return {bottom: t.bottom, h: innerHeight, w: t.width, iw: innerWidth}; }")
         self.assertAlmostEqual(r["bottom"], r["h"], delta=1)                 # the tab bar at the bottom of the screen, where the thumb is
         self.assertEqual(r["w"], r["iw"])
         self.assertFalse(page.evaluate("() => document.documentElement.scrollWidth > innerWidth"))   # nothing pokes out sideways
-        page.click("#tabs [data-tab=drones]")
+        # the status says it all on its own line, not cut off beside the title
+        self.assertTrue(page.eval_on_selector("#status", "e => e.scrollWidth <= e.clientWidth + 1"))
+        self.assertTrue(page.is_visible("#scope [data-craft=OttO]"))
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
         self.assertFalse(page.evaluate("() => document.documentElement.scrollWidth > innerWidth"))
-        self.assertTrue(page.is_visible("#crafts [data-craft=OttO]"))
-        # eight tabs side by side on the phone: none wraps or spills (the labels shrink)
+        # the three skill choices of a quad on one line
+        tops = page.eval_on_selector_all("#skill label.seg", "els => els.map(e => Math.round(e.getBoundingClientRect().top))")
+        self.assertEqual((len(tops), len(set(tops))), (3, 1), tops)
+        # five tabs side by side on the phone: none wraps or spills
         boxes = page.eval_on_selector_all("#tabs span", "els => els.map(e => { const r = e.getBoundingClientRect(); return [r.left, r.right, r.height, e.scrollWidth <= e.clientWidth + 1]; })")
         self.assertTrue(all(b[3] for b in boxes), boxes)
         self.assertTrue(all(a[1] <= b[0] + 0.5 for a, b in zip(boxes, boxes[1:])), boxes)
-        self.assertEqual(len(boxes), 8)
+        self.assertEqual(len(boxes), 5)
         page.click("#tabs [data-tab=osd]")
         page.wait_for_selector("#oDump")
         self.assertFalse(page.evaluate("() => document.documentElement.scrollWidth > innerWidth"))
 
-    # ---- profile -------------------------------------------------------------------------------------------------
+    # ---- detection: all quads ------------------------------------------------------------------------------------
 
-    def test_profile_sets_numbers_and_the_preset(self):
-        page = self.open()
+    def test_parameters_and_the_skill_for_all_quads(self):
+        page = self.open("/config#detection")
         self.assertEqual(self.events(), ["right roll attempt, 249 deg"])
+        self.assertIn("none: every trick and parameter as shipped", page.text_content("#mine"))
+        self.assertFalse(page.is_visible("#params"))                         # every parameter is folded away
+        self.fold(page, "params")
         row = page.locator("#params .prm[data-p=flip_min_deg]")
-        self.assertEqual(row.locator(".def").text_content(), "270")
-        self.assertEqual(row.locator(".src").text_content(), "shipped")
+        self.assertEqual(row.locator(".def").text_content(), "")              # as shipped: nothing to say
+        self.assertEqual(row.locator(".src").count(), 0)
         self.assertIn("roll", row.locator(".used").text_content())
         self.act(page, lambda: (row.locator("[data-val]").fill("240"), row.locator("[data-val]").press("Tab")), {"version": 1, "params": {"flip_min_deg": 240}})   # the Tab blurs: one change
+        self.assertTrue(page.is_visible("#params"))                          # the redraw keeps the fold open
         row = page.locator("#params .prm[data-p=flip_min_deg]")
-        self.assertEqual(row.locator(".src").text_content(), "yours")
+        self.assertEqual(row.locator(".src").text_content(), "override")
+        self.assertEqual(row.locator(".def").text_content(), "shipped 270")
         self.assertTrue(row.locator("[data-reset]").is_visible())
-        self.assertIn("your layer in the database", page.text_content("#status"))
+        self.assertIn("flip_min_deg 240", page.text_content("#mine"))        # what differs, up top
+        self.assertIn("1 override", page.text_content(".trk[data-id=roll] .head"))
         self.assertEqual(self.events(), ["right roll"])                     # the suggestions follow, no restart
-        self.act(page, lambda: row.locator("[data-reset]").click(), {"version": 1})
-        self.assertEqual(page.locator("#params .prm[data-p=flip_min_deg] .src").text_content(), "shipped")
-        self.act(page, lambda: page.check("input[name=skill][value=beginner]"), {"version": 1, "skill": "beginner"})
+        self.act(page, lambda: page.click("#mine [data-unparam=flip_min_deg]"), {"version": 1})
+        self.assertEqual(page.locator("#params .prm[data-p=flip_min_deg] .src").count(), 0)
+        self.assertIn("The shipped parameters", page.text_content("#skillHint"))
+        self.assertTrue(page.is_checked("#skill input[value=none]"))
+        self.act(page, lambda: self.skill(page, "beginner"), {"version": 1, "skill": "beginner"})
+        self.assertTrue(page.is_checked("#skill input[value=beginner]"))
+        self.assertEqual(page.text_content("#skillHint"), "A trick counts when it is nearly there (a roll from 240° instead of 270°): it sets 10 parameters at once. Your overrides still win over it.")
         self.assertEqual(page.locator("#params .prm[data-p=flip_min_deg] .src").text_content(), "preset beginner")
         self.assertEqual(page.input_value("#params .prm[data-p=flip_min_deg] [data-val]"), "240")
+        self.assertIn("skill beginner", page.text_content("#mine"))
         self.assertEqual(self.events(), ["right roll"])
+        self.act(page, lambda: page.click("#mine [data-unskill]"), {"version": 1})
+        self.act(page, lambda: self.skill(page, "advanced"), {"version": 1, "skill": "advanced"})
+        self.assertTrue(page.text_content("#skillHint").startswith("A trick counts only when it is clean (a roll from 300° instead of 270°): it sets 11 parameters at once."))
+        self.act(page, lambda: self.skill(page, "none"), {"version": 1})       # "the defaults" takes the skill away
+        self.assertEqual(page.text_content("#skillHint"), "The shipped parameters, in between: a trick counts when it is nearly there with beginner, counts only when it is clean with advanced.")
         page.fill("#pfilter", "orbit")
         self.assertEqual(page.eval_on_selector_all("#params .prm", "els => els.map(e => e.dataset.p)"), ["orbit_min_deg", "orbit_min_dur", "orbit_max_tilt"])
+        page.fill("#pfilter", "split-s")                                     # by a trick: its parameters, whatever their names
+        split = ["stick_min", "split_s_roll_min", "split_s_roll_max", "split_s_over_deg", "split_s_pull_deg", "split_s_out_deg"]
+        self.assertEqual(sorted(page.eval_on_selector_all("#params .prm", "els => els.map(e => e.dataset.p)")), sorted(split))
+        row = page.locator("#params .prm[data-p=stick_min]")
+        self.act(page, lambda: (row.locator("[data-val]").fill("35"), row.locator("[data-val]").press("Tab")), {"version": 1, "params": {"stick_min": 35}})   # a filtered row saves
+        self.assertEqual(page.input_value("#pfilter"), "split-s")              # and the filter outlives the redraw
+        self.assertEqual(sorted(page.eval_on_selector_all("#params .prm", "els => els.map(e => e.dataset.p)")), sorted(split))
 
-    # ---- drones --------------------------------------------------------------------------------------------------
+    def test_a_tricks_parameters_under_it(self):
+        """A trick opens to the parameters it reads and nothing else; one set there is the same parameter everywhere."""
+        page = self.open("/config#detection")
+        self.assertFalse(page.is_visible(".trk[data-id=split-s] .det"))
+        page.click(".trk[data-id=split-s] .head .id")
+        self.assertEqual(page.eval_on_selector_all(".trk[data-id=split-s] .det .prm", "els => els.map(e => e.dataset.p)"),
+                         ["stick_min", "split_s_roll_min", "split_s_roll_max", "split_s_over_deg", "split_s_pull_deg", "split_s_out_deg"])
+        self.assertIn("6 parameters", page.text_content(".trk[data-id=split-s] .chev"))
+        self.assertIn("also flip", page.text_content(".trk[data-id=split-s] .prm[data-p=stick_min] .used"))   # what else it moves
+        self.assertEqual(page.text_content(".trk[data-id=split-s] .prm[data-p=split_s_roll_min] .used"), "")
+        self.assertFalse(page.is_visible(".trk[data-id=split-s] .def-lines div"))                            # how it is found: folded too
+        row = page.locator(".trk[data-id=split-s] .prm[data-p=stick_min]")
+        self.act(page, lambda: (row.locator("[data-val]").fill("35"), row.locator("[data-val]").press("Tab")), {"version": 1, "params": {"stick_min": 35}})
+        self.assertTrue(page.is_visible(".trk[data-id=split-s] .det"))       # still open after the save
+        self.assertIn("1 override", page.text_content(".trk[data-id=flip] .head"))
+        self.act(page, lambda: page.click(".trk[data-id=split-s] .prm[data-p=stick_min] [data-reset]"), {"version": 1})
 
-    def test_drones_set_a_craft_apart(self):
-        page = self.open("/config#drones")
-        self.assertEqual(page.eval_on_selector_all("#crafts [data-craft]", "els => els.map(e => e.dataset.craft)"), ["OttO"])   # seen in the log
-        self.assertTrue(page.locator("#crafts [data-craft=OttO]").evaluate("e => e.classList.contains('on')"))
+    # ---- detection: one quad -------------------------------------------------------------------------------------
+
+    def test_a_quad_set_apart(self):
+        page = self.open("/config#detection")
+        self.assertEqual(page.eval_on_selector_all("#scope [data-craft]", "els => els.map(e => e.dataset.craft)"), ["OttO"])   # seen in the log
+        self.assertTrue(page.locator("#allQuads").evaluate("e => e.classList.contains('on')"))
+        self.assertIsNone(page.query_selector("#quad"))
+        self.assertIn("apply to every quad", page.text_content("#scopeHint"))
+        self.assertEqual(page.locator("#scope [data-craft=OttO] .n").count(), 0)   # no override yet
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
+        self.assertEqual(page.eval_on_selector_all("#scope .chip.on", "els => els.map(e => e.id || e.dataset.craft)"), ["OttO"])
+        self.assertTrue(page.is_checked("#skill input[value=inherit]"))
+        self.assertEqual(page.eval_on_selector_all("[data-prop]", "els => els.map(e => e.dataset.prop)"), ["size_mm", "weight_g", "hover_pct"])
+        self.assertIn("apply only to OttO's flights", page.text_content("#scopeHint"))
+        self.assertIn("overrides for OttO", page.text_content("#mine .lbl"))
+        self.assertIn("none: it flies on the all-quads settings", page.text_content("#mine"))
         self.act(page, lambda: (page.fill("[data-prop=size_mm]", "75"), page.press("[data-prop=size_mm]", "Tab")), {"version": 1, "craft": {"OttO": {"size_mm": 75}}})
-        row = page.locator("#cparams .prm[data-p=flip_min_deg]")
+        page.click(".trk[data-id=roll] .head .id")
+        row = page.locator(".trk[data-id=roll] .prm[data-p=flip_min_deg]")
         self.act(page, lambda: (row.locator("[data-val]").fill("200"), row.locator("[data-val]").press("Tab")), {"version": 1, "craft": {"OttO": {"size_mm": 75, "params": {"flip_min_deg": 200}}}})
-        self.assertEqual(page.locator("#cparams .prm[data-p=flip_min_deg] .src").text_content(), "craft OttO")
+        self.assertEqual(page.locator(".trk[data-id=roll] .prm[data-p=flip_min_deg] .src").text_content(), "override")
         self.assertEqual(self.events(), ["right roll"])                     # the arm is OttO's
-        self.act(page, lambda: page.uncheck("#ctricks input[data-id=roll]"), {"version": 1, "craft": {"OttO": {"size_mm": 75, "params": {"flip_min_deg": 200}, "trick": [{"id": "roll", "enabled": False}]}}})
+        self.act(page, lambda: page.uncheck(".trk[data-id=roll] [data-on]"), {"version": 1, "craft": {"OttO": {"size_mm": 75, "params": {"flip_min_deg": 200}, "trick": [{"id": "roll", "enabled": False}]}}})
         self.assertEqual(self.events(), [])                                 # 249 deg is a roll at 200, and the roll is off for OttO
-        page.click("#tabs [data-tab=tricks]")
-        self.assertTrue(page.is_checked("#tricks .trk[data-id=roll] [data-on]"))        # for any other quad it is on
-        self.assertEqual(page.locator("#tricks .trk[data-id=roll] .src").text_content(), "shipped")
-        page.click("#tabs [data-tab=drones]")
-        self.act(page, lambda: page.check("input[name=cskill][value=advanced]"),
+        self.assertEqual(page.text_content("#detectionPanel h2 .dim"), "14 of 15 on for OttO")
+        self.assertEqual(page.eval_on_selector_all(".trk[data-id=roll] .head .src", "els => els.map(e => e.textContent)"), ["2 overrides"])   # counted, no badge beside it
+        self.assertEqual([x.strip() for x in page.eval_on_selector_all("#mine .it", "els => els.map(e => e.textContent)")], ["size_mm 75↺", "flip_min_deg 200shipped 270↺", "roll off↺"])
+        page.click("#allQuads")
+        page.wait_for_function("() => !document.querySelector('#quad')")
+        self.assertTrue(page.is_checked(".trk[data-id=roll] [data-on]"))     # for any other quad it is on
+        self.assertEqual(page.text_content("#scope [data-craft=OttO] .n"), "3")   # the chip says OttO has its own
+        self.assertIn("none: every trick", page.text_content("#mine"))
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
+        self.assertEqual(page.text_content("#skillHint"), "OttO uses the skill chosen for all quads: none, the shipped defaults.")
+        self.assertEqual(page.eval_on_selector_all("#skill input", "els => els.map(e => e.value)"), ["inherit", "beginner", "advanced"])   # no way under the all-quads preset
+        self.act(page, lambda: self.skill(page, "advanced"),
                  {"version": 1, "craft": {"OttO": {"size_mm": 75, "params": {"flip_min_deg": 200}, "trick": [{"id": "roll", "enabled": False}], "skill": "advanced"}}})
+        self.assertIn("For OttO it goes over the all-quads skill and overrides", page.text_content("#skillHint"))
+        self.act(page, lambda: page.click("#mine [data-untrick=roll]"),
+                 {"version": 1, "craft": {"OttO": {"size_mm": 75, "params": {"flip_min_deg": 200}, "skill": "advanced"}}})
+        self.act(page, lambda: page.click("#mine [data-unprop=size_mm]"), {"version": 1, "craft": {"OttO": {"params": {"flip_min_deg": 200}, "skill": "advanced"}}})
+        self.act(page, lambda: self.skill(page, "inherit"), {"version": 1, "craft": {"OttO": {"params": {"flip_min_deg": 200}}}})   # "as all quads" takes the quad's away
+        self.act(page, lambda: self.skill(page, "beginner"), {"version": 1, "craft": {"OttO": {"params": {"flip_min_deg": 200}, "skill": "beginner"}}})
+        self.assertIn("Parameters it does not set keep their all-quads values.", page.text_content("#skillHint"))
+        self.act(page, lambda: page.click("#mine [data-unskill]"), {"version": 1, "craft": {"OttO": {"params": {"flip_min_deg": 200}}}})
+        self.act(page, lambda: page.click("#mine [data-unparam=flip_min_deg]"), {"version": 1})                # the quad's own, never all quads'
+        self.assertEqual(page.eval_on_selector_all("#scope .chip.on", "els => els.map(e => e.id || e.dataset.craft)"), ["OttO"])   # chosen still
+
+    def test_a_trick_off_for_all_quads_says_so_on_a_quad(self):
+        self.api.set_setting("tricks", {"version": 1, "trick": [{"id": "crash", "enabled": False}], "params": {"flip_min_deg": 240}})
+        page = self.open("/config#detection")
+        self.assertEqual(page.eval_on_selector_all(".trk[data-id=crash] .head .src", "els => els.map(e => e.textContent)"), ["1 override"])   # counted, not badged twice
+        self.assertEqual(page.locator(".trk[data-id=split-s] .head .src").count(), 0)   # as shipped: no badge
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
+        self.assertEqual(page.text_content(".trk[data-id=crash] .head .src"), "all quads")
+        self.assertFalse(page.is_checked(".trk[data-id=crash] [data-on]"))
+        page.click(".trk[data-id=roll] .head .id")
+        self.assertEqual(page.text_content(".trk[data-id=roll] .prm[data-p=flip_min_deg] .src"), "all quads")   # not this quad's override
+        self.assertEqual(page.locator(".trk[data-id=roll] .prm[data-p=flip_min_deg] [data-reset]").count(), 0)
 
     def test_a_craft_declared_in_another_case_is_the_same_chip(self):
         """A section written as `otto` and a log that says `OttO`: one chip, and the knobs write into the section."""
         self.api.set_setting("tricks", {"version": 1, "craft": {"otto": {"size_mm": 75}}})
-        page = self.open("/config#drones")
-        self.assertEqual(page.eval_on_selector_all("#crafts [data-craft]", "els => els.map(e => e.dataset.craft)"), ["otto"])
+        page = self.open("/config#detection")
+        self.assertEqual(page.eval_on_selector_all("#scope [data-craft]", "els => els.map(e => e.dataset.craft)"), ["otto"])
+        page.click("#scope [data-craft=otto]")
+        page.wait_for_selector("#quad")
         self.assertEqual(page.input_value("[data-prop=size_mm]"), "75")
         self.act(page, lambda: (page.fill("[data-prop=weight_g]", "40"), page.press("[data-prop=weight_g]", "Tab")), {"version": 1, "craft": {"otto": {"size_mm": 75, "weight_g": 40}}})
-        row = page.locator("#cparams .prm[data-p=flip_min_deg]")
+        self.fold(page, "params")
+        row = page.locator("#params .prm[data-p=flip_min_deg]")
         self.act(page, lambda: (row.locator("[data-val]").fill("200"), row.locator("[data-val]").press("Tab")), {"version": 1, "craft": {"otto": {"size_mm": 75, "weight_g": 40, "params": {"flip_min_deg": 200}}}})
         self.assertEqual(self.events(), ["right roll"])                     # the arm's header says OttO
 
-    # ---- tricks --------------------------------------------------------------------------------------------------
+    # ---- detection: what the page must not get wrong ------------------------------------------------------------
+
+    def test_a_quad_chip_while_its_quad_loads(self):
+        """From a chip's click until its quad is in, nothing on the screen writes; a late answer for another quad is dropped."""
+        start = {"version": 1, "params": {"flip_min_deg": 250}, "craft": {"OttO": {"params": {"flip_min_deg": 280}}, "Zed": {"size_mm": 90}}}
+        self.api.set_setting("tricks", start)
+        page = self.open("/config#detection")
+        page.evaluate(SLOW_FETCH, "craft=OttO")
+        page.click("#scope [data-craft=OttO]")
+        self.assertEqual(page.locator("#mine").count(), 0)                    # the all-quads view went at once: no ↺ of it to hit
+        self.assertIn("loading", page.text_content("#detectionPanel"))
+        self.assertTrue(page.is_visible("#scope [data-craft=Zed]"))           # now, not once OttO is in
+        page.click("#scope [data-craft=Zed]")                                  # the chips stay: another quad while OttO loads
+        page.wait_for_selector("#quad")
+        page.wait_for_timeout(1800)                                            # OttO's answer comes in after Zed's
+        self.assertEqual(page.evaluate("() => [craft, DC.craft]"), ["Zed", "Zed"])
+        self.assertEqual(page.text_content("#detectionPanel h2 .dim"), "15 of 15 on for Zed")
+        self.assertEqual(self.layer(), start)
+
+    def test_two_quick_edits_both_land(self):
+        """A value typed and a switch clicked straight after: two saves, one after the other, neither lost."""
+        page = self.open("/config#detection")
+        page.click(".trk[data-id=roll] .head .id")
+        page.fill(".trk[data-id=roll] .prm[data-p=flip_min_deg] [data-val]", "250")
+        page.click(".trk[data-id=split-s] [data-on]")                         # the blur saves 250, the click split-s off
+        self.until({"version": 1, "params": {"flip_min_deg": 250}, "trick": [{"id": "split-s", "enabled": False}]})
+        page.wait_for_function("() => !document.querySelector('.trk[data-id=split-s] [data-on]').checked")
+        self.assertEqual(page.text_content("#err"), "")
+
+    def test_what_a_value_box_does_not_save(self):
+        """A number that is no number, an emptied parameter, a typo in a quad's size: nothing saved, the value in force
+        shown again. An emptied property is the default again; a text property is kept trimmed."""
+        start = {"version": 1, "craft": {"OttO": {"size_mm": 75, "frame": "cine"}}}
+        self.api.set_setting("tricks", start)
+        page = self.open("/config#detection")
+        page.click(".trk[data-id=roll] .head .id")
+        sel = ".trk[data-id=roll] .prm[data-p=flip_min_deg] [data-val]"
+        for typed, key in (("1e999", "Enter"), ("", "Tab")):                   # Enter commits with the box still in focus
+            before = page.evaluate("() => renders")
+            page.fill(sel, typed)
+            page.press(sel, key)
+            page.wait_for_function("(n) => renders > n", arg=before)
+            self.assertEqual(page.input_value(sel), "270", typed)
+        self.assertEqual(self.layer(), start)
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
+        page.click("[data-prop=size_mm]", click_count=3)
+        page.keyboard.type("1e")                                              # not a number yet: the input has no value
+        before = page.evaluate("() => renders")
+        page.keyboard.press("Tab")
+        page.wait_for_function("(n) => renders > n", arg=before)
+        self.assertEqual(page.input_value("[data-prop=size_mm]"), "75")
+        self.assertEqual(self.layer(), start)
+        self.act(page, lambda: (page.fill("[data-prop=frame]", "  whoop "), page.press("[data-prop=frame]", "Tab")), {"version": 1, "craft": {"OttO": {"size_mm": 75, "frame": "whoop"}}})
+        self.act(page, lambda: (page.fill("[data-prop=size_mm]", ""), page.press("[data-prop=size_mm]", "Tab")), {"version": 1, "craft": {"OttO": {"frame": "whoop"}}})
+
+    def test_the_overrides_box_says_all_the_layer_sets(self):
+        """A trick's own fields, a segment's options and the default quad's section are overrides too: listed, counted,
+        each with its way back."""
+        self.api.set_setting("tricks", {"version": 1, "trick": [{"id": "hard-landing", "title": "landed", "enabled": False}],
+                                        "segment": {"fast-rotation": {"threshold": 150}},
+                                        "craft": {"default": {"params": {"flip_min_deg": 300}}, "OttO": {"segment": {"fast-rotation": {"threshold": 120}}}}})
+        page = self.open("/config#detection")
+        items = [x.strip() for x in page.eval_on_selector_all("#mine .it", "els => els.map(e => e.textContent)")]
+        self.assertEqual(len(items), 3, items)
+        self.assertIn("hard-landing off↺ title", items)
+        self.assertIn("segment fast-rotation threshold 150↺", items)
+        self.assertIn("every quad flip_min_deg 300shipped 270↺", items)
+        self.assertEqual(page.text_content(".trk[data-id=hard-landing] .head .src"), "1 override")
+        self.assertEqual(page.text_content("#scope [data-craft=OttO] .n"), "1")
+        own = [{"id": "hard-landing", "title": "landed"}]                     # its own title stays: only the on/off is taken back
+        self.act(page, lambda: page.click("#mine [data-untrick=hard-landing]"),
+                 {"version": 1, "trick": own, "segment": {"fast-rotation": {"threshold": 150}}, "craft": {"default": {"params": {"flip_min_deg": 300}}, "OttO": {"segment": {"fast-rotation": {"threshold": 120}}}}})
+        self.assertIn("hard-landing title", [x.strip() for x in page.eval_on_selector_all("#mine .it", "els => els.map(e => e.textContent)")])
+        self.assertEqual(page.text_content(".trk[data-id=hard-landing] .head .src"), "1 override")   # an entry with no on/off counts too
+        self.assertEqual(page.locator("#mine [data-untrick]").count(), 0)
+        self.act(page, lambda: page.click("#mine [data-unseg=fast-rotation]"),
+                 {"version": 1, "trick": own, "craft": {"default": {"params": {"flip_min_deg": 300}}, "OttO": {"segment": {"fast-rotation": {"threshold": 120}}}}})
+        # the default quad's value beats the top level: at all quads its row writes there
+        page.click(".trk[data-id=roll] .head .id")
+        row = page.locator(".trk[data-id=roll] .prm[data-p=flip_min_deg]")
+        self.act(page, lambda: (row.locator("[data-val]").fill("310"), row.locator("[data-val]").press("Tab")),
+                 {"version": 1, "trick": own, "craft": {"default": {"params": {"flip_min_deg": 310}}, "OttO": {"segment": {"fast-rotation": {"threshold": 120}}}}})
+        self.assertEqual(page.input_value(".trk[data-id=roll] .prm[data-p=flip_min_deg] [data-val]"), "310")
+        self.act(page, lambda: page.click(".trk[data-id=roll] .prm[data-p=flip_min_deg] [data-reset]"), {"version": 1, "trick": own, "craft": {"OttO": {"segment": {"fast-rotation": {"threshold": 120}}}}})
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
+        self.act(page, lambda: page.click("#mine [data-unseg=fast-rotation]"), {"version": 1, "trick": own})
+
+    def test_a_trick_switched_in_the_default_quads_section(self):
+        """At all quads, a trick the default quad's section switches is switched there: the top level would not win."""
+        self.api.set_setting("tricks", {"version": 1, "craft": {"default": {"trick": [{"id": "roll", "enabled": False}]}}})
+        page = self.open("/config#detection")
+        self.assertFalse(page.is_checked(".trk[data-id=roll] [data-on]"))
+        self.act(page, lambda: page.check(".trk[data-id=roll] [data-on]"), {"version": 1, "craft": {"default": {"trick": [{"id": "roll", "enabled": True}]}}})
+        self.assertTrue(page.is_checked(".trk[data-id=roll] [data-on]"))
+
+    def test_the_pilots_own_presets_and_the_default_quads_skill(self):
+        self.api.set_setting("tricks", {"version": 1, "skill": None})
+        page = self.open("/config#detection")
+        self.assertFalse(page.is_disabled("#skill input[value=beginner]"))    # no skill at all: nothing to lock
+        self.api.set_setting("tricks", {"version": 1, "skill": {"expert": {"flip_min_deg": 330}}})
+        page = self.open("/config#detection")
+        self.assertIn("own presets expert", page.text_content("#mine"))
+        self.assertTrue(page.is_disabled("#skill input[value=beginner]"))     # the layer's skill is its presets: no choice to write over them
+        self.assertEqual(page.text_content("#skillHint"), "Your layer's skill is its own presets (expert), so there is no choice for all quads here: pick one per quad.")
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
+        self.assertEqual(page.eval_on_selector_all("#skill input", "els => els.map(e => e.value)"), ["inherit", "beginner", "advanced", "expert"])
+        self.act(page, lambda: self.skill(page, "expert"), {"version": 1, "skill": {"expert": {"flip_min_deg": 330}}, "craft": {"OttO": {"skill": "expert"}}})
+        self.assertTrue(page.text_content("#skillHint").startswith("expert (a roll from 330° instead of 270°): it sets 1 parameter at once."))
+        self.api.set_setting("tricks", {"version": 1, "skill": "beginner", "craft": {"default": {"skill": "advanced"}}})
+        page = self.open("/config#detection")
+        self.assertIn("The default quad's skill, advanced, goes over this for every quad.", page.text_content("#skillHint"))
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
+        self.assertEqual(page.text_content("#skillHint"), "OttO uses the skill chosen for all quads: advanced (the default quad's).")
+
+    def test_names_the_page_does_not_own(self):
+        """A craft or a link named like a property every JavaScript object has is a name like any other."""
+        page = self.open("/config#constructor")
+        self.assertEqual(page.evaluate("() => tab"), "tags")
+        def seen(route):
+            resp = route.fetch()
+            d = resp.json()
+            d["crafts_seen"] = [*d["crafts_seen"], "__proto__"]
+            route.fulfill(response=resp, json=d)
+        page = self.open("/config#detection")
+        page.route(lambda url: url.endswith("/api/tricks"), seen)
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
+        page.click("#allQuads")
+        page.wait_for_function("() => D.crafts_seen.includes('__proto__')")
+        page.click("#scope [data-craft=__proto__]")
+        page.wait_for_selector("#quad")
+        self.act(page, lambda: (page.fill("[data-prop=size_mm]", "75"), page.press("[data-prop=size_mm]", "Tab")), {"version": 1, "craft": {"__proto__": {"size_mm": 75}}})
+        self.assertEqual(page.evaluate("() => [({}).size_mm, ({}).params]"), [None, None])
+
+    def test_how_a_trick_is_found_reads_whole(self):
+        page = self.open("/config#detection")
+        page.click(".trk[data-id=hard-landing] .head .id")
+        page.click(".trk[data-id=hard-landing] details[data-def] > summary")
+        self.assertIn("windows starting from -0.5 s of the instant on", page.text_content(".trk[data-id=hard-landing] .def-lines"))
+
+    def test_a_quad_with_a_long_name_on_the_phone(self):
+        """Its spelling as written, the screen no wider, and its chip still there when its last override goes."""
+        name = "AQuadWithAVeryLongNameThatNeverBreaksAnywhereAtAllNotEvenOnAPhoneScreen"
+        self.api.set_setting("tricks", {"version": 1, "craft": {name: {"size_mm": 90}}})
+        page = self.open("/config#detection", size=PHONE)
+        page.click(f"#scope [data-craft={name}]")
+        page.wait_for_selector("#quad")
+        self.assertIn(name, page.inner_text("#mine .lbl"))                     # not in capitals like the label's words
+        # measured on the panel and the chips: what spills out of the panel is clipped above it, so the document's
+        # own width never shows it
+        self.assertFalse(page.evaluate("() => { const p = document.querySelector('#detectionPanel'); return p.scrollWidth > p.clientWidth + 1 || [...document.querySelectorAll('#scope .chip')].some(c => c.getBoundingClientRect().right > innerWidth + 1); }"))
+        self.act(page, lambda: page.click("#mine [data-unprop=size_mm]"), {"version": 1})
+        self.assertEqual(page.eval_on_selector_all("#scope .chip.on", "els => els.map(e => e.dataset.craft)"), [name])
+
+    def test_after_a_save_a_quad_and_back(self):
+        """A save's reload overtaken by a quad's, and that quad left before its answer: the last answer still lands."""
+        page = self.open("/config#detection")
+        page.evaluate(SLOW_ANSWER_ONCE, ["/api/tags", "craft=OttO"])
+        with page.expect_response(lambda resp: "/api/tricks/layer?etag" in resp.url):
+            page.uncheck(".trk[data-id=roll] [data-on]")
+        page.click("#scope [data-craft=OttO]")
+        page.click("#allQuads")
+        page.wait_for_timeout(2500)
+        self.assertEqual(self.layer(), {"version": 1, "trick": [{"id": "roll", "enabled": False}]})
+        self.assertIn("14/15 tricks on", page.text_content("#status"))
+        self.assertFalse(page.is_checked(".trk[data-id=roll] [data-on]"))
+
+    def test_a_late_answer_for_the_same_quad(self):
+        """Two loads for one quad answering out of order: the older is dropped."""
+        self.api.set_setting("tricks", {"version": 1, "craft": {"OttO": {"size_mm": 75}}})
+        page = self.open("/config#detection")
+        page.evaluate(SLOW_ANSWER_ONCE, ["craft=OttO"])
+        page.click("#scope [data-craft=OttO]")
+        page.click("#allQuads")
+        self.api.set_setting("tricks", {"version": 1, "craft": {"OttO": {"size_mm": 80}}})   # another writer, meanwhile
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_selector("#quad")
+        page.wait_for_timeout(1800)                                            # the first answer, from before the change, comes in now
+        self.assertEqual(page.input_value("[data-prop=size_mm]"), "80")
+
+    def test_after_a_conflict_the_waiting_writes_go(self):
+        """A stale tab: its first write is refused (someone else saved), and the one queued behind it is not sent on the
+        fresh layer the pilot has not seen. The message stays."""
+        page = self.open("/config#detection")
+        self.api.set_setting("tricks", {"version": 1, "params": {"flip_min_deg": 240}})   # another writer
+        page.click(".trk[data-id=roll] .head .id")
+        page.fill(".trk[data-id=roll] .prm[data-p=flip_min_deg] [data-val]", "250")
+        page.click(".trk[data-id=split-s] [data-on]")
+        page.wait_for_function("() => /changed since/.test(document.querySelector('#err').textContent)")
+        page.wait_for_timeout(1000)
+        self.assertEqual(self.layer(), {"version": 1, "params": {"flip_min_deg": 240}})
+        self.assertIn("changed since", page.text_content("#err"))
+        self.assertEqual(page.input_value(".trk[data-id=roll] .prm[data-p=flip_min_deg] [data-val]"), "240")
+
+    def test_the_raw_layer_is_sent_as_it_was_drawn(self):
+        """A switch, then the raw layer's save straight after: the text was drawn before the switch, so it is refused
+        rather than putting the switch back."""
+        page = self.open("/config#detection")
+        self.fold(page, "advanced")
+        page.uncheck(".trk[data-id=roll] [data-on]")
+        page.click("#layerSave")
+        page.wait_for_function("() => /changed since/.test(document.querySelector('#err').textContent)")
+        self.assertEqual(self.layer(), {"version": 1, "trick": [{"id": "roll", "enabled": False}]})
+
+    def test_typing_outlives_a_redraw(self):
+        """A value typed in the next box while the last one saves is still there, and still being typed, after the redraw."""
+        page = self.open("/config#detection")
+        page.click(".trk[data-id=roll] .head .id")
+        rows = page.eval_on_selector_all(".trk[data-id=roll] .prm", "els => els.map(e => e.dataset.p)")
+        page.evaluate(SLOW_ANSWER_ONCE, ["/api/tricks/layer?etag"])
+        first = page.locator(f".trk[data-id=roll] .prm[data-p={rows[0]}] [data-val]")
+        first.fill("0.25")
+        before = page.evaluate("() => renders")
+        page.keyboard.press("Tab")
+        page.keyboard.type("7")
+        page.wait_for_function("(n) => renders > n", arg=before)
+        self.assertEqual(page.evaluate("() => [document.activeElement.closest('.prm')?.dataset.p, document.activeElement.value]"), [rows[1], "7"])
+        self.act(page, lambda: page.keyboard.press("Tab"), {"version": 1, "params": {rows[0]: 0.25, rows[1]: 7}})
+
+    def test_the_filter_and_a_quad_that_did_not_load(self):
+        page = self.open("/config#detection")
+        self.fold(page, "params")
+        page.fill("#pfilter", "orbit")
+        calls = []
+        def once_broken(route):
+            calls.append(1)
+            if len(calls) == 1:
+                route.fulfill(status=502, body="<html>Bad Gateway</html>", content_type="text/html")
+            else:
+                route.continue_()
+        page.route(lambda url: "/api/tricks?craft=" in url, once_broken)
+        page.click("#scope [data-craft=OttO]")
+        page.wait_for_function("() => /nothing loaded/.test(document.querySelector('#err').textContent)")
+        page.click("#scope [data-craft=OttO]")                                 # the chip tries again
+        page.wait_for_selector("#quad")
+        self.assertEqual(page.input_value("#pfilter"), "orbit")                # the filter came along
+
+    def test_a_parameter_named_like_an_objects_own(self):
+        self.api.set_setting("tricks", {"version": 1, "params": {"toString": 1},
+                                        "trick": [{"id": "odd", "tag": "orbit", "segment": "fast-rotation", "when": ["toString > 0"], "title": "odd", "why": "odd"}]})
+        page = self.open("/config#detection")
+        self.assertEqual(page.locator("#tricks .trk").count(), 16)
+        self.assertEqual(page.locator(".trk[data-id=roll] .head .src").count(), 0)
+
+    # ---- detection: the tricks, the checks ----------------------------------------------------------------------
 
     def test_tricks_switch_show_check_and_eval(self):
-        page = self.open("/config#tricks")
+        page = self.open("/config#detection")
+        self.fold(page, "check")
         self.assertEqual(page.input_value("#evalSession"), S)
         page.click("#evalBtn")
         page.wait_for_function("() => document.querySelector('#evalList table')", timeout=60000)
@@ -245,62 +615,66 @@ class ConfigPageTest(unittest.TestCase):
         self.act(page, lambda: page.uncheck("#tricks .trk[data-id=roll-attempt] [data-on]"), {"version": 1, "trick": [{"id": "roll-attempt", "enabled": False}]})
         self.assertTrue(page.locator("#tricks .trk[data-id=roll-attempt]").evaluate("e => e.classList.contains('off')"))
         self.assertEqual(self.events(), [])
-        self.assertIn("14 of 15 tricks on", page.text_content("#status"))
+        self.assertIn("14/15 tricks on", page.text_content("#status"))
+        self.assertIn("roll-attempt off", page.text_content("#mine"))
         page.click("#evalBtn")
         page.wait_for_function("() => document.querySelector('#evalList table td.bad')", timeout=60000)
         self.assertEqual(page.eval_on_selector_all("#evalList table td", "els => els.map(e => e.textContent)"), ["roll", "0", "1"])   # and without it the moment is missed
         self.assertIn("a roll", page.text_content("#evalList"))
         page.click("#tricks .trk[data-id=roll] .head .id")
-        det = page.locator("#tricks .trk[data-id=roll] .det")
-        self.assertTrue(det.is_visible())
+        page.click("#tricks .trk[data-id=roll] .def-lines > summary")
+        det = page.locator("#tricks .trk[data-id=roll] .def-lines")
+        self.assertTrue(page.is_visible("#tricks .trk[data-id=roll] .def-lines code"))
         self.assertIn("abs(rotation_peak_deg.roll) >= flip_min_deg", det.text_content())
         self.assertIn("arm 1 at 6.5", det.text_content())
         page.click("#tricks .trk[data-id=split-s] .head .id")
-        self.assertIn("phase 2 pitch-back within 1 s", page.locator("#tricks .trk[data-id=split-s] .det").text_content())
+        self.assertIn("phase 2 pitch-back within 1 s", page.locator("#tricks .trk[data-id=split-s] .def-lines").text_content())
         page.click("#checkBtn")
         page.wait_for_function("() => document.querySelector('#checkOut').textContent.includes('unchecked')", timeout=60000)
         self.assertIn("0 failed", page.text_content("#checkOut"))          # the real logs are not on this server: unchecked, never failed
         self.assertGreater(page.locator("#checkList .m").count(), 10)
+        self.act(page, lambda: page.click("#mine [data-untrick=roll-attempt]"), {"version": 1})
+        self.assertTrue(page.is_checked("#tricks .trk[data-id=roll-attempt] [data-on]"))
 
-    # ---- settings ------------------------------------------------------------------------------------------------
+    # ---- detection: the tricks file and the raw layer -----------------------------------------------------------
 
-    def test_settings_raw_layer_and_this_browser(self):
-        page = self.open("/config#settings")
+    def test_raw_layer_and_tricks_file(self):
+        page = self.open("/config#detection")
+        self.fold(page, "advanced")
         page.fill("#layerText", "{not json")
         page.click("#layerSave")
         page.wait_for_function("() => document.querySelector('#err').classList.contains('on')")
         self.assertIn("not JSON", page.text_content("#err"))
         page.fill("#layerText", json.dumps({"version": 1, "params": {"flip_min_dg": 240}}))
         page.click("#layerSave")
+        page.wait_for_function("() => /flip_min_dg/.test(document.querySelector('#err').textContent)")
+        self.assertIn("flip_min_dg", page.input_value("#layerText"))             # there to be mended
         page.wait_for_function("() => document.querySelector('#err').textContent.includes('flip_min_dg')")
         self.assertEqual(self.layer(), {})                                   # refused: nothing stored
         self.act(page, lambda: (page.fill("#layerText", json.dumps({"version": 1, "params": {"flip_min_deg": 250}, "skill": "advanced"})), page.click("#layerSave")),
                  {"version": 1, "params": {"flip_min_deg": 250}, "skill": "advanced"})
         self.assertFalse(page.evaluate("() => document.querySelector('#err').classList.contains('on')"))
-        self.assertIn("database", page.text_content("#settingsPanel .kv"))
+        self.assertIn("database", page.text_content("#sources"))
         page.on("dialog", lambda d: d.accept())
         self.act(page, lambda: page.click("#layerClear"), {})
-        # share: the export link, and a tricks file pasted in, replacing then merging
+        # the tricks file: the export link, and one pasted in, replacing then merging
         self.assertEqual(page.get_attribute("#exportLink", "href"), "/api/tricks/export")
         self.assertEqual(page.get_attribute("#exportLink", "download"), "acroscope-tricks.toml")
         self.assertTrue(page.is_disabled("#importReplace"))
         page.fill("#importText", 'version = 1\nskill = "beginner"\n[params]\norbit_min_deg = 240\n')
         self.assertFalse(page.is_disabled("#importReplace"))
         self.act(page, lambda: page.click("#importReplace"), {"version": 1, "skill": "beginner", "params": {"orbit_min_deg": 240}})
-        self.assertEqual(page.locator("#params, #settingsPanel").count(), 1)                     # still on settings
+        self.assertEqual(page.get_attribute("section.on", "data-panel"), "detection")
+        self.assertTrue(page.is_visible("#importText"))                      # still there, the fold still open
         page.fill("#importText", "[params]\nflip_min_deg = 250\n")
         self.act(page, lambda: page.click("#importMerge"), {"version": 1, "skill": "beginner", "params": {"orbit_min_deg": 240, "flip_min_deg": 250}})
         page.fill("#importText", "[params]\nflip_min_dg = 250\n")
         page.click("#importReplace")
         page.wait_for_function("() => document.querySelector('#err').textContent.includes('flip_min_dg')")
         self.assertEqual(self.layer(), {"version": 1, "skill": "beginner", "params": {"orbit_min_deg": 240, "flip_min_deg": 250}})
-        page.uncheck("#stSticks")
-        self.assertEqual(page.evaluate("() => localStorage.getItem('acro.sticks')"), "0")
-        page.check("#stAll")
-        self.assertEqual(page.evaluate("() => localStorage.getItem('acro.allClips')"), "1")
 
     def test_a_broken_layer_still_shows_the_page_and_its_clear_button(self):
-        """A stored layer a later release made invalid: the page says so, the tabs still draw, the settings tab clears it."""
+        """A stored layer a later release made invalid: the page says so, the tabs still draw, the raw layer clears it."""
         import sqlite3
         self.api.set_setting("tricks", {"version": 1, "skill": "beginner"})
         db = sqlite3.connect(Path(self.tmp.name) / "t.db")
@@ -308,21 +682,29 @@ class ConfigPageTest(unittest.TestCase):
         db.commit(); db.close()
         page = self.open()
         self.assertIn("roll_hold_share", page.text_content("#err"))
-        self.assertIn("15 of 15 tricks on", page.text_content("#status"))
-        page.click("#tabs [data-tab=settings]")
+        self.assertIn("raw layer under detection", page.text_content("#err"))
+        self.assertIn("15/15 tricks on", page.text_content("#status"))
+        page.click("#tabs [data-tab=detection]")
+        self.fold(page, "advanced")
         self.assertIn("roll_hold_share", page.input_value("#layerText"))
+        before = page.evaluate("() => renders")
+        page.uncheck(".trk[data-id=roll] [data-on]")                         # refused: the whole layer is checked
+        page.wait_for_function("(n) => renders > n", arg=before)
+        self.assertTrue(page.is_checked(".trk[data-id=roll] [data-on]"))
         page.on("dialog", lambda d: d.accept())
         self.act(page, lambda: page.click("#layerClear"), {})
         self.assertFalse(page.evaluate("() => document.querySelector('#err').classList.contains('on')"))
 
     def test_a_stale_tab_does_not_overwrite(self):
         """Two tabs on the same layer: the second save is refused and that tab reloads."""
-        page = self.open()
-        other = self.open()
+        page = self.open("/config#detection")
+        other = self.open("/config#detection")
+        self.fold(page, "params")
+        self.fold(other, "params")
         row = page.locator("#params .prm[data-p=flip_min_deg]")
         self.act(page, lambda: (row.locator("[data-val]").fill("240"), row.locator("[data-val]").press("Tab")), {"version": 1, "params": {"flip_min_deg": 240}})
         before = other.evaluate("() => renders")
-        other.check("input[name=skill][value=beginner]")
+        self.skill(other, "beginner")
         other.wait_for_function("(n) => renders > n", arg=before)
         self.assertIn("changed since", other.text_content("#err"))
         self.assertEqual(self.layer(), {"version": 1, "params": {"flip_min_deg": 240}})        # the first tab's write stands
@@ -672,7 +1054,7 @@ class ConfigPageTest(unittest.TestCase):
         """Second review: one failed load of the OSD profiles broke the tab until a reload; the broken-profile chip
         retried a stale etag after a 409."""
         urllib.request.urlopen(urllib.request.Request(self.url + "/api/osd/doc", method="DELETE")).read()
-        page = self.open("/config#profile")
+        page = self.open("/config#detection")
         page.route("**/api/osd", lambda route: route.fulfill(status=502, body="<html>Bad Gateway</html>", content_type="text/html"))
         page.click("#tabs [data-tab=osd]")
         page.wait_for_function("() => /could not be loaded/.test(document.querySelector('#osdPanel').textContent)")
