@@ -318,7 +318,7 @@ class Session(private val g: Graph) {
                 showQuad()
                 return@launch
             }
-            erase.value = Work.Running("erasing the quad's flash (up to a minute)", 0, 0)
+            erase.value = Work.Running("erasing the quad's flash: keep it plugged in until this says it is done (up to a minute)", 0, 0)
         }
         val box = h.box
         val done = try {
@@ -417,7 +417,7 @@ class Session(private val g: Graph) {
     }
 
     /** `flash` is how much log the quad's flash holds, when that was read. */
-    fun describe(view: QuadView, flash: Long? = null): String = when (view) {
+    fun describe(view: QuadView, flash: Long? = null, erasing: Boolean = false): String = when (view) {
         QuadView.None -> "no quad plugged in"
         is QuadView.Locked -> "${view.name}: allow the app to talk to it"
         is QuadView.Ready -> when (flash) {
@@ -425,7 +425,7 @@ class Session(private val g: Graph) {
             0L -> "${view.name}: its flash is empty, there is no log to save"
             else -> "${view.name}: its log (${Format.bytes(flash)}) will be saved"
         }
-        is QuadView.Saved -> "${view.name}: its log is saved, its flash can be erased"
+        is QuadView.Saved -> if (erasing) "${view.name}: erasing its flash" else "${view.name}: its log is saved, its flash can be erased"
     }
 
     fun describe(view: CardView): String = when (view) {
