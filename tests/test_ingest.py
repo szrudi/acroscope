@@ -13,9 +13,14 @@ from pathlib import Path
 
 from acroscope import ingest
 from acroscope.ingest import clock, encode, intake
-from acroscope.sources import blackbox
+from acroscope.sources import blackbox, osd
 from acroscope.store import upkeep
 from acroscope.store.db import Db
+
+try:
+    from tests import osd_synthetic as syn
+except ImportError:
+    import osd_synthetic as syn
 
 
 MIDDLE = {
@@ -71,6 +76,9 @@ ingest._cli = lambda *a: None
 """
 
 
+FONT = syn.mcm_text(syn.font_chars())     # a made-up MAX7456 font, standing in for every font the shipped profiles name
+
+
 class _Scratch(unittest.TestCase):
     """A scratch data dir and database; the CLI runs in a child against them."""
     def setUp(self):
@@ -78,8 +86,16 @@ class _Scratch(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.data = self.root / "data"
         (self.data / "videos").mkdir(parents=True)
+        # a child's clock step reads the OSD with the shipped profiles, which derive from the fonts they name: those
+        # fonts here, made up, and a proxy nobody listens on, so nothing is fetched and the real fonts are not needed
+        # (a machine that never had them, offline, ran no reading at all: #68)
+        fonts = self.root / "fonts"
+        fonts.mkdir()
+        for name in {p["font"]["name"] for p in osd.shipped().values()}:
+            (fonts / f"{name}.mcm").write_text(FONT)
         self.env = dict(os.environ, ACROSCOPE_DATA=str(self.data), ACROSCOPE_DB=str(self.root / "t.db"),
-                        ACROSCOPE_CACHE=str(self.root / "cache"), ACROSCOPE_URL="")
+                        ACROSCOPE_CACHE=str(self.root / "cache"), ACROSCOPE_URL="", ACROSCOPE_FONTS=str(fonts),
+                        https_proxy="http://127.0.0.1:9", HTTPS_PROXY="http://127.0.0.1:9")
 
     def tearDown(self):
         self.tmp.cleanup()
