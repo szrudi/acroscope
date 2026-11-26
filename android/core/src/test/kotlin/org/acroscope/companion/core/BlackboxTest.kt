@@ -158,6 +158,71 @@ class BlackboxTest {
         box.erase()
         assertEquals(0, fc.flash.size)
         assertEquals(4, paused.size)
+        assertEquals(1, fc.asked.count { it == Msp.DATAFLASH_ERASE.toString() })   // asked once: no answer is not "not taken"
+    }
+
+    @Test
+    fun `a controller that takes nothing over USB while the chip erases is waited for`() {
+        box.download(dir)
+        fc.busyWrites = 3                                                        // its USB stalls: the questions after the erase do not go out
+        box.erase()
+        assertEquals(0, fc.flash.size)
+        assertEquals(4, paused.size)
+    }
+
+    @Test
+    fun `a controller that is gone under the erase is not taken for erased`() {
+        box.download(dir)
+        fc.goneAfterErase = true
+        assertFailsWith<SerialGone> { box.erase() }
+        assertEquals(1, paused.size)                                             // at once, not after five minutes of asking
+    }
+
+    @Test
+    fun `an erase the controller did not take is asked for again`() {
+        box.download(dir)
+        fc.busyBefore = 1                                                        // the erase's own question did not go out
+        box.erase()
+        assertEquals(0, fc.flash.size)
+        assertEquals(1, fc.asked.count { it == Msp.DATAFLASH_ERASE.toString() })   // taken the second time
+    }
+
+    @Test
+    fun `an erase the controller never takes fails at once`() {
+        box.download(dir)
+        fc.busyBefore = 3
+        assertFailsWith<SerialBusy> { box.erase() }
+        assertEquals(log.size, fc.flash.size)
+        assertEquals(2, paused.size)                                             // between the tries, and no five minutes after them
+    }
+
+    private fun backOn(chip: ByteArray) = Blackbox(FakeFc().also { it.chip = chip }, { ZonedDateTime.parse("2026-12-12T08:45:00+01:00") })
+
+    @Test
+    fun `a flash that reads as erased all through where the log was is blank`() {
+        val other = FakeFc().also { it.chip = ByteArray(0); it.most = 1000 }      // a new line, after the erase's own was lost; short replies
+        val seen = mutableListOf<Long>()
+        assertEquals(true, Blackbox(other, { ZonedDateTime.parse("2026-12-12T08:45:00+01:00") }).blank(10_000) { seen += it })
+        assertEquals(10_000L, seen.last())
+        assertEquals((0 until 10_000 step 1000).map { "read@$it+${minOf(4096, 10_000 - it)}" }, other.asked)   // every byte of it, no further
+    }
+
+    @Test
+    fun `a flash that says it is empty with any of the old log still on the chip is not blank`() {
+        val size = 3 * 4096 + 17
+        for (at in listOf(0, 4096 + 5, size / 2, size - 1)) {                        // erased in no order and cut off: any part left
+            val chip = ByteArray(size) { 0xFF.toByte() }.also { it[at] = 0x41 }
+            assertEquals(false, backOn(chip).blank(size.toLong()), "left at $at")
+        }
+        assertEquals(true, backOn(ByteArray(size + 10) { if (it < size) 0xFF.toByte() else 0x41 }).blank(size.toLong()))   // past the log: not its
+    }
+
+    @Test
+    fun `a flash that cannot be read back is not known to be blank`() {
+        val other = FakeFc().also { it.chip = ByteArray(0); it.spoil = { c, r -> if (c == Msp.DATAFLASH_READ) Msp.frame(c, Msp.le32(0) + byteArrayOf(0, 0, 0), '>') else r } }   // a read that brings nothing
+        assertEquals(null, Blackbox(other, { ZonedDateTime.parse("2026-12-12T08:45:00+01:00") }).blank(log.size.toLong()))
+        val elsewhere = FakeFc().also { it.chip = ByteArray(0); it.spoil = { c, r -> if (c == Msp.DATAFLASH_READ) Msp.frame(c, Msp.le32(4096) + byteArrayOf(4, 0, 0, -1, -1, -1, -1), '>') else r } }
+        assertEquals(null, Blackbox(elsewhere, { ZonedDateTime.parse("2026-12-12T08:45:00+01:00") }).blank(log.size.toLong()))   // a reply about another address
     }
 
     @Test

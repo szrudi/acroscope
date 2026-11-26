@@ -12,6 +12,7 @@ import android.hardware.usb.UsbManager
 import android.os.SystemClock
 import org.acroscope.companion.core.SerialPort
 import org.acroscope.companion.core.SerialPorts
+import org.acroscope.companion.core.Transfers
 import java.io.IOException
 
 /** The quad as the phone has it on USB: none, one the app may not talk to yet, or one it may. */
@@ -20,8 +21,9 @@ sealed interface QuadState {
     /** A flight controller is plugged in; `ask` puts Android's question to the pilot. */
     data class NeedsPermission(val name: String, val ask: () -> Unit) : QuadState
     /** `id` tells one plugged-in device from another (Android's name for it): a quad swapped while the app was not
-     *  looking is another quad, though it calls itself the same. */
-    data class Ready(val name: String, val id: String = name) : QuadState
+     *  looking is another quad, though it calls itself the same. `serial`: its USB serial number, which Betaflight
+     *  makes of the MCU's unique id: the same quad after a restart (when the device says one). */
+    data class Ready(val name: String, val id: String = name, val serial: String? = null) : QuadState
 }
 
 interface Quads {
@@ -43,7 +45,7 @@ class UsbQuads(private val context: Context) : Quads {
     override fun state(): QuadState {
         val device = controller() ?: return QuadState.None
         val name = device.productName ?: "flight controller"
-        if (usb.hasPermission(device)) return QuadState.Ready(name, device.deviceName)
+        if (usb.hasPermission(device)) return QuadState.Ready(name, device.deviceName, runCatching { device.serialNumber }.getOrNull())
         return QuadState.NeedsPermission(name) {
             val answer = PendingIntent.getBroadcast(context, 0, Intent(PERMISSION).setPackage(context.packageName), PendingIntent.FLAG_MUTABLE)
             usb.requestPermission(device, answer)
@@ -64,6 +66,8 @@ class UsbSerial private constructor(
     private val output: UsbEndpoint,
 ) : SerialPort {
     companion object {
+        private const val WRITE_MS = 2000
+
         /** A device's serial data interface, with the control interface that goes with it; null when it has none. */
         fun interfaces(device: UsbDevice): Pair<UsbInterface?, UsbInterface>? {
             val all = (0 until device.interfaceCount).map(device::getInterface)
@@ -94,21 +98,24 @@ class UsbSerial private constructor(
         }
     }
 
+    /** A failed transfer is told by how long it took ([Transfers]): a line gone, or a controller too busy to take it
+     *  (its USB stalls while the flash chip erases). */
     override fun write(bytes: ByteArray) {
         var at = 0
         while (at < bytes.size) {
-            val n = connection.bulkTransfer(output, bytes, at, bytes.size - at, 2000)
-            if (n <= 0) throw IOException("the flight controller takes nothing: is it still plugged in?")
+            val started = SystemClock.elapsedRealtime()
+            val n = connection.bulkTransfer(output, bytes, at, bytes.size - at, WRITE_MS)
+            if (n <= 0) throw Transfers.failedWrite(SystemClock.elapsedRealtime() - started, WRITE_MS)
             at += n
         }
     }
 
-    /** A transfer that fails at once is a cable pulled; one that fails after its time is only silence. */
+    /** A failed read is a line gone, or only silence ([Transfers]). */
     override fun read(buf: ByteArray, timeoutMs: Int): Int {
         val started = SystemClock.elapsedRealtime()
         val n = connection.bulkTransfer(input, buf, buf.size, timeoutMs)
         if (n >= 0) return n
-        if (SystemClock.elapsedRealtime() - started < timeoutMs / 2) throw IOException("the flight controller is gone")
+        Transfers.failedRead(SystemClock.elapsedRealtime() - started, timeoutMs)?.let { throw it }
         return 0
     }
 

@@ -89,25 +89,51 @@ class Blackbox(port: SerialPort, private val clock: () -> ZonedDateTime, private
 
     /**
      * Erase the flash: only after a download on this connection was verified. The flight controller blocks while
-     * the chip erases and answers afterwards, or not at all; either way the summary is asked until it says ready
-     * and empty, for up to five minutes.
+     * the chip erases and answers afterwards, or not at all, or takes nothing over USB meanwhile; either way the
+     * summary is asked until it says ready and empty, for up to five minutes.
      */
     fun erase() {
         check(verified) { "the flash is erased only after its log was saved and verified" }
-        try {
-            link.request(Msp.DATAFLASH_ERASE, timeoutMs = 120_000)
-        } catch (e: MspTimeout) {
-            // some chips keep the controller busy: the summary below decides
+        for (tries in 1..3) {
+            try {
+                link.request(Msp.DATAFLASH_ERASE, timeoutMs = 120_000)
+                break
+            } catch (e: MspTimeout) {
+                break                                   // some chips keep the controller busy: the summary below decides
+            } catch (e: SerialBusy) {
+                if (tries == 3) throw e                 // never taken: nothing was erased
+                pause(1000)                             // the question did not go out: asked again
+            }
         }
         val deadline = now() + 300_000
         while (now() < deadline) {
             pause(1000)
-            val flash = try { flash() } catch (e: MspTimeout) { continue }
+            val flash = try { flash() } catch (e: MspTimeout) { continue } catch (e: SerialBusy) { continue }
             if (flash.ready && flash.used == 0L) {
                 verified = false
                 return
             }
         }
         throw IOException("the erase did not finish within five minutes")
+    }
+
+    /**
+     * On a line opened after the erase's own was lost (the quad restarted under it, or lost power), with the summary
+     * saying the flash is empty: whether all of where a log of `was` bytes lay reads as erased (0xFF), read back as
+     * the download read it. An erase cut off can leave written parts anywhere, and the summary after a restart
+     * comes from a search that assumes a log written from the start. Null when the flash will not be read back.
+     */
+    fun blank(was: Long, progress: (Long) -> Unit = {}): Boolean? {
+        var at = 0L
+        while (at < was) {
+            val want = minOf(PIECE.toLong(), was - at).toInt()
+            val r = link.request(Msp.DATAFLASH_READ, Msp.le32(at) + byteArrayOf(want.toByte(), (want shr 8).toByte(), 0))
+            val n = if (r.size >= 7) minOf(Msp.u16(r, 4), want) else 0
+            if (r.size < 7 || Msp.u32(r, 0) != at || r[6].toInt() != 0 || n == 0 || r.size < 7 + n) return null
+            if ((7 until 7 + n).any { r[it] != 0xFF.toByte() }) return false
+            at += n
+            progress(at)
+        }
+        return true
     }
 }
