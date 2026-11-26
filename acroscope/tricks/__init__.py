@@ -106,7 +106,7 @@ def describe(lib: Library, craft: str | None = None) -> dict:
         "tricks": [{"id": t.id, "tag": t.tag, "segment": t.segment or None, "priority": t.priority, "enabled": t.enabled,
                     "phases": [{"segment": ph.segment, "within": ph.within, "when": ph.conditions} for ph in t.phases],
                     "when": t.conditions, "title": t.title, "why": t.why, "requires": eff.requires(t), "note": t.note,
-                    "suppress": [{"tags": list(r.tags), "margin": r.margin, "within": r.within} for r in t.suppress],
+                    "suppress": [{"tags": list(r.tags), "margin": r.margin, "within": r.within, "start_after": r.start_after} for r in t.suppress],
                     "examples": t.examples, "source": t.source,
                     "params": sorted({n for _, e in [*t.when, *(c for ph in t.phases for c in ph.when)] for n in e.names if n in eff.params})}
                    for t in eff.ordered()],

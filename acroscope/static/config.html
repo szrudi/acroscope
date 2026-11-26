@@ -31,6 +31,7 @@
   a.btn { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:2px 7px; font-size:12px; line-height:1.4; text-decoration:none; white-space:nowrap } a.btn:hover { background:#343a46 }
   .chip { display:inline-block; padding:2px 9px; border-radius:12px; border:1px solid var(--c, var(--line)); cursor:pointer; font-size:12px; user-select:none }
   .chip.on { background:var(--c, var(--acc2)); color:#111; border-color:var(--c, var(--acc2)) }
+  .lbl .nm { text-transform:none; letter-spacing:0 } .chip, #scopeHint, #mine .nm, #detectionPanel h2 { overflow-wrap:anywhere } .chip { max-width:100% }
   .chip .n { display:inline-block; min-width:14px; padding:0 4px; margin-left:2px; border-radius:7px; background:var(--acc); color:#111; font-size:10px; text-align:center }
   .tag { display:inline-block; padding:0 7px; border-radius:10px; font-size:11px; background:#2f3542; color:var(--c, var(--acc2)) }
   .src { font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:10px; padding:0 7px; white-space:nowrap }
@@ -53,7 +54,7 @@
   .segs { display:inline-flex; flex-wrap:nowrap } label.seg { display:inline-flex; cursor:pointer } label.seg input { position:absolute; opacity:0; pointer-events:none }
   label.seg span { padding:3px 11px; border:1px solid var(--line); font-size:13px; color:var(--dim) } label.seg:first-of-type span { border-radius:6px 0 0 6px }
   label.seg:last-of-type span { border-radius:0 6px 6px 0 } label.seg + label.seg span { border-left:0 } label.seg input:checked + span { background:var(--acc2); color:#111; border-color:var(--acc2) }
-  label.seg input:focus-visible + span { outline:2px solid var(--acc) }
+  label.seg input:focus-visible + span { outline:2px solid var(--acc) } label.seg input:disabled + span { opacity:.5; cursor:default }
   label.prop { display:inline-flex; align-items:center; gap:6px; color:var(--dim); margin-right:10px } label.prop input[type=number] { width:72px }
   .mine { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:10px 0 4px; background:var(--panel) }
   .mine .it { display:inline-flex; gap:6px; align-items:center } .mine .it b { color:var(--acc); font-weight:600 }
@@ -115,7 +116,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '
 // every answer is {error} when it is not acroscope's JSON (a proxy's 502 page, the network gone), so no caller hangs
 const api = (p, o) => fetch(p, o).then(async r => { try { return await r.json(); } catch { return {error: `${r.status} ${r.statusText || ''}: not an answer from acroscope`.trim()}; } },
                                       e => ({error: 'no answer from the server: ' + e.message}));
-const SKILLS = ['none', 'beginner', 'advanced'];
+const get = (o, k) => o && Object.hasOwn(o, k) ? o[k] : undefined;   // a name like any other, never one every object has (constructor, __proto__)
 let D = null, DC = null, L = {version: 1}, ETAG = null, TAGS = {categories: [], tags: []}, SESS = [], craft = null, tab = null, openTricks = new Set();
 // D: the library in force for any quad; DC: for the quad chosen on the detection tab (craft; null is all quads)
 
@@ -138,36 +139,54 @@ const num = v => typeof v === 'number' ? (Number.isInteger(v) ? String(v) : Stri
 const clone = x => JSON.parse(JSON.stringify(x));
 const sameCraft = (a, b) => a === b || (a && b && a.toLowerCase() === b.toLowerCase());     // OttO one day, Otto the next: one quad
 const craftKey = (t, c) => Object.keys(t.craft || {}).find(k => sameCraft(k, c)) || c;     // the spelling the layer already uses
-function section(t, c) { return c ? ((t.craft ||= {})[craftKey(t, c)] ||= {}) : t; }
-const layerCraft = c => (L.craft || {})[craftKey(L, c)] || {};
+function section(t, c) {
+  if (!c) return t;
+  const k = craftKey(t, c);
+  t.craft ||= {};
+  if (!Object.hasOwn(t.craft, k)) Object.defineProperty(t.craft, k, {value: {}, enumerable: true, writable: true, configurable: true});
+  return t.craft[k];
+}
+const layerCraft = c => get(L.craft, craftKey(L, c)) || {};
 function tidy(t) {                                   // an emptied table goes, so the layer reads as what was set
-  for (const k of ['params', 'trick']) if (t[k] && !Object.keys(t[k]).length) delete t[k];
+  for (const k of ['params', 'trick', 'segment']) if (t[k] && !Object.keys(t[k]).length) delete t[k];
   if (t.craft) { for (const [c, s] of Object.entries(t.craft)) { tidy(s); if (!Object.keys(s).length) delete t.craft[c]; } if (!Object.keys(t.craft).length) delete t.craft; }
   return t;
 }
-async function save(next) {
-  err('');
+async function save(next, redraw = true, etag = ETAG) {
   // the etag says which layer this page started from: a save from another tab or the CLI in between is a 409, and
-  // the page reloads instead of overwriting it
-  const r = await api('/api/tricks/layer?etag=' + encodeURIComponent(ETAG || ''), {method: 'POST', body: JSON.stringify(tidy(next))});
-  if (r.error) { err(r.error); if (/changed since/.test(r.error)) await load(); return false; }
+  // the page reloads instead of overwriting it. Refused otherwise, the knobs show what is in force again (the raw
+  // layer's text stays as typed, to be mended: redraw false)
+  const r = await api('/api/tricks/layer?etag=' + encodeURIComponent(etag || ''), {method: 'POST', body: JSON.stringify(tidy(next))});
+  if (r.error) { err(r.error); if (/changed since/.test(r.error)) { era++; await load(); } else if (redraw) render(); return false; }
   L = r.layer; ETAG = r.etag; await load(); return true;
 }
-const edit = f => { const t = clone(L); t.version ??= 1; f(t); return save(t); };
+// one write at a time, each made on the layer the one before left: a value typed and a switch clicked straight after
+// are two saves in a row, never this page's own conflict
+// are two saves in a row, never this page's own conflict. A 409 (another writer) ends an era: the writes still waiting
+// were made on a view the pilot no longer sees, and are dropped
+let queue = Promise.resolve(), era = 0;
+const enqueue = job => { err(''); const mine = era; return (queue = queue.then(() => mine === era ? job() : false).catch(e => { err(String(e)); return false; })); };
+const edit = f => enqueue(() => { const t = clone(L); t.version ??= 1; f(t); return save(t); });
 const setParam = (name, value, c) => edit(t => { if (value === null) { const p = section(t, c).params || {}; delete p[name]; } else (section(t, c).params ||= {})[name] = value; });
 const setTrick = (id, on, c) => edit(t => { const s = section(t, c); s.trick ||= []; let e = s.trick.find(x => x.id === id); if (!e) s.trick.push(e = {id}); e.enabled = on; });   // the entry's other fields stay
 const setSkill = (name, c) => edit(t => { const s = section(t, c); if (!name || name === 'none' || name === 'inherit') delete s.skill; else s.skill = name; });
 const setProp = (c, key, value) => edit(t => { const s = section(t, c); if (value === null || value === '') delete s[key]; else s[key] = value; });
+// only the on/off: what else an entry sets (the pilot's own trick, examples, a condition) is the raw layer's to change
+const unsetTrick = (id, c) => edit(t => { const s = section(t, c); const e = (s.trick || []).find(x => x.id === id); if (!e) return; delete e.enabled; if (Object.keys(e).length === 1) s.trick = s.trick.filter(x => x !== e); });
+const unsetSegment = (name, c) => edit(t => { const s = section(t, c); if (s.segment) delete s.segment[name]; });
 
+let loads = 0;
 async function load() {
   // all four or nothing: a failed answer (api() resolves to {error}) must never stand in for the layer, or the next
-  // knob would save an empty layer over the pilot's
-  const [d, dc, layer, tags] = await Promise.all([api('/api/tricks'), craft ? api('/api/tricks?craft=' + encodeURIComponent(craft)) : null, api('/api/tricks/layer'), api('/api/tags')]);
+  // knob would save an empty layer over the pilot's. An answer a later load (another quad picked) overtook is dropped.
+  const seq = ++loads, want = craft;
+  const [d, dc, layer, tags] = await Promise.all([api('/api/tricks'), want ? api('/api/tricks?craft=' + encodeURIComponent(want)) : null, api('/api/tricks/layer'), api('/api/tags')]);
+  if (seq !== loads) return;
   const failed = [d, dc, layer, tags].find(x => x && x.error);
   if (failed) { err(failed.error + '\n(nothing loaded; reload the page)'); return; }
-  [D, DC, TAGS] = [d, dc, tags];
+  [D, DC, TAGS] = [d, sameCraft(want, craft) ? dc : null, tags];
   L = layer.layer || {version: 1}; ETAG = layer.etag;
-  if (D.layer_error) err('your layer is not in force: ' + D.layer_error + '\nThe shipped tricks apply meanwhile; repair or clear the raw layer under detection.');
+  if (D.layer_error && !$('#err').textContent) err('your layer is not in force: ' + D.layer_error + '\nThe shipped tricks apply meanwhile; repair or clear the raw layer under detection.');
   render();
 }
 
@@ -177,11 +196,13 @@ async function load() {
 const openFolds = new Set(), openDefs = new Set();                          // the folded parts the pilot opened, kept across the redraws a save makes
 const fold = (id, title, body) => `<details class="fold" data-fold="${id}" ${openFolds.has(id) ? 'open' : ''}><summary>${title}</summary>${body}</details>`;
 function paramRows(params, scopeCraft, usedBy, filter, keys, trick) {
-  const own = scopeCraft ? layerCraft(scopeCraft).params || {} : L.params || {};
+  const own = scopeCraft ? layerCraft(scopeCraft).params || {} : L.params || {}, dflt = layerCraft('default').params || {};
   return Object.entries(params).filter(([k]) => keys ? keys.includes(k) : !filter || k.includes(filter) || (usedBy[k] || []).some(t => t.includes(filter))).map(([k, p]) => {
-    const mine = own[k] !== undefined, others = (usedBy[k] || []).filter(x => x !== trick);
+    // at all quads, a value the default quad's section sets is that section's to change: it beats the top level
+    const sec = !scopeCraft && sameCraft(craftOf(p.source) || '', 'default') ? 'default' : '';
+    const mine = get(sec ? dflt : own, k) !== undefined, others = (usedBy[k] || []).filter(x => x !== trick);
     const used = trick ? (others.length ? 'also ' + others.map(esc).join(', ') : '') : (usedBy[k] || []).map(esc).join(', ') || 'no trick reads it';
-    return `<div class="prm ${mine ? 'over' : ''}" data-p="${esc(k)}"><span><span class="nm">${esc(k)}</span><span class="used">${used}</span></span>` +
+    return `<div class="prm ${mine ? 'over' : ''}" data-p="${esc(k)}" data-c="${sec}"><span><span class="nm">${esc(k)}</span><span class="used">${used}</span></span>` +
       `<input type="number" step="any" value="${esc(num(p.value))}" data-val>` +
       `<span class="def" title="the shipped default">${p.default === null || p.default === undefined || p.default === p.value ? '' : 'shipped ' + esc(num(p.default))}</span>` +
       `<span class="act">${p.source === 'shipped' || /tricks\.toml$/.test(p.source) ? '' : srcBadge(p.source)}${mine ? '<button class="small" data-reset title="remove the override">↺</button>' : ''}</span></div>`;
@@ -190,70 +211,106 @@ function paramRows(params, scopeCraft, usedBy, filter, keys, trick) {
 function wireParams(box, scopeCraft) {
   box.querySelectorAll('.prm').forEach(row => {
     const inp = row.querySelector('[data-val]');
-    inp.onchange = () => { const v = inp.value.trim(); if (v === '') return; setParam(row.dataset.p, +v, scopeCraft); };
-    const r = row.querySelector('[data-reset]'); if (r) r.onclick = () => setParam(row.dataset.p, null, scopeCraft);
+    // emptied or no number (1e999 is no number JSON can carry): nothing saved, the value in force shown again; ↺ is the way back
+    const c = row.dataset.c || scopeCraft;
+    inp.onchange = () => { delete inp.dataset.dirty; const v = inp.value.trim(), n = Number(v); if (v === '' || !Number.isFinite(n)) { render(); return; } setParam(row.dataset.p, n, c); };
+    const r = row.querySelector('[data-reset]'); if (r) r.onclick = () => setParam(row.dataset.p, null, c);
   });
 }
-function usedByMap() { const m = {}; for (const t of D.tricks) for (const p of t.params) (m[p] ||= []).push(t.id); return m; }
-function skillRadios(name, current, inherit) {
-  // a quad's preset goes over the all-quads one, never under it: a quad has no way back to the bare defaults
-  const opts = inherit ? [['inherit', 'as all quads'], ...SKILLS.filter(s => s !== 'none').map(s => [s, s])] : SKILLS.map(s => [s, s === 'none' ? 'the defaults' : s]);
-  return '<span class="segs">' + opts.map(([v, l]) => `<label class="seg"><input type="radio" name="${name}" value="${v}" ${(current || (inherit ? 'inherit' : 'none')) === v ? 'checked' : ''}><span>${esc(l)}</span></label>`).join('') + '</span>';
+function usedByMap() { const m = Object.create(null); for (const t of D.tricks) for (const p of t.params) (m[p] ||= []).push(t.id); return m; }
+function skillRadios(name, current, inherit, locked) {
+  // a quad's preset goes over the all-quads one, never under it: a quad has no way back to the bare defaults. Locked:
+  // the layer's own skill is a table of presets (a layer's skill is presets or a choice), so a choice would write over them
+  const presets = Object.keys(D.skills || {}).filter(s => s !== 'none' && s !== 'inherit');   // the radios' own two values
+  const opts = inherit ? [['inherit', 'as all quads'], ...presets.map(s => [s, s])] : [['none', 'the defaults'], ...presets.map(s => [s, s])];
+  return `<span class="segs" ${locked ? 'title="your layer\'s skill is its own presets: choose one per quad"' : ''}>` + opts.map(([v, l]) => `<label class="seg"><input type="radio" name="${name}" value="${esc(v)}" ${(current || (inherit ? 'inherit' : 'none')) === v ? 'checked' : ''} ${locked ? 'disabled' : ''}><span>${esc(l)}</span></label>`).join('') + '</span>';
 }
 function skillHint(cur) {
   // what the choice on screen does, said with the shipped presets' own flip threshold as the example
-  const sk = (D.skills || {})[cur], roll = (v, d) => v !== undefined && d !== undefined && v !== d ? ` (a roll from ${num(v)}° instead of ${num(d)}°)` : '';
-  const how = {beginner: 'a trick counts when it is nearly there', advanced: 'a trick counts only when it is clean'};
-  if (cur === 'inherit') return `${esc(craft)} uses the skill chosen for all quads: ${L.skill ? esc(L.skill) : 'none, the shipped defaults'}.`;
-  if (!sk) return `The shipped parameters, in between: ${how.beginner} with beginner, ${how.advanced.replace('a trick ', '')} with advanced.`;
+  // (the library: the all-quads preset over the shipped values, the pilot's parameters over that, then a quad's preset,
+  // else the default quad's, over all of it, and the quad's own parameters last)
+  const sk = get(D.skills, cur), shipped = get(D.params, 'flip_min_deg')?.default;
+  const roll = v => v !== undefined && shipped !== undefined && v !== shipped ? ` (a roll from ${num(v)}° instead of ${num(shipped)}°)` : '';
+  const how = {beginner: 'a trick counts when it is nearly there', advanced: 'a trick counts only when it is clean'}, says = get(how, cur);
+  const dflt = get(get(D.crafts, 'default'), 'skill');
+  if (cur === 'inherit') return `${esc(craft)} uses the skill chosen for all quads: ${dflt ? `${esc(dflt)} (the default quad's)` : typeof L.skill === 'string' ? esc(L.skill) : 'none, the shipped defaults'}.`;
+  if (!craft && L.skill && typeof L.skill === 'object') return `Your layer's skill is its own presets (${Object.keys(L.skill).map(esc).join(', ')}), so there is no choice for all quads here: pick one per quad.`;
+  const over = !craft && dflt ? ` The default quad's skill, ${esc(dflt)}, goes over this for every quad.` : '';
+  if (!sk) return `The shipped parameters, in between: ${how.beginner} with beginner, ${how.advanced.replace('a trick ', '')} with advanced.` + over;
   const n = Object.keys(sk).length;
-  return `${how[cur] ? how[cur][0].toUpperCase() + how[cur].slice(1) : esc(cur)}${roll(sk.flip_min_deg, D.params.flip_min_deg?.default)}: it sets ${n} parameter${n > 1 ? 's' : ''} at once. ` +
-    (craft ? `For ${esc(craft)} it goes over the all-quads skill and overrides; ${esc(craft)}'s own overrides still win.` : 'Your overrides still win over it.');
+  return `${says ? says[0].toUpperCase() + says.slice(1) : esc(cur)}${roll(sk.flip_min_deg)}: it sets ${n} parameter${n === 1 ? '' : 's'} at once. ` +
+    (craft ? `For ${esc(craft)} it goes over the all-quads skill and overrides; ${esc(craft)}'s own overrides still win. Parameters it does not set keep their all-quads values.` : 'Your overrides still win over it.') + over;
 }
-function craftNames() {                               // the declared spelling first, then what the logs say, one per quad
+function craftNames() {
+  // the declared spelling first, then what the logs say, one per quad; the default quad is every quad's, not a chip
+  // (a log whose craft name is Default included), and the quad chosen keeps its chip when its last override goes
   const names = [];
-  for (const c of [...Object.keys(D.crafts).filter(c => c !== 'default'), ...D.crafts_seen]) if (!names.some(n => sameCraft(n, c))) names.push(c);
+  for (const c of [...Object.keys(D.crafts), ...D.crafts_seen, ...(craft ? [craft] : [])]) if (!sameCraft(c, 'default') && !names.some(n => sameCraft(n, c))) names.push(c);
   return names.sort((a, b) => a.localeCompare(b));
 }
 const PROPS = ['skill', 'params', 'segment', 'trick', 'source'];
-const unsetTrick = (id, c) => edit(t => { const s = section(t, c); const e = (s.trick || []).find(x => x.id === id); if (!e) return; delete e.enabled; if (Object.keys(e).length === 1) s.trick = s.trick.filter(x => x !== e); });
-const overrides = own => (own.skill ? 1 : 0) + Object.keys(own).filter(k => !PROPS.includes(k)).length + Object.keys(own.params || {}).length + (own.trick || []).filter(e => e.enabled !== undefined).length;
-function mineBox(own, lib) {
-  // what this scope's layer sets, as the server keeps it: the page's one answer to "what did I change"
-  const items = [];
-  if (own.skill) items.push(`<div class="it">skill <b>${esc(own.skill)}</b><button class="small" data-unskill title="back">↺</button></div>`);
-  if (craft) for (const [k, v] of Object.entries(own).filter(([k]) => !PROPS.includes(k))) items.push(`<div class="it">${esc(k)} <b>${esc(num(v))}</b><button class="small" data-unprop="${esc(k)}" title="back to the default">↺</button></div>`);
-  for (const [k, v] of Object.entries(own.params || {})) items.push(`<div class="it">${esc(k)} <b>${esc(num(v))}</b><span class="dim">shipped ${esc(num(lib.params[k]?.default ?? '–'))}</span><button class="small" data-unparam="${esc(k)}" title="back">↺</button></div>`);
-  for (const e of (own.trick || []).filter(e => e.enabled !== undefined)) items.push(`<div class="it">${pill(e.id)} <b>${e.enabled ? 'on' : 'off'}</b><button class="small" data-untrick="${esc(e.id)}" title="back">↺</button></div>`);
-  return `<div class="mine" id="mine"><span class="lbl">${craft ? 'overrides for ' + esc(craft) : 'overrides'}</span>${items.join('') || `<span class="dim">${craft ? 'none: it flies on the all-quads settings' : 'none: every trick and parameter as shipped'}</span>`}</div>`;
+function mineItems(own, c, lib, prefix = '') {
+  // what one section of the layer sets (c: the quad's, null: the top level), as the server keeps it, each item with
+  // its way back to that section: the page's one answer to "what did I change"
+  const at = `data-c="${esc(c ?? '')}"`, pre = prefix ? `<span class="dim">${prefix}</span> ` : '', items = [];
+  const back = (attr, title) => `<button class="small" ${attr} ${at} title="${title}">↺</button>`;
+  if (typeof own.skill === 'string') items.push(`skill <b>${esc(own.skill)}</b>${back('data-unskill', 'back')}`);
+  else if (own.skill) items.push(`own presets <b>${Object.keys(own.skill).map(esc).join(', ')}</b>${back('data-unskill', 'remove these presets')}`);
+  if (c) for (const [k, v] of Object.entries(own).filter(([k]) => !PROPS.includes(k))) items.push(`${esc(k)} <b>${esc(num(v))}</b>${back(`data-unprop="${esc(k)}"`, 'back to the default')}`);
+  for (const [k, v] of Object.entries(own.params || {})) items.push(`${esc(k)} <b>${esc(num(v))}</b><span class="dim">shipped ${esc(num(get(lib.params, k)?.default ?? '–'))}</span>${back(`data-unparam="${esc(k)}"`, 'back')}`);
+  for (const e of own.trick || []) {
+    const rest = Object.keys(e).filter(k => k !== 'id' && k !== 'enabled'), sw = e.enabled === undefined ? '' : `<b>${e.enabled ? 'on' : 'off'}</b>`;
+    items.push(`${pill(e.id)} ${sw}${sw ? back(`data-untrick="${esc(e.id)}"`, 'back to on/off as below') : ''}${rest.length ? `${sw ? ' ' : ''}<span class="dim" title="in the raw layer, under tricks file and raw layer">${rest.map(esc).join(', ')}</span>` : ''}`);
+  }
+  for (const [n, o] of Object.entries(own.segment || {})) items.push(`segment ${esc(n)} <b>${Object.entries(o).map(([k, v]) => esc(k) + ' ' + esc(num(v))).join(', ')}</b>${back(`data-unseg="${esc(n)}"`, 'back to the shipped segment')}`);
+  return items.map(x => `<div class="it">${pre}${x}</div>`);
 }
+const overrides = own => mineItems(own, 'quad', D).length;
+function mineBox(own, lib) {
+  // the default quad's section is every quad's, over what all quads have: said with all quads, as its own items
+  const items = craft ? mineItems(own, craft, lib) : [...mineItems(own, null, lib), ...mineItems(layerCraft('default'), 'default', lib, 'every quad')];
+  return `<div class="mine" id="mine"><span class="lbl">${craft ? `overrides for <span class="nm">${esc(craft)}</span>` : 'overrides'}</span>${items.join('') || `<span class="dim">${craft ? 'none: it flies on the all-quads settings' : 'none: every trick and parameter as shipped'}</span>`}</div>`;
+}
+let pfilter = '';                                     // the every-parameter filter, across redraws and quads
+// an input the pilot is typing into, found again after a redraw: by its trick (or the list), its parameter or property, its id
+const focusKey = el => [el.closest('.trk')?.dataset.id || (el.closest('#params') ? 'params' : ''), el.closest('.prm')?.dataset.p || '', el.dataset.prop || '', el.id].join('|');
+const TYPED = '#detectionPanel [data-val], #detectionPanel [data-prop], #detectionPanel #pfilter';   // boxes typed into (a radio's click is an input event too)
+document.addEventListener('input', e => { if (e.target.matches?.(TYPED)) e.target.dataset.dirty = '1'; });
 function renderDetection() {
   const box = $('#detectionPanel');
+  const a = document.activeElement, keep = a && box.contains(a) && a.dataset.dirty ? {key: focusKey(a), value: a.value} : null;
   const names = craftNames();
-  if (craft && !DC) { box.innerHTML = '<p class="hint">loading…</p>'; load(); return; }
-  const lib = craft ? DC : D, own = craft ? layerCraft(craft) : L, usedBy = usedByMap();
-  const on = lib.tricks.filter(t => t.enabled).length;
-  const ownParams = own.params || {}, ownTricks = new Set((own.trick || []).filter(e => e.enabled !== undefined).map(e => e.id));
   const scope = `<div class="row" id="scope"><span class="lbl">applies to</span><span class="chip ${craft ? '' : 'on'}" id="allQuads">all quads</span>` +
-    names.map(c => { const n = overrides(layerCraft(c)); return `<span class="chip ${sameCraft(c, craft) ? 'on' : ''}" data-craft="${esc(c)}" title="${D.crafts_seen.some(x => sameCraft(x, c)) ? 'seen in the logs' : 'declared, not seen in a log here'}${n ? `, ${n} override${n > 1 ? 's' : ''}` : ''}">${esc(c)}${n ? ` <span class="n">${n}</span>` : ''}</span>`; }).join('') +
+    names.map(c => { const n = overrides(layerCraft(c)); return `<span class="chip ${sameCraft(c, craft) ? 'on' : ''}" data-craft="${esc(c)}" title="${D.crafts_seen.some(x => sameCraft(x, c)) ? 'seen in the logs' : Object.keys(D.crafts).some(x => sameCraft(x, c)) ? 'declared, not seen in a log here' : 'chosen: nothing set for it'}${n ? `, ${n} override${n > 1 ? 's' : ''}` : ''}">${esc(c)}${n ? ` <span class="n">${n}</span>` : ''}</span>`; }).join('') +
     (names.length ? '' : '<span class="hint">no quad seen in the logs yet</span>') + `</div>` +
     `<p class="hint" id="scopeHint">${craft ? `Changes here apply only to ${esc(craft)}'s flights: a log names its quad (the craft name in its header) and gets its overrides by itself. What is not overridden here comes from all quads.`
       : 'Changes here apply to every quad. To set one quad apart, pick it: its overrides win over these, for its own flights only.'}</p>`;
+  const wireChips = () => {
+    // a chip draws its scope at once ("loading…" under the chips until the quad is in): nothing of the view before stays to click
+    $('#allQuads').onclick = () => { if (!craft) return; craft = null; DC = null; render(); };
+    box.querySelectorAll('[data-craft]').forEach(el => el.onclick = () => { if (sameCraft(el.dataset.craft, craft) && DC) return; craft = el.dataset.craft; DC = null; render(); });
+  };
+  if (craft && !DC) { box.innerHTML = scope + '<p class="hint">loading…</p>'; wireChips(); load(); return; }
+  const at = craft, drawnEtag = ETAG;                 // every knob below writes to the scope this view was drawn for; the raw layer as drawn
+  const lib = craft ? DC : D, own = craft ? layerCraft(craft) : L, usedBy = usedByMap();
+  const on = lib.tricks.filter(t => t.enabled).length;
+  const ownParams = own.params || {}, ownTricks = new Set((own.trick || []).map(e => e.id));
   let quad = '';
   if (craft) {
     const ctx = DC.craft_context, defaults = DC.crafts.default || {};
     const props = [...new Set([...Object.keys(defaults), ...Object.keys(own)].filter(k => !PROPS.includes(k)))];
     const unit = {size_mm: 'mm', weight_g: 'g', hover_pct: '% hover'}, label = {size_mm: 'size', weight_g: 'weight', hover_pct: 'throttle'};
-    quad = `<div class="row" id="quad">` + props.map(k => `<label class="prop" title="${esc(k)}">${esc(label[k] || k)} <input type="${typeof (ctx['craft.' + k] ?? 0) === 'number' ? 'number' : 'text'}" step="any" data-prop="${esc(k)}" value="${esc(own[k] ?? '')}" placeholder="${esc(num(defaults[k] ?? ''))}"> <span class="dim">${esc(unit[k] || '')}</span></label>`).join('') + `</div>`;
+    quad = `<div class="row" id="quad">` + props.map(k => `<label class="prop" title="${esc(k)}">${esc(get(label, k) || k)} <input type="${typeof (get(ctx, 'craft.' + k) ?? 0) === 'number' ? 'number' : 'text'}" step="any" data-prop="${esc(k)}" value="${esc(get(own, k) ?? '')}" placeholder="${esc(num(get(defaults, k) ?? ''))}"> <span class="dim">${esc(get(unit, k) || '')}</span></label>`).join('') + `</div>`;
   }
   const tricks = lib.tricks.map(t => {
     const seg = t.phases.length ? t.phases.map(p => p.segment).join(' › ') : t.segment;
     const conds = t.phases.length ? t.phases.map((p, i) => `<div><span class="k">phase ${i + 1}</span> ${esc(p.segment)}${i ? ` within ${p.within} s` : ''}</div>` + p.when.map(c => `<div><span class="k"></span><code>${esc(c)}</code></div>`).join('')).join('') : '';
-    const mine = t.params.filter(k => ownParams[k] !== undefined).length + (ownTricks.has(t.id) ? 1 : 0);
+    const mine = t.params.filter(k => get(ownParams, k) !== undefined).length + (ownTricks.has(t.id) ? 1 : 0);
     // where an on/off comes from, when it is not shipped: counted as an override in this scope, named when it comes from elsewhere
     const from = /tricks\.toml$/.test(t.source) ? '' : t.source === 'database' ? (craft ? '<span class="src" title="set for all quads">all quads</span>' : '')
       : craftOf(t.source) && sameCraft(craftOf(t.source), craft) ? '' : srcBadge(t.source);
-    return `<div class="trk ${t.enabled ? '' : 'off'} ${openTricks.has(t.id) ? 'open' : ''}" data-id="${esc(t.id)}"><div class="head">` +
+    const sec = !craft && sameCraft(craftOf(t.source) || '', 'default') ? 'default' : '';   // switched in the default quad's section: switched there
+    return `<div class="trk ${t.enabled ? '' : 'off'} ${openTricks.has(t.id) ? 'open' : ''}" data-id="${esc(t.id)}" data-c="${sec}"><div class="head">` +
       `<input type="checkbox" data-on ${t.enabled ? 'checked' : ''} title="${t.enabled ? 'on' : 'off'}">` +
       `<span><span class="id">${esc(t.id)}</span> ${pill(t.tag)}${mine ? ` <span class="src db">${mine} override${mine > 1 ? 's' : ''}</span>` : ''} ${from}</span>` +
       `<span class="chev">${t.params.length ? t.params.length + (t.params.length > 1 ? ' parameters ' : ' parameter ') : ''}›</span></div>` +
@@ -265,15 +322,15 @@ function renderDetection() {
       t.examples.map(e => `<div><span class="k">example</span>${esc(e.log.replace(/^BTFL_BLACKBOX_LOG_/, '').replace(/\.bbl$/, ''))} arm ${e.arm} ${e.at !== undefined ? `at ${e.at}` : `${e.absent ? 'none in' : 'in'} ${e.from}-${e.to}`}${e.note ? ` <span class="dim">(${esc(e.note)})</span>` : ''}</div>`).join('') +
       (t.note ? `<div><span class="k">note</span>${esc(t.note)}</div>` : '') + `</details></div></div>`;
   }).join('');
-  const filter = box.querySelector('#pfilter')?.value || '';
+  const skillNow = craft ? (typeof own.skill === 'string' ? own.skill : 'inherit') : typeof L.skill === 'string' ? L.skill : 'none';
   box.innerHTML = scope + quad +
-    `<div class="row" id="skill"><span class="lbl">skill</span>${skillRadios(craft ? 'cskill' : 'skill', craft ? own.skill || 'inherit' : L.skill || 'none', !!craft)}</div>` +
-    `<p class="hint" id="skillHint">${skillHint(craft ? own.skill || 'inherit' : L.skill || 'none')}</p>` +
+    `<div class="row" id="skill"><span class="lbl">skill</span>${skillRadios(craft ? 'cskill' : 'skill', skillNow, !!craft, !craft && !!L.skill && typeof L.skill === 'object')}</div>` +
+    `<p class="hint" id="skillHint">${skillHint(skillNow)}</p>` +
     mineBox(own, lib) +
     `<h2>tricks <span class="dim">${on} of ${lib.tricks.length} on${craft ? ' for ' + esc(craft) : ''}</span></h2><div id="tricks">${tricks}</div>` +
     fold('params', `every parameter (${Object.keys(lib.params).length})`,
-      `<p class="hint">what the tricks are judged by${craft ? ', for ' + esc(craft) : ''}. ↺ removes an override.</p><div class="row"><input id="pfilter" placeholder="filter by parameter or trick" value="${esc(filter)}" style="width:240px"></div>` +
-      `<div id="params">${paramRows(lib.params, craft, usedBy, filter)}</div>`) +
+      `<p class="hint">what the tricks are judged by${craft ? ', for ' + esc(craft) : ''}. ↺ removes an override.</p><div class="row"><input id="pfilter" placeholder="filter by parameter or trick" value="${esc(pfilter)}" style="width:240px"></div>` +
+      `<div id="params">${paramRows(lib.params, craft, usedBy, pfilter)}</div>`) +
     fold('check', 'check against real flights',
       `<h2>examples</h2><p class="hint">every trick's examples (a real log, an arm, a moment) run against the logs on the server</p>` +
       `<div class="row"><button id="checkBtn">check the examples</button><span id="checkOut" class="dim"></span></div><div id="checkList" class="list"></div>` +
@@ -290,36 +347,45 @@ function renderDetection() {
       `<div class="row"><button class="primary" id="layerSave">save</button><button id="layerClear" title="back to the shipped tricks">clear everything set here</button></div>`);
   box.querySelectorAll('details[data-def]').forEach(d => d.ontoggle = () => d.open ? openDefs.add(d.dataset.def) : openDefs.delete(d.dataset.def));
   box.querySelectorAll('details[data-fold]').forEach(d => d.ontoggle = () => d.open ? openFolds.add(d.dataset.fold) : openFolds.delete(d.dataset.fold));
-  $('#allQuads').onclick = () => { if (!craft) return; craft = null; DC = null; render(); };
-  box.querySelectorAll('[data-craft]').forEach(el => el.onclick = () => { if (sameCraft(el.dataset.craft, craft)) return; craft = el.dataset.craft; DC = null; load(); });
-  box.querySelectorAll('[data-prop]').forEach(inp => inp.onchange = () => setProp(craft, inp.dataset.prop, inp.value.trim() === '' ? null : (inp.type === 'number' ? +inp.value : inp.value)));
-  box.querySelectorAll('input[name=skill], input[name=cskill]').forEach(r => r.onchange = () => setSkill(r.value, craft));
-  box.querySelectorAll('[data-unskill]').forEach(b => b.onclick = () => setSkill(null, craft));
-  box.querySelectorAll('[data-unprop]').forEach(b => b.onclick = () => setProp(craft, b.dataset.unprop, null));
-  box.querySelectorAll('[data-unparam]').forEach(b => b.onclick = () => setParam(b.dataset.unparam, null, craft));
-  box.querySelectorAll('[data-untrick]').forEach(b => b.onclick = () => unsetTrick(b.dataset.untrick, craft));
-  box.querySelectorAll('.trk').forEach(el => {
-    el.querySelector('[data-on]').onchange = e => setTrick(el.dataset.id, e.target.checked, craft);
-    el.querySelector('.head').onclick = e => { if (e.target.closest('input')) return; openTricks.has(el.dataset.id) ? openTricks.delete(el.dataset.id) : openTricks.add(el.dataset.id); el.classList.toggle('open'); };
-    wireParams(el.querySelector('.det'), craft);
+  wireChips();
+  if (keep) { const el = [...box.querySelectorAll('input')].find(x => focusKey(x) === keep.key); if (el) { el.value = keep.value; el.dataset.dirty = '1'; el.focus(); } }
+  // a property emptied is its default again (the placeholder shows it); one that is no number yet (a typo: the input
+  // then has no value at all) saves nothing and shows the value in force again
+  box.querySelectorAll('[data-prop]').forEach(inp => inp.onchange = () => {
+    delete inp.dataset.dirty;
+    const v = inp.value.trim();
+    if (inp.validity.badInput || (inp.type === 'number' && !Number.isFinite(Number(v)))) { render(); return; }
+    setProp(at, inp.dataset.prop, v === '' ? null : inp.type === 'number' ? Number(v) : v);
   });
-  wireParams($('#params'), craft);
-  $('#pfilter').oninput = () => { $('#params').innerHTML = paramRows(lib.params, craft, usedBy, $('#pfilter').value); wireParams($('#params'), craft); };
+  box.querySelectorAll('input[name=skill], input[name=cskill]').forEach(r => r.onchange = () => setSkill(r.value, at));
+  const sec = b => b.dataset.c || null;               // the section an overrides item came from
+  box.querySelectorAll('[data-unskill]').forEach(b => b.onclick = () => setSkill(null, sec(b)));
+  box.querySelectorAll('[data-unprop]').forEach(b => b.onclick = () => setProp(sec(b), b.dataset.unprop, null));
+  box.querySelectorAll('[data-unparam]').forEach(b => b.onclick = () => setParam(b.dataset.unparam, null, sec(b)));
+  box.querySelectorAll('[data-untrick]').forEach(b => b.onclick = () => unsetTrick(b.dataset.untrick, sec(b)));
+  box.querySelectorAll('[data-unseg]').forEach(b => b.onclick = () => unsetSegment(b.dataset.unseg, sec(b)));
+  box.querySelectorAll('.trk').forEach(el => {
+    el.querySelector('[data-on]').onchange = e => setTrick(el.dataset.id, e.target.checked, el.dataset.c || at);
+    el.querySelector('.head').onclick = e => { if (e.target.closest('input')) return; openTricks.has(el.dataset.id) ? openTricks.delete(el.dataset.id) : openTricks.add(el.dataset.id); el.classList.toggle('open'); };
+    wireParams(el.querySelector('.det'), at);
+  });
+  wireParams($('#params'), at);
+  $('#pfilter').oninput = () => { pfilter = $('#pfilter').value; $('#params').innerHTML = paramRows(lib.params, at, usedBy, $('#pfilter').value); wireParams($('#params'), at); };
   $('#checkBtn').onclick = runCheck;
   $('#evalBtn').onclick = runEval;
   const importText = async () => { const f = $('#importFile').files[0]; return f ? await f.text() : $('#importText').value; };
   const armImport = () => { const on = $('#importFile').files.length || $('#importText').value.trim(); $('#importReplace').disabled = $('#importMerge').disabled = !on; };
   $('#importFile').onchange = armImport; $('#importText').oninput = armImport;
-  const doImport = async (mode) => {
+  const doImport = mode => enqueue(async () => {
     err('');
     const r = await api('/api/tricks/import', {method: 'POST', body: JSON.stringify({text: await importText(), mode})});
     if (r.error) { err(r.error); return; }
     L = r.layer; ETAG = r.etag; await load();
-  };
+  });
   $('#importReplace').onclick = () => doImport('replace');
   $('#importMerge').onclick = () => doImport('merge');
-  $('#layerSave').onclick = async () => { let t; try { t = JSON.parse($('#layerText').value); } catch (e) { err('not JSON: ' + e.message); return; } await save(t); };
-  $('#layerClear').onclick = async () => { if (!confirm('Clear everything set on this page? The shipped tricks stay.')) return; err(''); await api('/api/tricks/layer', {method: 'DELETE'}); await load(); };
+  $('#layerSave').onclick = () => { let t; try { t = JSON.parse($('#layerText').value); } catch (e) { err('not JSON: ' + e.message); return; } enqueue(() => save(t, false, drawnEtag)); };
+  $('#layerClear').onclick = () => { if (!confirm('Clear everything set on this page? The shipped tricks stay.')) return; enqueue(async () => { const r = await api('/api/tricks/layer', {method: 'DELETE'}); if (r.error) err(r.error); await load(); }); };
 }
 async function runJob(args, out) {
   out.textContent = 'running…';
@@ -701,7 +767,8 @@ setPhone();
 (async () => {
   status('loading…');
   // the tabs that went into detection keep their links (#profile, #drones, #tricks, #settings) and a remembered tab
-  const known = t => ({profile: 'detection', drones: 'detection', tricks: 'detection', settings: 'detection'})[t] || (TABS.includes(t) ? t : null);
+  const OLD = {profile: 'detection', drones: 'detection', tricks: 'detection', settings: 'detection'};
+  const known = t => get(OLD, t) || (TABS.includes(t) ? t : null);
   tab = known(location.hash.slice(1)) || known((() => { try { return localStorage.getItem('acro.cfgtab'); } catch { return null; } })()) || 'tags';
   const sessions = await api('/api/sessions');
   SESS = sessions.error ? [] : sessions.filter(s => s.moments).map(s => ({session: s.session, moments: s.moments}));

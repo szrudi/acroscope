@@ -503,7 +503,10 @@ Detection reads summary first, for all quads or for one: the quads seen in the l
 the top, each with the count of its overrides. With *all quads* chosen a change applies to every quad; with a quad
 chosen (its size, weight and hover throttle shown) it is an override for that quad's flights only, which a log gets by
 itself through the craft name in its header, everything else coming from all quads. Then the skill preset, then the
-*overrides*: what this scope sets, each item with its own ↺. Then the tricks in force with their
+*overrides*: what this scope sets, each item with its own ↺ (a trick entry's ↺ takes back its on/off; what else it
+sets, the pilot's own trick or examples, is the raw layer's to change). With all quads, the default quad's section
+(`[craft.default]`, which goes over the all-quads values for every quad) is listed as *every quad*, and a value or
+switch that comes from it is changed there. Then the tricks in force with their
 switches; a trick opens to the parameters it reads (the value in force, the shipped default where it differs, which other
 tricks the parameter moves) and, folded under it, how it is found (its segments, conditions, title, examples). Folded at
 the bottom: every parameter at once, filtered by parameter or trick; the checks (the examples against the server's logs, and
