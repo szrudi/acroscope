@@ -494,14 +494,22 @@ checklist.
 ## Configuration page
 
 `/config` (the ⚙ in the player's header) is where the pilot sets what the log cannot say, over the shipped tricks,
-in eight tabs: **profile** (the skill preset, every number with the shipped default and where the value in force came
-from, filtered by number or trick), **drones** (the crafts seen in the logs by their header name: properties, a preset
-and numbers for that quad, its tricks on and off), **tricks** (the list in force with switches, each one's definition
-and examples, "check the examples" against the server's logs, and the tricks scored against a session's tagged
-moments: found, missed with arm and time, detections on no moment), **settings** (what this browser remembers, your layer
-exported as a tricks file or one imported, and the raw layer as the server keeps it), **tags** (the tag manager, moved here from the player), **shares** (what is published on a secret link, see *Sharing a trick*),
-**osd** (the OSD profiles, checked on a frame of a clip, see *OSD profiles*) and **devices** (what may upload through
-the drop: pair one and read its code, once; revoke one; see *The drop*). Every change goes to
+in five tabs: **tags** (the tag manager, moved here from the player), **shares** (what is published on a secret link,
+see *Sharing a trick*), **detection** (the tricks and the parameters that judge them, below), **osd** (the OSD profiles,
+checked on a frame of a clip, see *OSD profiles*) and **devices** (what may upload through the drop: pair one and read
+its code, once; revoke one; see *The drop*).
+
+Detection reads summary first, for all quads or for one: the quads seen in the logs by their header name are chips at
+the top, each with the count of its overrides. With *all quads* chosen a change applies to every quad; with a quad
+chosen (its size, weight and hover throttle shown) it is an override for that quad's flights only, which a log gets by
+itself through the craft name in its header, everything else coming from all quads. Then the skill preset, then the
+*overrides*: what this scope sets, each item with its own ↺. Then the tricks in force with their
+switches; a trick opens to the parameters it reads (the value in force, the shipped default where it differs, which other
+tricks the parameter moves) and, folded under it, how it is found (its segments, conditions, title, examples). Folded at
+the bottom: every parameter at once, filtered by parameter or trick; the checks (the examples against the server's logs, and
+the tricks scored against a session's tagged moments: found, missed with arm and time, detections on no moment); and
+the tricks file (export, import replacing or merging) with the raw layer as the server keeps it. The old links
+(`#profile`, `#drones`, `#tricks`, `#settings`) open detection. Every change goes to
 the server as the whole layer, checked as a tricks file is; a refused one shows its message and changes nothing. The
 player's suggestions follow on the next look.
 
