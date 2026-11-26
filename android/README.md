@@ -13,11 +13,16 @@ What it does now (0.3):
 - **Opens on the plug.** Plugged in, the card's reader and the quad both bring up Android's "Choose an app for
   the USB device" with this app on it; chosen with **Always**, it opens by itself from then on.
 - **Collect from the card.** The goggles' card in a USB-C reader is allowed once, then **Start** copies what is new
-  on it (`DCIM/VID*.mov`, in the DVR's recording order). The card is only read, never written: it stays the second
-  copy. What was collected is remembered by name, size and time and skipped next time. A clip without its index
+  on it (`DCIM/VID*.mov`, in the DVR's recording order). A collect only reads the card: it stays the second copy
+  until the server has the clips. What was collected is remembered by name, size and time and skipped next time. A clip without its index
   (the DVR lost power while recording) is collected and flagged. A collect that does not fit on the phone is
   refused before it starts. With nothing left to collect the card's line says the app has nothing open on it;
   **Eject the card…** opens the phone's own storage screen, where it is ejected (an app may not eject a card).
+- **Free the card.** The clips on the card whose batch the server reported done (by name, size and time, and in no
+  batch still on its way) can be deleted from it: **Free the card…**, then **Delete** after a question that says
+  how many and how much. Nothing is deleted by itself, nothing still on its way and nothing but those clips. It needs
+  the card's folder allowed once more, this time with changes (**Allow changes to the card**). A clip deleted on
+  the server since counts as done too.
 - **The log off the quad.** With the quad on USB, **Start** saves its blackbox flash first (MSP, as the
   Configurator's "save flash to file" does: the used part only), named
   `BTFL_BLACKBOX_LOG_<CRAFT>_<date>_<time>_<board>.bbl` with the phone's time. The file is kept only when it is as

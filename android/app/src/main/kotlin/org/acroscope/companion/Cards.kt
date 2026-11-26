@@ -9,6 +9,7 @@ import android.provider.DocumentsContract
 import org.acroscope.companion.core.Card
 import org.acroscope.companion.core.CardFile
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.io.InputStream
 
 /** The DVR's card as the phone has it: none plugged in, one the app may not read yet, or one it may. */
@@ -16,7 +17,8 @@ sealed interface CardState {
     data object None : CardState
     /** A card is there; `request` asks the pilot for its folder (once per card). */
     data class NeedsAccess(val label: String, val request: Intent) : CardState
-    data class Ready(val label: String, val tree: Uri) : CardState
+    /** `writable`: the pilot allowed changes too, which deleting the clips the server has needs; `request` asks again. */
+    data class Ready(val label: String, val tree: Uri, val writable: Boolean = false, val request: Intent? = null) : CardState
 }
 
 interface Cards {
@@ -29,7 +31,7 @@ interface Cards {
 /**
  * Cards through Android's storage access framework: the goggles' card sits in a USB reader, Android mounts it as a
  * removable volume, and the pilot allows its folder once (the grant is kept per card and found again by the
- * volume's id). The card is only ever read.
+ * volume's id). The card is only ever read, but for the clips the server reported done, which the pilot may delete.
  */
 class SafCards(private val context: Context) : Cards {
     private val storage = context.getSystemService(StorageManager::class.java)
@@ -40,11 +42,17 @@ class SafCards(private val context: Context) : Cards {
         val granted = context.contentResolver.persistedUriPermissions.firstOrNull { p ->
             p.isReadPermission && volume.uuid != null && DocumentsContract.getTreeDocumentId(p.uri).startsWith(volume.uuid + ":")
         }
-        return if (granted != null) CardState.Ready(label, granted.uri) else CardState.NeedsAccess(label, volume.createOpenDocumentTreeIntent())
+        val ask = volume.createOpenDocumentTreeIntent()
+        return if (granted != null) CardState.Ready(label, granted.uri, granted.isWritePermission, ask) else CardState.NeedsAccess(label, ask)
     }
 
     override fun grant(tree: Uri) {
-        context.contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val both = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        try {
+            context.contentResolver.takePersistableUriPermission(tree, both)
+        } catch (e: SecurityException) {                    // a picker that gave reading only: that much is kept
+            context.contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
     }
 
     override fun open(tree: Uri): Card = SafCard(context, tree)
@@ -78,6 +86,14 @@ class SafCard(private val context: Context, private val tree: Uri) : Card {
                 override val modified = e.modified
                 override fun open(): InputStream =
                     context.contentResolver.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, e.id)) ?: throw FileNotFoundException(e.name)
+                override fun delete() {
+                    val gone = try {
+                        DocumentsContract.deleteDocument(context.contentResolver, DocumentsContract.buildDocumentUriUsingTree(tree, e.id))
+                    } catch (x: Exception) {
+                        throw IOException(x.message ?: "the card would not let it go", x)
+                    }
+                    if (!gone) throw IOException("the card would not let it go")
+                }
             }
         }
     }

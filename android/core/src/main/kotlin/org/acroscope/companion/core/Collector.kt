@@ -16,6 +16,8 @@ interface CardFile {
     /** Last modified, milliseconds since the epoch: with name and size, what tells one recording from another. */
     val modified: Long
     fun open(): InputStream
+    /** Take it off the card: only ever a clip the server reported done ([Collector.free]). */
+    fun delete(): Unit = throw IOException("the card cannot be changed")
 }
 
 /** A DVR's card: the files in its DCIM folder. */
@@ -26,10 +28,15 @@ interface Card {
 
 /** What a collect would take from a card: the clips not collected yet, in the DVR's recording order (their names
  *  sort that way, and ingest numbers the day's clips in that order), how many were collected before, and what
- *  else lies in the folder. */
-data class Plan(val clips: List<CardFile>, val collected: Int, val others: List<String>) {
+ *  else lies in the folder. `done`: the clips collected before whose batch the server reported done, which the
+ *  pilot may delete from the card. */
+data class Plan(val clips: List<CardFile>, val collected: Int, val others: List<String>, val done: List<CardFile> = emptyList()) {
     val bytes: Long get() = clips.sumOf { it.size }
+    val doneBytes: Long get() = done.sumOf { it.size }
 }
+
+/** What freeing the card deleted, and each clip it could not, with why. */
+data class Freed(val count: Int, val bytes: Long, val failed: List<String>)
 
 /** Where a collect is: the clip in hand, its place among those to copy, and the bytes copied of all of them. */
 data class Progress(val name: String, val index: Int, val count: Int, val done: Long, val total: Long)
@@ -58,10 +65,35 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
     }
 
     fun plan(card: Card): Plan {
-        val seen = store.now.seen.toSet()
+        val s = store.now
+        val seen = s.seen.toSet()
         val (clips, others) = card.files().partition { Names.isClip(it.name) }
         val (old, new) = clips.partition { Seen(it.name, it.size, it.modified) in seen }
-        return Plan(new.sortedBy { it.name }, old.size, others.map { it.name }.sorted())
+        // done with: collected from this card (name, size and time) and in a batch the server reported done, and in
+        // no batch still on its way, whatever became of it on the server since
+        fun held(done: Boolean) = s.batches.filter { (it.stage == Stage.DONE) == done }
+            .flatMap { b -> b.items.map { it.name to it.size } }.toSet()
+        val up = held(true)
+        val waiting = held(false)
+        val done = old.filter { (it.name to it.size).let { k -> k in up && k !in waiting } }
+        return Plan(new.sortedBy { it.name }, old.size, others.map { it.name }.sorted(), done.sortedBy { it.name })
+    }
+
+    /** Delete from the card the clips [plan] finds done with; one the card will not let go does not stop the rest. */
+    fun free(card: Card): Freed {
+        var count = 0
+        var bytes = 0L
+        val failed = mutableListOf<String>()
+        for (clip in plan(card).done) {
+            try {
+                clip.delete()
+                count++
+                bytes += clip.size
+            } catch (e: IOException) {
+                failed += "${clip.name}: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+        return Freed(count, bytes, failed)
     }
 
     /** Copy what [plan] finds new on the card, given `free` bytes on the phone. `stop` is asked before each clip. */

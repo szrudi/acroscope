@@ -28,7 +28,9 @@ import kotlin.concurrent.withLock
 sealed interface CardView {
     data object None : CardView
     data class Locked(val label: String, val request: Intent) : CardView
-    data class Open(val label: String, val tree: Uri, val clips: Int, val bytes: Long, val collected: Int, val others: List<String>) : CardView
+    /** `done`: the clips on it the server reported done, which may be deleted from it (with changes allowed, `writable`). */
+    data class Open(val label: String, val tree: Uri, val clips: Int, val bytes: Long, val collected: Int, val others: List<String>,
+                    val done: Int = 0, val doneBytes: Long = 0, val writable: Boolean = false, val request: Intent? = null) : CardView
     data class Unreadable(val label: String, val why: String) : CardView
 }
 
@@ -63,6 +65,8 @@ class Session(private val g: Graph) {
     val card = MutableStateFlow<CardView>(CardView.None)
     val quad = MutableStateFlow<QuadView>(QuadView.None)
     val erase = MutableStateFlow<Work>(Work.Idle)
+    /** Deleting from the card the clips the server has. */
+    val free = MutableStateFlow<Work>(Work.Idle)
     /** The line to a quad whose log was just saved, kept open: only that connection may erase the flash. With it,
      *  which device it is (a quad swapped meanwhile is another) and the log it saved (the erase is on offer only
      *  while that log is still on the phone). */
@@ -102,7 +106,7 @@ class Session(private val g: Graph) {
     }
 
     /** The screen was left. */
-    fun left() = settle(collect, erase, upload, failures = false)
+    fun left() = settle(collect, erase, upload, free, failures = false)
 
     private fun plugged(view: CardView): String? = when (view) {
         CardView.None -> null
@@ -120,7 +124,7 @@ class Session(private val g: Graph) {
 
     fun lookAtCard() = scope.launch {
         val now = see()
-        if (plugged(now) != plugged(card.value)) settle(collect)
+        if (plugged(now) != plugged(card.value)) settle(collect, free)
         card.value = now
     }
 
@@ -129,7 +133,7 @@ class Session(private val g: Graph) {
         is CardState.NeedsAccess -> CardView.Locked(s.label, s.request)
         is CardState.Ready -> try {
             val plan = g.collector.plan(g.cards.open(s.tree))
-            CardView.Open(s.label, s.tree, plan.clips.size, plan.bytes, plan.collected, plan.others)
+            CardView.Open(s.label, s.tree, plan.clips.size, plan.bytes, plan.collected, plan.others, plan.done.size, plan.doneBytes, s.writable, s.request)
         } catch (e: Exception) {
             CardView.Unreadable(s.label, e.message ?: e.javaClass.simpleName)
         }
@@ -217,6 +221,24 @@ class Session(private val g: Graph) {
     fun allow(tree: Uri) {
         g.cards.grant(tree)
         lookAtCard()
+    }
+
+    /** Delete from the card the clips the server reported done; the pilot pressed for it and said yes. */
+    fun freeCard() = scope.launch {
+        val open = card.value as? CardView.Open ?: return@launch
+        synchronized(seeing) {
+            if (free.value is Work.Running || collect.value is Work.Running || !open.writable || open.done == 0) return@launch
+            free.value = Work.Running("deleting ${open.done} clip${if (open.done == 1) "" else "s"} the server has from the card", 0, 0)
+        }
+        free.value = try {
+            val out = g.collector.free(g.cards.open(open.tree))
+            val said = "deleted ${out.count} clip${if (out.count == 1) "" else "s"} (${Format.bytes(out.bytes)}) from the card"
+            if (out.failed.isEmpty()) Work.Finished(said, true)
+            else Work.Finished("$said; not deleted: ${out.failed.joinToString("; ")}", false)
+        } catch (e: Exception) {
+            Work.Finished("nothing was deleted: ${e.message ?: e.javaClass.simpleName}", false)
+        }
+        card.value = see()
     }
 
     fun setEvent(name: String) {
