@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -81,6 +82,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
     val card by g.session.card.collectAsStateWithLifecycle()
     val quad by g.session.quad.collectAsStateWithLifecycle()
     val erase by g.session.erase.collectAsStateWithLifecycle()
+    val free by g.session.free.collectAsStateWithLifecycle()
     val collect by g.session.collect.collectAsStateWithLifecycle()
     val upload by g.session.upload.collectAsStateWithLifecycle()
     val note by g.session.note.collectAsStateWithLifecycle()
@@ -124,7 +126,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                 }
                 item {
                     Section("Collect") {
-                        Text(g.session.describe(card), Modifier.testTag("card"))
+                        Text(g.session.describe(card, freeing = free is Work.Running), Modifier.testTag("card"))
                         Text(g.session.describe(quad, flash, erasing = erase is Work.Running), Modifier.testTag("quad"))
                         heat?.let { t ->
                             if (hot) Text("the quad's core is at $t °C: unplug it and let it cool", Modifier.testTag("heat"), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
@@ -141,10 +143,30 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             (card as? CardView.Locked)?.let { c -> Button({ openCard(c.request) }, Modifier.testTag("allow")) { Text("Allow the card") } }
                             (quad as? QuadView.Locked)?.let { q -> Button(q.ask, Modifier.testTag("allow-quad")) { Text("Allow the quad") } }
-                            Button({ focus.clearFocus(); beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = something && collect !is Work.Running) { Text("Start") }
+                            Button({ focus.clearFocus(); beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = something && collect !is Work.Running && free !is Work.Running) { Text("Start") }
                             if (card is CardView.Open || card is CardView.Unreadable)
-                                OutlinedButton(openStorage, Modifier.testTag("eject"), enabled = collect !is Work.Running) { Text("Eject the card…") }
+                                OutlinedButton(openStorage, Modifier.testTag("eject"), enabled = collect !is Work.Running && free !is Work.Running) { Text("Eject the card…") }
                         }
+                        (card as? CardView.Open)?.takeIf { it.done.isNotEmpty() }?.let { c ->
+                            var freeing by remember(c.tree, c.done) { mutableStateOf(false) }     // asked of these clips only
+                            val what = "${c.done.size} clip${if (c.done.size == 1) "" else "s"} (${Format.bytes(c.doneBytes)})"
+                            Dim("on the card, $what went up to the server and can go", Modifier.testTag("free-note"))
+                            when {
+                                !c.writable -> c.request?.let { r ->
+                                    OutlinedButton({ openCard(r) }, Modifier.testTag("allow-changes")) { Text("Allow changes to the card") }
+                                }
+                                freeing -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("Delete $what from the card? They went up to the server; the phone kept no copy.", Modifier.testTag("free-ask"))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button({ freeing = false; g.session.freeCard(c) }, Modifier.testTag("free-yes"), enabled = collect !is Work.Running && free !is Work.Running,
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Delete") }
+                                        TextButton({ freeing = false }, Modifier.testTag("free-no")) { Text("Cancel") }
+                                    }
+                                }
+                                else -> OutlinedButton({ freeing = true }, Modifier.testTag("free"), enabled = free !is Work.Running && collect !is Work.Running) { Text("Free the card…") }
+                            }
+                        }
+                        Progress(free, Modifier.testTag("free-status"))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(pickLogs, Modifier.testTag("add-log")) { Text("Add a saved log") }
                             if (quad is QuadView.Saved)

@@ -250,6 +250,185 @@ class ScreenTest {
 
     private val erased get() = org.acroscope.companion.core.Msp.DATAFLASH_ERASE.toString()
 
+    /** Two clips on the card: the first went up in a batch the server reported done, the second waits to go up. */
+    private fun upAndWaiting(writable: Boolean): Pair<FakeFile, FakeFile> {
+        val up = FakeFile("VID00001.mov", movie(100))
+        val waiting = FakeFile("VID00002.mov", movie(120))
+        w.card(up, writable = writable)
+        w.graph.collector.collect(w.cards.open(TREE), Long.MAX_VALUE)
+        w.store.updateBatch(w.store.now.batches.single().id) { it.copy(stage = org.acroscope.companion.core.Stage.DONE) }
+        w.card(up, waiting, writable = writable)
+        w.graph.collector.collect(w.cards.open(TREE), Long.MAX_VALUE)
+        return up to waiting
+    }
+
+    @Test
+    fun `clips that went up can be deleted from the card once changes to it are allowed`() {
+        val (up, _) = upAndWaiting(writable = false)
+        show()
+        assertTrue("1 clip (${Format.bytes(up.size)}) went up to the server" in text("free-note"), text("free-note"))
+        assertFalse(seen("free"))
+        val request = (w.cards.now as CardState.Ready).request
+        click("allow-changes")
+        kotlin.test.assertSame(request, asked.single())                          // the card's folder asked for again, with changes
+        w.session.allow(TREE)
+        wait { seen("free") && !seen("allow-changes") }
+    }
+
+    @Test
+    fun `free the card asks first, and deletes only what went up`() {
+        val (up, waiting) = upAndWaiting(writable = true)
+        show()
+        click("free")
+        assertTrue("Delete 1 clip (${Format.bytes(up.size)})" in text("free-ask"), text("free-ask"))
+        click("free-no")
+        wait { seen("free") && !seen("free-ask") }
+        assertFalse(up.deleted)                                                  // no without a yes
+        click("free")
+        click("free-yes")
+        wait { seen("free-status") && "deleted 1 clip" in text("free-status") }
+        assertTrue(up.deleted)
+        assertFalse(waiting.deleted)                                             // still to go up: it stays
+        wait { !seen("free-note") && !seen("free") }                             // nothing left that went up
+    }
+
+    @Test
+    fun `a clip the card will not let go is named, and the others still go`() {
+        val stuck = FakeFile("VID00001.mov", movie(100)).also { it.refuse = true }
+        val up = FakeFile("VID00002.mov", movie(110))
+        w.card(stuck, up, writable = true)
+        w.graph.collector.collect(w.cards.open(TREE), Long.MAX_VALUE)
+        w.store.updateBatch(w.store.now.batches.single().id) { it.copy(stage = Stage.DONE) }
+        show()
+        click("free")
+        click("free-yes")
+        wait { seen("free-status") && "not deleted" in text("free-status") }
+        assertTrue("deleted 1 clip" in text("free-status") && "VID00001.mov: the card would not let it go" in text("free-status"), text("free-status"))
+        assertTrue(up.deleted)
+        assertFalse(stuck.deleted)
+        wait { "1 clip" in text("free-note") }                                   // the one left is still offered
+    }
+
+    @Test
+    fun `nothing is deleted without changes allowed, during a collect or another free, or with nothing asked`() {
+        val (up, waiting) = upAndWaiting(writable = false)
+        fun free(view: CardView.Open) = kotlinx.coroutines.runBlocking { w.session.freeCard(view).join() }
+        fun look() = kotlinx.coroutines.runBlocking { w.session.lookAtCard().join() }
+        look()
+        free(w.session.card.value as CardView.Open)
+        assertEquals(Work.Idle, w.session.free.value)
+        w.card(up, waiting, writable = true)
+        look()
+        val open = w.session.card.value as CardView.Open
+        w.session.collect.value = Work.Running("reading the card", 0, 0)
+        free(open)
+        assertEquals(Work.Idle, w.session.free.value)
+        w.session.collect.value = Work.Idle
+        val other = Work.Running("deleting", 0, 0)
+        w.session.free.value = other
+        free(open)
+        assertEquals(other, w.session.free.value)
+        w.session.free.value = Work.Idle
+        free(open.copy(done = emptyList()))
+        assertEquals(Work.Idle, w.session.free.value)
+        assertFalse(up.deleted)
+        free(open)                                                               // and with all of it in order, it goes
+        assertTrue(up.deleted)
+    }
+
+    @Test
+    fun `the question goes with the card, and so does what the free said`() {
+        val (up, waiting) = upAndWaiting(writable = true)
+        val fresh = FakeFile("VID00003.mov", movie(130))
+        show()
+        click("free")
+        assertTrue(seen("free-ask"))
+        w.cards.now = CardState.None
+        kotlinx.coroutines.runBlocking { w.session.lookAtCard().join() }
+        wait { !seen("free-note") }
+        w.card(up, waiting, fresh, writable = true)                              // a card back in: nothing asked of it yet
+        kotlinx.coroutines.runBlocking { w.session.lookAtCard().join() }
+        wait { seen("free") }
+        assertFalse(seen("free-ask"))
+        click("free")
+        click("free-yes")
+        wait { seen("free-status") && "deleted 1 clip" in text("free-status") }
+        w.cards.now = CardState.None
+        kotlinx.coroutines.runBlocking { w.session.lookAtCard().join() }
+        wait { !seen("free-status") }
+    }
+
+    @Test
+    fun `what a free said goes when the screen is left, or a collect starts`() {
+        val (up, waiting) = upAndWaiting(writable = true)
+        show()
+        w.session.free.value = Work.Finished("deleted 1 clip (176 B) from the card", true)
+        wait { seen("free-status") }
+        w.session.left()
+        wait { !seen("free-status") }
+        w.session.free.value = Work.Finished("deleted 1 clip (176 B) from the card", true)
+        w.card(up, waiting, FakeFile("VID00003.mov", movie(130)), writable = true)
+        kotlinx.coroutines.runBlocking { w.session.lookAtCard().join() }
+        wait { seen("free-status") }
+        click("start")
+        wait { !seen("free-status") }
+    }
+
+    @Test
+    fun `the question goes when what it names changes, and waits out a collect`() {
+        val (up, waiting) = upAndWaiting(writable = true)
+        show()
+        click("free")
+        assertTrue("Delete 1 clip" in text("free-ask"), text("free-ask"))
+        w.session.collect.value = Work.Running("reading the card", 0, 0)
+        wait { "reading the card" in text("collect-status") }
+        tag("free-yes").assertIsNotEnabled()                                    // not now: it would do nothing
+        w.session.collect.value = Work.Idle
+        wait { seen("free-yes") }
+        tag("free-yes").assertIsEnabled()
+        w.store.updateBatch(w.store.now.batches.last().id) { it.copy(stage = Stage.DONE) }   // the second clip went up too
+        kotlinx.coroutines.runBlocking { w.session.lookAtCard().join() }
+        wait { "2 clips" in text("free-note") }
+        assertFalse(seen("free-ask"))                                            // asked about one: not taken for a yes to two
+        assertFalse(up.deleted || waiting.deleted)
+    }
+
+    @Test
+    fun `while clips are deleted the card is not to be ejected, and nothing else starts on it`() {
+        val (up, waiting) = upAndWaiting(writable = true)
+        w.card(up, waiting, FakeFile("VID00003.mov", movie(130)), writable = true)
+        show()
+        tag("start").assertIsEnabled()
+        w.session.free.value = Work.Running("deleting 1 clip the server has from the card: keep it in", 0, 0)
+        wait { "the app is deleting from it: keep it in" in text("card") }
+        assertFalse("nothing open on it" in text("card"))
+        tag("eject").assertIsNotEnabled()
+        tag("start").assertIsNotEnabled()
+        tag("free").assertIsNotEnabled()
+        w.session.startCollect()
+        assertFalse("collect" in w.runner.ran)
+        w.session.free.value = Work.Idle
+        w.session.collect.value = Work.Running("reading the card", 0, 0)
+        wait { "reading the card" in text("collect-status") }
+        tag("free").assertIsNotEnabled()
+    }
+
+    @Test
+    fun `a batch the server reports done offers its clips on the card at once`() {
+        w.paired()
+        val up = FakeFile("VID00001.mov", movie(100))
+        w.card(up, writable = true)
+        w.graph.collector.collect(w.cards.open(TREE), Long.MAX_VALUE)
+        val id = w.store.now.batches.single().id
+        w.store.updateBatch(id) { it.copy(stage = Stage.COMMITTED) }
+        w.drop.statuses[id] = ServerStatus("pending")
+        show()
+        assertFalse(seen("free-note"))
+        w.drop.statuses[id] = ServerStatus("done", "2026-12-12-park", null, listOf("2026-12-12_001"), emptyList())
+        kotlinx.coroutines.runBlocking { w.session.askServer().join() }
+        wait { seen("free-note") }
+    }
+
     @Test
     fun `while the flash is erased the screen says to keep the quad plugged in, and the quad's line says it is erasing`() {
         val fc = saved()

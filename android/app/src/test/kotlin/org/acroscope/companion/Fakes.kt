@@ -31,15 +31,25 @@ fun movie(payload: Int, finished: Boolean = true): ByteArray {
 class FakeFile(override val name: String, private val data: ByteArray, override val modified: Long = 1000) : CardFile {
     override val size: Long get() = data.size.toLong()
     override fun open(): InputStream = ByteArrayInputStream(data)
+    var deleted = false
+    var refuse = false
+    override fun delete() {
+        if (refuse) throw IOException("the card would not let it go")
+        deleted = true
+    }
 }
 
 class FakeCards(var now: CardState = CardState.None, var files: List<CardFile> = emptyList()) : Cards {
     val granted = mutableListOf<Uri>()
     override fun state(): CardState = now
-    override fun grant(tree: Uri) { granted += tree; now = CardState.Ready("COBRA", tree) }
+    override fun grant(tree: Uri) { granted += tree; now = CardState.Ready("COBRA", tree, writable = true, request = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)) }
     override fun open(tree: Uri): Card = object : Card {
         override val label = "COBRA"
-        override fun files(): List<CardFile> = files
+        override fun files(): List<CardFile> = files.filterNot { it is FakeFile && it.deleted }.map { f ->
+            object : CardFile by f {                        // as the system does: no changes without a grant for them
+                override fun delete() = if ((now as? CardState.Ready)?.writable == true) f.delete() else throw IOException("not allowed to change the card")
+            }
+        }
     }
 }
 
@@ -89,7 +99,7 @@ class World(val drop: FakeDrop = FakeDrop(), val cards: FakeCards = FakeCards(),
     val session get() = graph.session
 
     fun paired() = store.update { it.copy(settings = it.settings.copy(url = "https://drop.example.org", token = "t".repeat(43), device = "field phone")) }
-    fun card(vararg files: CardFile) { cards.files = files.toList(); cards.now = CardState.Ready("COBRA", TREE) }
+    fun card(vararg files: CardFile, writable: Boolean = false) { cards.files = files.toList(); cards.now = CardState.Ready("COBRA", TREE, writable, Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)) }
     fun locked() { cards.now = CardState.NeedsAccess("COBRA", Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)) }
     fun refused(status: Int, message: String) { drop.fail = DropException(status, message) }
 }

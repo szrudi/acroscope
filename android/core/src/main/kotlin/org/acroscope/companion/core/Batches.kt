@@ -74,6 +74,6 @@ class Batches(private val store: Store) {
 
     /** Forget which files of which card were collected: the next collect takes everything on the card again. */
     fun forgetCollected() {
-        store.update { it.copy(seen = emptyList()) }
+        store.update { it.copy(seen = emptyList(), prints = emptyList()) }
     }
 }
