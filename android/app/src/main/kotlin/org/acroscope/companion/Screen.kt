@@ -90,7 +90,6 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
     val linked by g.session.pairRequest.collectAsStateWithLifecycle()
     var pairing by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<String?>(null) }
-    var freeing by remember { mutableStateOf(false) }
     val sent = state.batches.filter { it.stage != Stage.PENDING }.sortedByDescending { it.id }
 
     MaterialTheme(colorScheme = Scheme) {
@@ -127,7 +126,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                 }
                 item {
                     Section("Collect") {
-                        Text(g.session.describe(card), Modifier.testTag("card"))
+                        Text(g.session.describe(card, freeing = free is Work.Running), Modifier.testTag("card"))
                         Text(g.session.describe(quad, flash, erasing = erase is Work.Running), Modifier.testTag("quad"))
                         heat?.let { t ->
                             if (hot) Text("the quad's core is at $t °C: unplug it and let it cool", Modifier.testTag("heat"), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
@@ -144,12 +143,13 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             (card as? CardView.Locked)?.let { c -> Button({ openCard(c.request) }, Modifier.testTag("allow")) { Text("Allow the card") } }
                             (quad as? QuadView.Locked)?.let { q -> Button(q.ask, Modifier.testTag("allow-quad")) { Text("Allow the quad") } }
-                            Button({ focus.clearFocus(); beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = something && collect !is Work.Running) { Text("Start") }
+                            Button({ focus.clearFocus(); beforeJob(); g.session.startCollect() }, Modifier.testTag("start"), enabled = something && collect !is Work.Running && free !is Work.Running) { Text("Start") }
                             if (card is CardView.Open || card is CardView.Unreadable)
-                                OutlinedButton(openStorage, Modifier.testTag("eject"), enabled = collect !is Work.Running) { Text("Eject the card…") }
+                                OutlinedButton(openStorage, Modifier.testTag("eject"), enabled = collect !is Work.Running && free !is Work.Running) { Text("Eject the card…") }
                         }
-                        (card as? CardView.Open)?.takeIf { it.done > 0 }?.let { c ->
-                            val what = "${c.done} clip${if (c.done == 1) "" else "s"} (${Format.bytes(c.doneBytes)})"
+                        (card as? CardView.Open)?.takeIf { it.done.isNotEmpty() }?.let { c ->
+                            var freeing by remember(c.tree) { mutableStateOf(false) }     // asked of this card only: gone with it
+                            val what = "${c.done.size} clip${if (c.done.size == 1) "" else "s"} (${Format.bytes(c.doneBytes)})"
                             Dim("on the card, $what went up to the server and can go", Modifier.testTag("free-note"))
                             when {
                                 !c.writable -> c.request?.let { r ->
@@ -158,7 +158,7 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                                 freeing -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text("Delete $what from the card? They went up to the server; the phone kept no copy.", Modifier.testTag("free-ask"))
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button({ freeing = false; g.session.freeCard() }, Modifier.testTag("free-yes"),
+                                        Button({ freeing = false; g.session.freeCard(c) }, Modifier.testTag("free-yes"),
                                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Delete") }
                                         TextButton({ freeing = false }, Modifier.testTag("free-no")) { Text("Cancel") }
                                     }

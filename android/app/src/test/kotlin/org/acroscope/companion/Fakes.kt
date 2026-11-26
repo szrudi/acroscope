@@ -32,7 +32,11 @@ class FakeFile(override val name: String, private val data: ByteArray, override 
     override val size: Long get() = data.size.toLong()
     override fun open(): InputStream = ByteArrayInputStream(data)
     var deleted = false
-    override fun delete() { deleted = true }
+    var refuse = false
+    override fun delete() {
+        if (refuse) throw IOException("the card would not let it go")
+        deleted = true
+    }
 }
 
 class FakeCards(var now: CardState = CardState.None, var files: List<CardFile> = emptyList()) : Cards {
@@ -41,7 +45,11 @@ class FakeCards(var now: CardState = CardState.None, var files: List<CardFile> =
     override fun grant(tree: Uri) { granted += tree; now = CardState.Ready("COBRA", tree, writable = true, request = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)) }
     override fun open(tree: Uri): Card = object : Card {
         override val label = "COBRA"
-        override fun files(): List<CardFile> = files.filterNot { it is FakeFile && it.deleted }
+        override fun files(): List<CardFile> = files.filterNot { it is FakeFile && it.deleted }.map { f ->
+            object : CardFile by f {                        // as the system does: no changes without a grant for them
+                override fun delete() = if ((now as? CardState.Ready)?.writable == true) f.delete() else throw IOException("not allowed to change the card")
+            }
+        }
     }
 }
 

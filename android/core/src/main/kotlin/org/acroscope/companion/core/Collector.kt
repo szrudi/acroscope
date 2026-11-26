@@ -16,7 +16,7 @@ interface CardFile {
     /** Last modified, milliseconds since the epoch: with name and size, what tells one recording from another. */
     val modified: Long
     fun open(): InputStream
-    /** Take it off the card: only ever a clip the server reported done ([Collector.free]). */
+    /** Take it off the card: only ever a clip the server reported done, on the pilot's yes ([Collector.free]). */
     fun delete(): Unit = throw IOException("the card cannot be changed")
 }
 
@@ -28,8 +28,9 @@ interface Card {
 
 /** What a collect would take from a card: the clips not collected yet, in the DVR's recording order (their names
  *  sort that way, and ingest numbers the day's clips in that order), how many were collected before, and what
- *  else lies in the folder. `done`: the clips collected before whose batch the server reported done, which the
- *  pilot may delete from the card. */
+ *  else lies in the folder. `done`: the clips collected before that went up in a batch the server reported done
+ *  (name, size and time as the collect kept them), which the pilot may delete from the card; [Collector.free]
+ *  checks each one's [Fingerprint] before it goes. */
 data class Plan(val clips: List<CardFile>, val collected: Int, val others: List<String>, val done: List<CardFile> = emptyList()) {
     val bytes: Long get() = clips.sumOf { it.size }
     val doneBytes: Long get() = done.sumOf { it.size }
@@ -49,7 +50,7 @@ data class Outcome(val items: List<Item>, val error: String?)
  * pilot chose. Each file is copied under a `.part` name aside, and only once it is whole is it put in its batch: the
  * batch chosen, the file renamed into its folder and put on its list in one change of the state, so a card pulled in
  * the middle leaves nothing half behind, a batch's folder holds only what its list names, and a batch closed for
- * handing in meanwhile is not joined. The card is never written to.
+ * handing in meanwhile is not joined. A collect never writes to the card; [free] is the one thing that changes it.
  */
 class Collector(private val store: Store, private val clock: () -> ZonedDateTime, private val random: Random = Random.Default) {
     companion object {
@@ -69,23 +70,36 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
         val seen = s.seen.toSet()
         val (clips, others) = card.files().partition { Names.isClip(it.name) }
         val (old, new) = clips.partition { Seen(it.name, it.size, it.modified) in seen }
-        // done with: collected from this card (name, size and time) and in a batch the server reported done, and in
-        // no batch still on its way, whatever became of it on the server since
-        fun held(done: Boolean) = s.batches.filter { (it.stage == Stage.DONE) == done }
-            .flatMap { b -> b.items.map { it.name to it.size } }.toSet()
-        val up = held(true)
-        val waiting = held(false)
-        val done = old.filter { (it.name to it.size).let { k -> k in up && k !in waiting } }
+        // done with: collected (name, size and time), in a batch the server reported done that kept them, and the
+        // name and size in no batch still on its way, whatever became of it on the server since
+        val up = up(s)
+        val waiting = s.batches.filter { it.stage != Stage.DONE }.flatMap { b -> b.items.map { it.name to it.size } }.toSet()
+        val done = old.filter { Seen(it.name, it.size, it.modified) in up && (it.name to it.size) !in waiting }
         return Plan(new.sortedBy { it.name }, old.size, others.map { it.name }.sorted(), done.sortedBy { it.name })
     }
 
-    /** Delete from the card the clips [plan] finds done with; one the card will not let go does not stop the rest. */
-    fun free(card: Card): Freed {
+    /** What went up in the batches the server reported done, by name, size and time, with each one's fingerprints. */
+    private fun up(s: State): Map<Seen, Set<String>> = s.batches.filter { it.stage == Stage.DONE }.flatMap { it.items }
+        .mapNotNull { i -> if (i.modified == null || i.fingerprint == null) null else Seen(i.name, i.size, i.modified) to i.fingerprint }
+        .groupBy({ it.first }, { it.second }).mapValues { it.value.toSet() }
+
+    /**
+     * Delete from the card the clips the pilot agreed to that [plan] still finds done with, each only when its
+     * fingerprint on the card is the one that went up. One the card will not let go does not stop the rest.
+     */
+    fun free(card: Card, agreed: Collection<Seen>): Freed {
         var count = 0
         var bytes = 0L
         val failed = mutableListOf<String>()
+        val up = up(store.now)
         for (clip in plan(card).done) {
+            val key = Seen(clip.name, clip.size, clip.modified)
+            if (key !in agreed) continue
             try {
+                if (Fingerprint.of(clip.size, clip::open) !in up[key].orEmpty()) {
+                    failed += "${clip.name}: not the recording that went up"
+                    continue
+                }
                 clip.delete()
                 count++
                 bytes += clip.size
@@ -113,7 +127,8 @@ class Collector(private val store: Store, private val clock: () -> ZonedDateTime
                 val before = done
                 val copied = copy(clip.open(), part) { n -> done = before + n; progress(Progress(clip.name, i + 1, plan.clips.size, done, plan.bytes)) }
                 if (copied != clip.size) throw IOException("${copied} of ${clip.size} bytes came off the card")
-                val item = Item(clip.name, clip.size, Kind.CLIP, stamp(), unfinalised = hasIndex(part, clip.name) == Mp4.Index.MISSING)
+                val item = Item(clip.name, clip.size, Kind.CLIP, stamp(), unfinalised = hasIndex(part, clip.name) == Mp4.Index.MISSING,
+                    modified = clip.modified, fingerprint = Fingerprint.of(copied) { part.inputStream() })
                 place(part) { s -> batchFor(s, event, clip.name).let { b -> Triple(b, item, Seen(clip.name, clip.size, clip.modified)) } }
                 items += item
             } catch (e: IOException) {

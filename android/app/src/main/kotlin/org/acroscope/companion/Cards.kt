@@ -39,9 +39,10 @@ class SafCards(private val context: Context) : Cards {
     override fun state(): CardState {
         val volume = storage.storageVolumes.firstOrNull { it.isRemovable && it.state == Environment.MEDIA_MOUNTED } ?: return CardState.None
         val label = volume.getDescription(context) ?: "card"
-        val granted = context.contentResolver.persistedUriPermissions.firstOrNull { p ->
+        val grants = context.contentResolver.persistedUriPermissions.filter { p ->
             p.isReadPermission && volume.uuid != null && DocumentsContract.getTreeDocumentId(p.uri).startsWith(volume.uuid + ":")
         }
+        val granted = grants.firstOrNull { it.isWritePermission } ?: grants.firstOrNull()   // an older grant for reading only stays behind
         val ask = volume.createOpenDocumentTreeIntent()
         return if (granted != null) CardState.Ready(label, granted.uri, granted.isWritePermission, ask) else CardState.NeedsAccess(label, ask)
     }
