@@ -69,8 +69,9 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   `DropClient` and its orchestration, and `Msp`/`Blackbox`: the laptop's `bf-blackbox.py` ported with its vectors,
   tested against the stand-in controller `FakeFc`); `app` is the Android shell (card access through the storage access framework,
   WorkManager jobs, one Compose screen). Rules to keep: a collect only reads the card, and the one change the app makes to it is deleting, on the pilot's
-  press and yes, the clips collected from it (name, size, time) whose batch the server reported done and that no
-  batch still on its way holds (`Collector.plan`'s `done`, `free`); a batch's copy on the phone goes
+  press and yes, the clips the question named that went up in a batch the server reported done (name, size, time and
+  the `Fingerprint` kept at the collect, checked against the card before each delete) and that no batch still on its
+  way holds (`Collector.plan`'s `done`, `free`); a batch's copy on the phone goes
   when the server reports the batch done, never when the upload ends; nothing about an upload is remembered on the
   phone (the client asks the server where each file ends); a batch is closed (`Batch.closed`, stored before the
   commit is asked for, never lifted) only once every file it holds is up, a collect never joins a closed batch, and
