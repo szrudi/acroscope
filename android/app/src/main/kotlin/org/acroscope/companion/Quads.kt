@@ -11,6 +11,7 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.SystemClock
 import org.acroscope.companion.core.SerialPort
+import org.acroscope.companion.core.SerialPorts
 import java.io.IOException
 
 /** The quad as the phone has it on USB: none, one the app may not talk to yet, or one it may. */
@@ -66,8 +67,9 @@ class UsbSerial private constructor(
         /** A device's serial data interface, with the control interface that goes with it; null when it has none. */
         fun interfaces(device: UsbDevice): Pair<UsbInterface?, UsbInterface>? {
             val all = (0 until device.interfaceCount).map(device::getInterface)
-            val data = all.firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_CDC_DATA } ?: return null
-            return all.firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_COMM } to data
+            val faces = all.map { SerialPorts.Face(it.interfaceClass, it.interfaceSubclass) }
+            val (control, data) = SerialPorts.find(device.vendorId, device.productId, faces) ?: return null
+            return control?.let(all::get) to all[data]
         }
 
         fun open(usb: UsbManager, device: UsbDevice): UsbSerial {
