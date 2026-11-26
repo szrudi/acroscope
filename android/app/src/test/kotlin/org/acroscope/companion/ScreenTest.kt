@@ -251,6 +251,28 @@ class ScreenTest {
     private val erased get() = org.acroscope.companion.core.Msp.DATAFLASH_ERASE.toString()
 
     @Test
+    fun `a quad that restarts under the erase and comes back empty is erased`() {
+        val fc = saved()
+        fc.goneAfterErase = true                                                // it drops off USB as the chip erases
+        click("erase")
+        wait { seen("erase-warning") && "restarted" in text("erase-warning") }  // the app waits for it to come back
+        w.quads.fc = org.acroscope.companion.core.FakeFc(ByteArray(0))           // back, on a new line, its flash empty
+        wait { seen("erase-status") && "flash is erased" in text("erase-status") }
+        assertTrue("restarted" in text("erase-status"), text("erase-status"))
+    }
+
+    @Test
+    fun `a quad that restarts under the erase and comes back with its log is not erased`() {
+        w.session.returnMs = 1500
+        val fc = saved()
+        fc.goneAfterErase = true
+        click("erase")
+        wait { seen("erase-warning") && "restarted" in text("erase-warning") }
+        w.quads.fc = org.acroscope.companion.core.FakeFc(flightLog)              // back, the log still on it
+        rule.waitUntil(8000) { seen("erase-status") && "not erased" in text("erase-status") }
+    }
+
+    @Test
     fun `while the flash is erased the screen says to keep the quad plugged in, and the quad's line says it is erasing`() {
         val fc = saved()
         fc.eraseNeverEnds = true

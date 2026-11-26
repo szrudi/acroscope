@@ -16,6 +16,12 @@ class MspRejected(val command: Int) : IOException("the flight controller rejecte
 /** Nothing came from the flight controller in time. */
 class MspTimeout : IOException("the flight controller stopped answering")
 
+/** The flight controller took nothing for a while but is still there: busy, as while its flash chip erases. */
+class SerialBusy : IOException("the flight controller takes nothing for now")
+
+/** The line to the flight controller is gone: unplugged, or it dropped off USB to restart. */
+class SerialGone(message: String) : IOException(message)
+
 /**
  * MSP v2 as Betaflight speaks it over USB: `$X<`, a flag byte, the command and the payload's size (u16, little
  * endian), the payload, and a CRC-8/DVB-S2 over everything after the direction byte. Replies are `$X>` (fine) or

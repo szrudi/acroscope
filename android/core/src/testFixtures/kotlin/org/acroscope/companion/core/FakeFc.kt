@@ -15,6 +15,8 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
     var busyPolls = 0                                    // summaries after an erase that still say not ready
     var silentPolls = 0                                  // summaries after an erase that get no reply at all
     var eraseNeverEnds = false
+    var busyWrites = 0                                   // writes after an erase that the controller does not take (its USB stalls)
+    var goneAfterErase = false                           // the controller left USB under the erase: every write after it fails
     var halfDone = mutableListOf<Pair<Boolean, Long>>()   // summaries after an erase that say (ready, used) as given, before it is done
     var closed = false
     var most: Int? = null                                // a read answers at most this many bytes, whatever was asked
@@ -25,6 +27,8 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
     private var erasing = false
 
     override fun write(bytes: ByteArray) {
+        if (erasing && goneAfterErase) throw SerialGone("the flight controller takes nothing: is it still plugged in?")
+        if (erasing && busyWrites > 0) { busyWrites--; throw SerialBusy() }
         incoming += bytes
         while (incoming.size >= 9) {
             check(String(incoming, 0, 3, Charsets.US_ASCII) == "\$X<") { "not a request" }

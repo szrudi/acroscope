@@ -11,6 +11,8 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.SystemClock
 import org.acroscope.companion.core.SerialPort
+import org.acroscope.companion.core.SerialBusy
+import org.acroscope.companion.core.SerialGone
 import org.acroscope.companion.core.SerialPorts
 import java.io.IOException
 
@@ -64,6 +66,8 @@ class UsbSerial private constructor(
     private val output: UsbEndpoint,
 ) : SerialPort {
     companion object {
+        private const val WRITE_MS = 2000
+
         /** A device's serial data interface, with the control interface that goes with it; null when it has none. */
         fun interfaces(device: UsbDevice): Pair<UsbInterface?, UsbInterface>? {
             val all = (0 until device.interfaceCount).map(device::getInterface)
@@ -94,11 +98,17 @@ class UsbSerial private constructor(
         }
     }
 
+    /** A transfer that fails at once is a cable pulled; one that fails after its time is a controller too busy to
+     *  take it (its USB stalls while the flash chip erases). */
     override fun write(bytes: ByteArray) {
         var at = 0
         while (at < bytes.size) {
-            val n = connection.bulkTransfer(output, bytes, at, bytes.size - at, 2000)
-            if (n <= 0) throw IOException("the flight controller takes nothing: is it still plugged in?")
+            val started = SystemClock.elapsedRealtime()
+            val n = connection.bulkTransfer(output, bytes, at, bytes.size - at, WRITE_MS)
+            if (n <= 0) {
+                if (SystemClock.elapsedRealtime() - started < WRITE_MS / 2) throw SerialGone("the flight controller takes nothing: is it still plugged in?")
+                throw SerialBusy()
+            }
             at += n
         }
     }
@@ -108,7 +118,7 @@ class UsbSerial private constructor(
         val started = SystemClock.elapsedRealtime()
         val n = connection.bulkTransfer(input, buf, buf.size, timeoutMs)
         if (n >= 0) return n
-        if (SystemClock.elapsedRealtime() - started < timeoutMs / 2) throw IOException("the flight controller is gone")
+        if (SystemClock.elapsedRealtime() - started < timeoutMs / 2) throw SerialGone("the flight controller is gone")
         return 0
     }
 

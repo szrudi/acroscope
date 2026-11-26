@@ -89,8 +89,8 @@ class Blackbox(port: SerialPort, private val clock: () -> ZonedDateTime, private
 
     /**
      * Erase the flash: only after a download on this connection was verified. The flight controller blocks while
-     * the chip erases and answers afterwards, or not at all; either way the summary is asked until it says ready
-     * and empty, for up to five minutes.
+     * the chip erases and answers afterwards, or not at all, or takes nothing over USB meanwhile; either way the
+     * summary is asked until it says ready and empty, for up to five minutes.
      */
     fun erase() {
         check(verified) { "the flash is erased only after its log was saved and verified" }
@@ -98,11 +98,12 @@ class Blackbox(port: SerialPort, private val clock: () -> ZonedDateTime, private
             link.request(Msp.DATAFLASH_ERASE, timeoutMs = 120_000)
         } catch (e: MspTimeout) {
             // some chips keep the controller busy: the summary below decides
+        } catch (e: SerialBusy) {
         }
         val deadline = now() + 300_000
         while (now() < deadline) {
             pause(1000)
-            val flash = try { flash() } catch (e: MspTimeout) { continue }
+            val flash = try { flash() } catch (e: MspTimeout) { continue } catch (e: SerialBusy) { continue }
             if (flash.ready && flash.used == 0L) {
                 verified = false
                 return

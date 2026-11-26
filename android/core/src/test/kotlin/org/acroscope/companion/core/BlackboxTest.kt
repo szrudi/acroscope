@@ -161,6 +161,22 @@ class BlackboxTest {
     }
 
     @Test
+    fun `a controller that takes nothing over USB while the chip erases is waited for`() {
+        box.download(dir)
+        fc.busyWrites = 3                                                        // its USB stalls: the questions after the erase do not go out
+        box.erase()
+        assertEquals(0, fc.flash.size)
+        assertEquals(4, paused.size)
+    }
+
+    @Test
+    fun `a controller that is gone under the erase is not taken for erased`() {
+        box.download(dir)
+        fc.goneAfterErase = true
+        assertFailsWith<IOException> { box.erase() }
+    }
+
+    @Test
     fun `an erase that never ends is given up on after five minutes`() {
         box.download(dir)
         fc.eraseNeverEnds = true

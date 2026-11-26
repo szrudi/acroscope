@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import org.acroscope.companion.core.Auto
 import org.acroscope.companion.core.Batches
 import org.acroscope.companion.core.Blackbox
+import org.acroscope.companion.core.SerialGone
 import org.acroscope.companion.core.SerialPort
 import org.acroscope.companion.core.DropException
 import org.acroscope.companion.core.Format
@@ -214,6 +215,30 @@ class Session(private val g: Graph) {
         }
     }
 
+    /** How long a quad that dropped off USB under the erase is waited for. */
+    @Volatile var returnMs = 30_000L
+
+    /**
+     * A quad can restart under the erase (some boards drop off USB when the chip is done, or while it erases): the
+     * erase's own line is then gone. Wait for the quad to come back by the same name, and read its flash on a new
+     * line: empty is erased.
+     */
+    private suspend fun emptyWhenBack(name: String?): Boolean {
+        if (name == null) return false
+        erase.value = Work.Running("the quad dropped off USB during the erase (it may have restarted): keep it plugged in, waiting for it to come back", 0, 0)
+        val until = System.currentTimeMillis() + returnMs
+        while (System.currentTimeMillis() < until) {
+            delay(1000)
+            val s = g.quads.state() as? QuadState.Ready ?: continue
+            if (s.name != name) continue
+            val flash = wire.withLock {
+                runCatching { g.quads.open().use { Blackbox(it, g.clock).flash() } }.getOrNull()
+            } ?: continue
+            if (flash.present && flash.ready) return flash.used == 0L
+        }
+        return false
+    }
+
     fun allow(tree: Uri) {
         g.cards.grant(tree)
         lookAtCard()
@@ -321,11 +346,14 @@ class Session(private val g: Graph) {
             erase.value = Work.Running("erasing the quad's flash: keep it plugged in until this says it is done (up to a minute)", 0, 0)
         }
         val box = h.box
+        val name = (quad.value as? QuadView.Saved)?.name
         val done = try {
             wire.withLock { box.erase() }
             Work.Finished("the quad's flash is erased", true)
         } catch (e: Exception) {
-            Work.Finished("the flash was not erased: ${e.message ?: e.javaClass.simpleName}", false)
+            letGo()
+            if (e is SerialGone && emptyWhenBack(name)) Work.Finished("the quad's flash is erased (it restarted on the way)", true)
+            else Work.Finished("the flash was not erased: ${e.message ?: e.javaClass.simpleName}", false)
         }
         erase.value = done
         letGo()
