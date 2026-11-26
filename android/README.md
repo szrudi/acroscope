@@ -103,6 +103,8 @@ phone without losing what it holds.
   (`SafCards`), that a flight controller's serial port opens and answers (`UsbSerial`; the protocol above it is
   tested against a stand-in controller), that the jobs survive leaving the app, how it feels in the hand. Also:
   whether the card's file times shift with daylight saving or the time zone (every clip would then look new),
-  whether claiming the port (`claimInterface(face, true)`) takes it from the Betaflight app instead of failing, and
-  whether a USB hub's network function (CDC class 2) is taken for the quad. Those are checked on a real phone and
-  said so in the PR.
+  and whether claiming the port (`claimInterface(face, true)`) takes it from the Betaflight app instead of failing.
+  Those are checked on a real phone and said so in the PR.
+- A USB-C hub's network adapter is the communications class too (an AX88179A, in its NCM mode, was taken for the
+  quad on the phone): a flight controller is told by the class's ACM subclass, or by ST's or Artery's virtual COM
+  port ids (`SerialPortsTest`), and the device filter asks for that subclass (`PluggedInTest`).

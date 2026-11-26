@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- What the app is for on USB: plugged in, Android offers the app for it.
-     A Betaflight flight controller is a serial port (the communications class), found by ST's or Artery's virtual
-     COM port ids on the boards that say a composite class instead.
+     A Betaflight flight controller is a serial port (the communications class, subclass ACM), found by ST's or
+     Artery's virtual COM port ids on the boards that say a composite class instead. The subclass keeps out a hub's
+     network adapter, which is the communications class too (NCM, ECM).
      The goggles' card in a reader is mass storage, and so is every stick: a reader has nothing of its own to tell
      it by. The app never opens that device; Android mounts the card and the app reads its folder. -->
 <resources>
-    <usb-device class="2" />
+    <usb-device class="2" subclass="2" />
     <usb-device vendor-id="1155" product-id="22336" />
     <usb-device vendor-id="11836" product-id="22336" />
     <usb-device class="8" />
