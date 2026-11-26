@@ -64,6 +64,31 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   nothing else (`Handler._at_the_drops_host`, `server.drop_host`), so the proxy and the server need not read a path
   alike; never the player's name. `serve` refuses a value with no host in it. Like `ACROSCOPE_SHARE_URL`, it and the
   vhost behind it are homelab settings (never in this repo).
+- The companion app (#75, `android/`, its own README): Kotlin, two Gradle modules. `core` is plain JVM with no Android
+  import in it (names and rules mirrored from the server in `Names`, the collector, the batch edits, the upload client
+  `DropClient` and its orchestration, and `Msp`/`Blackbox`: the laptop's `bf-blackbox.py` ported with its vectors,
+  tested against the stand-in controller `FakeFc`); `app` is the Android shell (card access through the storage access framework,
+  WorkManager jobs, one Compose screen). Rules to keep: the card is only ever read; a batch's copy on the phone goes
+  when the server reports the batch done, never when the upload ends; nothing about an upload is remembered on the
+  phone (the client asks the server where each file ends); a batch is closed (`Batch.closed`, stored before the
+  commit is asked for, never lifted) only once every file it holds is up, a collect never joins a closed batch, and
+  a file is put in its batch (renamed into the folder, added to the list) in one `store.update`; the quad's flash is erased only on the pilot's press and
+  only by the connection that saved and verified its log (`Blackbox.erase` refuses otherwise; a collect never
+  erases); the upload by itself (`Auto`, `AutoUploadWorker`, WorkManager's unmetered constraint) retries in silence
+  what a later try can mend and tells the pilot, once, what only they can, and it is the same upload the button
+  runs; a change to the drop's protocol changes `DropClient` and
+  `tests/drop_client.py` in the same PR, and `DropContractTest` (the Kotlin client against an `acroscope serve` child
+  from this checkout, `ACROSCOPE_PYTHON` naming the Python) is what says they still agree. Building on joan:
+  `android/scripts/setup.sh` once (JDK 21 in `~/.jdks`, the SDK in `~/Android/Sdk`, no root), then
+  `JAVA_HOME=~/.jdks/temurin-21 ANDROID_HOME=~/Android/Sdk ./gradlew --no-daemon :core:test :app:testDebugUnitTest
+  :app:assembleDebug` in `android/`. **Memory:** joan has 8 GB shared with other sessions; a run with daemons
+  left up and no limits froze the machine on 2026-11-23, so always `--no-daemon`, never beside the Python suite, and
+  `./gradlew --stop` if a daemon was used. No emulator here (no KVM): the screen is tested under Robolectric with
+  stand-ins (`ScreenTest`; a dialog window holding a text field never comes to rest there, so text fields live in
+  the screen itself), and what only a phone can say (the card in a reader, a real flight controller on `UsbSerial`, the jobs surviving
+  the app being left)
+  is said in the PR and checked on Rudi's Pixel. The debug keystore in `android/` is committed on purpose (debug
+  builds from any machine update each other); a release key is never in the repo.
 - OSD reader (`acroscope/sources/osd.py`): every layout is a profile derived from Betaflight's own (#10,
   `sources/osdprofile.py` over `sources/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm`
   font rendered into digit templates, the DVR's grid at x 3, y -4, 24 x 36 px; STATS rows found by their labels). The
