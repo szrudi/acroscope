@@ -438,6 +438,16 @@ class CollectorTest {
     }
 
     @Test
+    fun `what the app forgot it collected is collected again, not offered`() {
+        val up = Clip("VID00001.mov", movie(100))
+        collected(Stage.DONE, up)
+        Batches(store).forgetCollected()
+        val plan = collector.plan(card(up))
+        assertEquals(listOf(up), plan.clips)
+        assertEquals(emptyList(), plan.done)
+    }
+
+    @Test
     fun `a clip that shares only its size with one done with stays`() {
         collected(Stage.DONE, Clip("VID00001.mov", movie(100)))
         val mine = Clip("VID00002.mov", movie(100))

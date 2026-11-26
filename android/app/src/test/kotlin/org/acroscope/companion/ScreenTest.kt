@@ -381,6 +381,22 @@ class ScreenTest {
     }
 
     @Test
+    fun `what a free said goes when the screen is left, or a collect starts`() {
+        val (up, waiting) = upAndWaiting(writable = true)
+        show()
+        w.session.free.value = Work.Finished("deleted 1 clip (176 B) from the card", true)
+        wait { seen("free-status") }
+        w.session.left()
+        wait { !seen("free-status") }
+        w.session.free.value = Work.Finished("deleted 1 clip (176 B) from the card", true)
+        w.card(up, waiting, FakeFile("VID00003.mov", movie(130)), writable = true)
+        kotlinx.coroutines.runBlocking { w.session.lookAtCard().join() }
+        wait { seen("free-status") }
+        click("start")
+        wait { !seen("free-status") }
+    }
+
+    @Test
     fun `the question goes when what it names changes, and waits out a collect`() {
         val (up, waiting) = upAndWaiting(writable = true)
         show()
