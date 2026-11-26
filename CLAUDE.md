@@ -213,7 +213,18 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   trixie lacks unpacked into `~/.cache/acroscope-browser`); without it the tests skip. A player change gets a test
   there, red first like the rest. For a look, `page.screenshot()` and Read the PNG. What it cannot stand in for:
   the installed app's own viewport on the phone (system bars, 100dvh) and how a gesture feels; say so in the
-  commit, Rudi's phone is the last check.
+  commit, Rudi's phone is the last check. A layout check measures the element itself (its `scrollWidth` against
+  its `clientWidth`, a chip's right edge against the screen): what spills out of a panel can be clipped above it,
+  so `document.documentElement.scrollWidth` stays at the screen's width and says nothing.
+- New tests are mutation-checked before they are called coverage, and the check stays small and fast (Rudi,
+  2026-11-26: a 50-minute run is not okay). Mutate only the guards the change adds or moves, each mutation naming
+  the test meant to catch it, and run only that test; only a survivor is re-run against the whole class. A later
+  round mutates only what it changed. For the Playwright tests, run every mutation in one process: the
+  class's `setUpClass` once (the server child, the browser, the synthetic data), then per mutation write the
+  file, run its tests as a `unittest.suite.BaseTestSuite` (no class fixtures redone), and restore it in a
+  `finally`. The server reads `static/*.html` from disk on every request, so a mutation of the page needs no
+  restart; one of a Python module does. Run it in a detached worktree at the commit under test, so fixes go on
+  beside it. On the Kotlin side the same, with Gradle's `--tests` filter and the memory rules above.
 
 ## Known gaps / ideas (also as issues)
 - #3: read the flight counter (top right since 2026-10-10, Betaflight stats on) so every arm names itself.
