@@ -34,11 +34,12 @@ What it does now (0.3):
   long as the flash said and starts like a log. After that, and only then, **Erase the quad's flash** is offered,
   for as long as that quad stays plugged in and its saved log stays on the phone (removed or discarded, the offer
   goes). While the chip erases the controller may take nothing over USB, which the app waits through. A quad that
-  drops off USB under the erase (some restart) is waited for: 30 s to come back (the same name, and the same USB
-  serial number, which Betaflight makes of the MCU's id), then its flash is asked on a new line until the erase's
-  five minutes are up. It is called erased only when it says ready and empty and the chip reads as erased where
-  the log was; with its log still there it is not erased; anything else is said as not known, to look at before
-  flying. Start is off during an erase.
+  drops off USB under the erase (some restart, or lose USB power) is waited for: 30 s to come back by the same name
+  (and the same USB serial number, which Betaflight makes of the MCU's id, when the saving line had one), then its
+  flash is asked on a new line for up to five minutes. It is called erased only when it says ready and empty and
+  all of where the log lay reads back as erased; with its log still there it is not erased; anything else says to
+  erase it in the Betaflight app before flying (the quad's line reads only what the flash says it holds, which a
+  cut-off erase can get wrong). Start is off during an erase.
   Only one app can hold the flight controller: close the Betaflight app first. While the app is on the screen the
   quad's line says how much log is on its flash, or that the flash is empty: then there is nothing for **Start** to
   save, also right after an erase.

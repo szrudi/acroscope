@@ -306,12 +306,26 @@ class ScreenTest {
     }
 
     @Test
-    fun `a quad that restarts under the erase and comes back empty is erased`() {
+    fun `while the erase waits for its quad, nothing else takes a quad`() {
+        w.session.returnMs = 3000
         gone()
-        tag("start").assertIsNotEnabled()                                       // its log is not saved again meanwhile
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/003", serial = "2F0031000B51")   // another one by the name: not the erase's
+        w.quads.fc = back(flightLog)
+        kotlinx.coroutines.runBlocking { w.session.lookAtQuad().join() }
+        wait { "erasing its flash" in text("quad") }
+        tag("start").assertIsNotEnabled()
         val ran = w.runner.ran.size
         w.session.startCollect()
         assertEquals(ran, w.runner.ran.size)
+        assertEquals("nothing to collect", w.session.collectNow(null) { false }.message)   // its log is not saved meanwhile
+        val opened = w.quads.opened
+        w.session.feel()
+        assertEquals(opened, w.quads.opened)                                     // nor its temperature read
+    }
+
+    @Test
+    fun `a quad that restarts under the erase and comes back empty is erased`() {
+        gone()
         w.quads.fc = back()                                                      // back, on a new line, its flash empty
         wait { seen("erase-status") && "flash is erased" in text("erase-status") }
         assertTrue("dropped" in text("erase-status"), text("erase-status"))
@@ -353,7 +367,38 @@ class ScreenTest {
         w.quads.fc = back()
         rule.waitUntil(8000) { seen("erase-status") }
         assertFalse((w.session.erase.value as Work.Finished).ok, text("erase-status"))
-        assertTrue("not known" in text("erase-status"), text("erase-status"))
+        assertTrue("did not come back" in text("erase-status") && "Betaflight app" in text("erase-status"), text("erase-status"))
+    }
+
+    @Test
+    fun `a quad that does not say its serial number after one that did is not taken for it`() {
+        w.session.returnMs = 1500
+        gone()
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/003")
+        w.quads.fc = back()
+        rule.waitUntil(8000) { seen("erase-status") }
+        assertFalse((w.session.erase.value as Work.Finished).ok, text("erase-status"))
+    }
+
+    @Test
+    fun `a quad back that the app may not talk to yet is asked about, and then looked at`() {
+        gone()
+        w.quads.now = QuadState.NeedsPermission("OTTO") {}
+        wait { "allow the app" in text("erase-warning") }
+        w.quads.now = QuadState.Ready("OTTO", "/dev/bus/usb/001/003", serial = "3A0047001851")
+        w.quads.fc = back()
+        wait { seen("erase-status") && "flash is erased" in text("erase-status") }
+    }
+
+    @Test
+    fun `a quad back whose flash cannot be read back is not called erased`() {
+        w.session.returnMs = 1500
+        w.session.eraseMs = 3000
+        gone()
+        w.quads.fc = back().also { fc -> fc.spoil = { c, r -> if (c == org.acroscope.companion.core.Msp.DATAFLASH_READ) org.acroscope.companion.core.Msp.frame(c, org.acroscope.companion.core.Msp.le32(0) + byteArrayOf(0, 0, 0), '>') else r } }
+        wait { "could not be read back" in text("erase-warning") }
+        rule.waitUntil(8000) { seen("erase-status") }
+        assertTrue("could not be read back" in text("erase-status") && "Betaflight app" in text("erase-status"), text("erase-status"))
     }
 
     @Test
@@ -362,7 +407,7 @@ class ScreenTest {
         gone()
         w.quads.now = QuadState.None
         rule.waitUntil(8000) { seen("erase-status") }
-        assertTrue("did not come back" in text("erase-status") && "not known" in text("erase-status"), text("erase-status"))
+        assertTrue("did not come back" in text("erase-status") && "Betaflight app" in text("erase-status"), text("erase-status"))
     }
 
     @Test

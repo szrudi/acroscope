@@ -68,7 +68,7 @@ class FakeFc(var flash: ByteArray = ByteArray(0)) : SerialPort {
             }
             Msp.DATAFLASH_READ -> chip?.let { c ->
                 val at = Msp.u32(payload, 0).toInt()
-                val n = Msp.u16(payload, 4)
+                val n = minOf(Msp.u16(payload, 4), most ?: Int.MAX_VALUE)
                 val bytes = ByteArray(n) { i -> if (at + i < c.size) c[at + i] else 0xFF.toByte() }
                 Msp.frame(command, Msp.le32(at.toLong()) + byteArrayOf(n.toByte(), (n shr 8).toByte(), 0) + bytes, '>')
             } ?: run {
