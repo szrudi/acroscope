@@ -42,7 +42,9 @@ class SafCards(private val context: Context) : Cards {
         val grants = context.contentResolver.persistedUriPermissions.filter { p ->
             p.isReadPermission && volume.uuid != null && DocumentsContract.getTreeDocumentId(p.uri).startsWith(volume.uuid + ":")
         }
-        val granted = grants.firstOrNull { it.isWritePermission } ?: grants.firstOrNull()   // two only from before [grant] let the older go
+        // the card's own folder (its root or DCIM) before another one picked by mistake, then the grant with changes
+        fun ownFolder(p: android.content.UriPermission) = DocumentsContract.getTreeDocumentId(p.uri).substringAfter(':').let { it.isEmpty() || it.equals("DCIM", ignoreCase = true) }
+        val granted = grants.sortedWith(compareBy({ !ownFolder(it) }, { !it.isWritePermission })).firstOrNull()
         val ask = volume.createOpenDocumentTreeIntent()
         return if (granted != null) CardState.Ready(label, granted.uri, granted.isWritePermission, ask) else CardState.NeedsAccess(label, ask)
     }
@@ -54,16 +56,7 @@ class SafCards(private val context: Context) : Cards {
         } catch (e: SecurityException) {                    // a picker that gave reading only: that much is kept
             context.contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        // the folder picked last is the card's: an older grant on the same card (another folder, or reading only) goes
-        val volume = volumeOf(tree)
-        for (p in context.contentResolver.persistedUriPermissions) {
-            if (p.uri == tree || volume == null || volumeOf(p.uri) != volume) continue
-            val flags = (if (p.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or (if (p.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
-            try { context.contentResolver.releasePersistableUriPermission(p.uri, flags) } catch (e: SecurityException) { }
-        }
     }
-
-    private fun volumeOf(uri: Uri): String? = try { DocumentsContract.getTreeDocumentId(uri).substringBefore(':') } catch (e: Exception) { null }
 
     override fun open(tree: Uri): Card = SafCard(context, tree)
 }

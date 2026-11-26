@@ -70,6 +70,11 @@ data class Batch(
 @Serializable
 data class Seen(val name: String, val size: Long, val modified: Long)
 
+/** A clip collected, with its [Fingerprint]: kept like [Seen], whatever becomes of its batch, so another recording by
+ *  its name, size and time is told from it. */
+@Serializable
+data class Print(val clip: Seen, val fingerprint: String)
+
 @Serializable
 data class Settings(
     val url: String? = null,
@@ -89,6 +94,7 @@ data class State(
     val settings: Settings = Settings(),
     val batches: List<Batch> = emptyList(),
     val seen: List<Seen> = emptyList(),
+    val prints: List<Print> = emptyList(),
 ) {
     fun batch(id: String): Batch? = batches.firstOrNull { it.id == id }
     val pending: List<Batch> get() = batches.filter { it.stage == Stage.PENDING }.sortedBy { it.id }}

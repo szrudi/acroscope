@@ -453,9 +453,8 @@ class CollectorTest {
     fun `another recording by the same name, size and time is new, not done with`() {
         val up = Clip("VID00001.mov", movie(100))
         collected(Stage.DONE, up)
-        collector.plan(card(up))                                                 // its fingerprint read, and remembered
         val twin = twinOf(up)
-        val c = card(twin, id = "5678-EF01:")                                    // the format gave the card a new id
+        val c = card(twin)                                                       // a format that even kept the card's id
         val plan = collector.plan(c)
         assertEquals(emptyList(), plan.done)
         assertEquals(listOf(twin), plan.clips)
@@ -467,27 +466,49 @@ class CollectorTest {
     }
 
     @Test
-    fun `another recording that the card's id and the plan's memory take for the one that went up is caught at the delete`() {
+    fun `a twin collected and then discarded stays collected, and is not offered`() {
         val up = Clip("VID00001.mov", movie(100))
         collected(Stage.DONE, up)
-        val asked = agreed(card(up))                                             // remembered for this card and clip
         val twin = twinOf(up)
-        val c = card(twin)                                                       // a format that kept the card's id
-        assertEquals(1, collector.plan(c).done.size)
-        assertEquals(Freed(0, 0, listOf("VID00001.mov: not the recording that went up")), collector.free(c, asked))
+        val id = collected(Stage.PENDING, twin)
+        Batches(store).discard(id)
+        val plan = collector.plan(card(twin))
+        assertEquals(emptyList(), plan.clips)                                    // what the pilot let go is not taken again
+        assertEquals(1, plan.collected)
+        assertEquals(emptyList(), plan.done)                                     // and it never went up
+    }
+
+    @Test
+    fun `the card is read again at the delete, and another recording in the agreed one's place stays`() {
+        val up = Clip("VID00001.mov", movie(100))
+        collected(Stage.DONE, up)
+        val asked = agreed(card(up))
+        val twin = twinOf(up)
+        assertEquals(Freed(0, 0, emptyList()), collector.free(card(twin), asked))
         assertFalse(twin.deleted)
     }
 
     @Test
-    fun `a clip that cannot be read at the delete is named, and the others still go`() {
+    fun `a clip that cannot be read at the delete stays, and the others still go`() {
         val locked = Clip("VID00001.mov", movie(100))
         val up = Clip("VID00002.mov", movie(110))
         collected(Stage.DONE, locked, up)
         val asked = agreed(card(locked, up))
         locked.openFails = SecurityException("the grant is gone")
-        assertEquals(Freed(1, up.size, listOf("VID00001.mov: the grant is gone")), collector.free(card(locked, up), asked))
+        assertEquals(Freed(1, up.size, emptyList()), collector.free(card(locked, up), asked))
         assertTrue(up.deleted)
         assertFalse(locked.deleted)
+    }
+
+    @Test
+    fun `a clip whose delete fails in any way is named, and the others still go`() {
+        val stuck = Clip("VID00001.mov", movie(100))
+        val up = Clip("VID00002.mov", movie(110))
+        collected(Stage.DONE, stuck, up)
+        val asked = agreed(card(stuck, up))
+        val odd = object : CardFile by stuck { override fun delete() = throw SecurityException("the grant is gone") }
+        assertEquals(Freed(1, up.size, listOf("VID00001.mov: the grant is gone")), collector.free(card(odd, up), asked))
+        assertTrue(up.deleted)
     }
 
     @Test
@@ -505,7 +526,11 @@ class CollectorTest {
         val up = Clip("VID00001.mov", movie(100))
         val id = collected(Stage.DONE, up)
         store.updateBatch(id) { b -> b.copy(items = b.items.map { it.copy(modified = null, fingerprint = null) }) }
-        assertEquals(emptyList(), collector.plan(card(up)).done)
+        store.update { it.copy(prints = emptyList()) }
+        val plan = collector.plan(card(up))
+        assertEquals(emptyList(), plan.done)
+        assertEquals(emptyList(), plan.clips)                                    // nor taken for new
+        assertEquals(0, up.opened - 1)                                           // nor read: only the collect read it
     }
 
     @Test
