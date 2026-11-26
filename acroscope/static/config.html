@@ -31,7 +31,7 @@
   a.btn { background:#2a2f38; color:var(--fg); border:1px solid #3a404b; border-radius:6px; padding:2px 7px; font-size:12px; line-height:1.4; text-decoration:none; white-space:nowrap } a.btn:hover { background:#343a46 }
   .chip { display:inline-block; padding:2px 9px; border-radius:12px; border:1px solid var(--c, var(--line)); cursor:pointer; font-size:12px; user-select:none }
   .chip.on { background:var(--c, var(--acc2)); color:#111; border-color:var(--c, var(--acc2)) }
-  .lbl .nm { text-transform:none; letter-spacing:0 } .chip, #scopeHint, #mine .nm, #detectionPanel h2 { overflow-wrap:anywhere } .chip { max-width:100% }
+  .lbl .nm { text-transform:none; letter-spacing:0 } .chip, #detectionPanel .hint, #mine .nm, #detectionPanel h2 { overflow-wrap:anywhere } .chip { max-width:100% }
   .chip .n { display:inline-block; min-width:14px; padding:0 4px; margin-left:2px; border-radius:7px; background:var(--acc); color:#111; font-size:10px; text-align:center }
   .tag { display:inline-block; padding:0 7px; border-radius:10px; font-size:11px; background:#2f3542; color:var(--c, var(--acc2)) }
   .src { font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:10px; padding:0 7px; white-space:nowrap }
@@ -184,7 +184,7 @@ async function load() {
   if (seq !== loads) return;
   const failed = [d, dc, layer, tags].find(x => x && x.error);
   if (failed) { err(failed.error + '\n(nothing loaded; reload the page)'); return; }
-  [D, DC, TAGS] = [d, sameCraft(want, craft) ? dc : null, tags];
+  [D, DC, TAGS] = [d, dc, tags];                      // a quad's answer after its quad was left is never drawn: a chip click clears DC
   L = layer.layer || {version: 1}; ETAG = layer.etag;
   if (D.layer_error && !$('#err').textContent) err('your layer is not in force: ' + D.layer_error + '\nThe shipped tricks apply meanwhile; repair or clear the raw layer under detection.');
   render();

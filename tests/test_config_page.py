@@ -392,10 +392,10 @@ class ConfigPageTest(unittest.TestCase):
         page = self.open("/config#detection")
         page.click(".trk[data-id=roll] .head .id")
         sel = ".trk[data-id=roll] .prm[data-p=flip_min_deg] [data-val]"
-        for typed in ("1e999", ""):
+        for typed, key in (("1e999", "Enter"), ("", "Tab")):                   # Enter commits with the box still in focus
             before = page.evaluate("() => renders")
             page.fill(sel, typed)
-            page.press(sel, "Tab")
+            page.press(sel, key)
             page.wait_for_function("(n) => renders > n", arg=before)
             self.assertEqual(page.input_value(sel), "270", typed)
         self.assertEqual(self.layer(), start)
@@ -429,6 +429,7 @@ class ConfigPageTest(unittest.TestCase):
         self.act(page, lambda: page.click("#mine [data-untrick=hard-landing]"),
                  {"version": 1, "trick": own, "segment": {"fast-rotation": {"threshold": 150}}, "craft": {"default": {"params": {"flip_min_deg": 300}}, "OttO": {"segment": {"fast-rotation": {"threshold": 120}}}}})
         self.assertIn("hard-landing title", [x.strip() for x in page.eval_on_selector_all("#mine .it", "els => els.map(e => e.textContent)")])
+        self.assertEqual(page.text_content(".trk[data-id=hard-landing] .head .src"), "1 override")   # an entry with no on/off counts too
         self.assertEqual(page.locator("#mine [data-untrick]").count(), 0)
         self.act(page, lambda: page.click("#mine [data-unseg=fast-rotation]"),
                  {"version": 1, "trick": own, "craft": {"default": {"params": {"flip_min_deg": 300}}, "OttO": {"segment": {"fast-rotation": {"threshold": 120}}}}})
@@ -506,7 +507,9 @@ class ConfigPageTest(unittest.TestCase):
         page.click(f"#scope [data-craft={name}]")
         page.wait_for_selector("#quad")
         self.assertIn(name, page.inner_text("#mine .lbl"))                     # not in capitals like the label's words
-        self.assertFalse(page.evaluate("() => document.documentElement.scrollWidth > innerWidth"))
+        # measured on the panel and the chips: what spills out of the panel is clipped above it, so the document's
+        # own width never shows it
+        self.assertFalse(page.evaluate("() => { const p = document.querySelector('#detectionPanel'); return p.scrollWidth > p.clientWidth + 1 || [...document.querySelectorAll('#scope .chip')].some(c => c.getBoundingClientRect().right > innerWidth + 1); }"))
         self.act(page, lambda: page.click("#mine [data-unprop=size_mm]"), {"version": 1})
         self.assertEqual(page.eval_on_selector_all("#scope .chip.on", "els => els.map(e => e.dataset.craft)"), [name])
 
