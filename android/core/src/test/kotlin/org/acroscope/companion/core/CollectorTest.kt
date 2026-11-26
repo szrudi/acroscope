@@ -31,6 +31,12 @@ class CollectorTest {
     private class Clip(override val name: String, val data: ByteArray, override val modified: Long = 1000, val breakAt: Int? = null) : CardFile {
         override val size: Long get() = data.size.toLong()
         var opened = 0
+        var deleted = false
+        var refuse = false
+        override fun delete() {
+            if (refuse) throw IOException("the card is write-protected")
+            deleted = true
+        }
         override fun open(): InputStream {
             opened++
             val inner = ByteArrayInputStream(data)
@@ -362,5 +368,90 @@ class CollectorTest {
         assertTrue(Names.isLog(b.name) && Names.accepted(b.name), b.name)
         assertEquals(2, store.now.batches.single().items.size)
         assertFalse(File(store.dir(store.now.batches.single().id), "$name.part").exists())
+    }
+
+    /** Collect the clips into one batch and move it to `stage`; the batch's id. */
+    private fun collected(stage: Stage, vararg clips: Clip): String {
+        collector.collect(card(*clips), free = Long.MAX_VALUE)
+        val id = store.now.batches.last().id
+        store.updateBatch(id) { it.copy(stage = stage) }
+        now = now.plusMinutes(1)                                                 // the next collect makes a batch of its own
+        return id
+    }
+
+    @Test
+    fun `the clips the server reported done may be deleted from the card, and only those`() {
+        val up = Clip("VID00001.mov", movie(100))
+        val sent = Clip("VID00002.mov", movie(110))
+        val waiting = Clip("VID00003.mov", movie(120))
+        collected(Stage.DONE, up)
+        collected(Stage.COMMITTED, sent)
+        collected(Stage.PENDING, waiting)
+        val fresh = Clip("VID00004.mov", movie(130))
+        val notes = Clip("notes.txt", ByteArray(5))
+        val plan = collector.plan(card(up, sent, waiting, fresh, notes))
+        assertEquals(listOf("VID00001.mov"), plan.done.map { it.name })          // handed in or waiting: not yet
+        assertEquals(up.size, plan.doneBytes)
+    }
+
+    @Test
+    fun `a clip deleted on the server since is still done with`() {
+        val up = Clip("VID00001.mov", movie(100))
+        collected(Stage.DONE, up)
+        // the batch stays on the phone as the server reported it, whatever became of the clip there
+        assertEquals(listOf("VID00001.mov"), collector.plan(card(up)).done.map { it.name })
+    }
+
+    @Test
+    fun `a clip that only looks like one done with is not deleted`() {
+        val up = Clip("VID00001.mov", movie(100))
+        collected(Stage.DONE, up)
+        val rerecorded = Clip("VID00001.mov", movie(100), modified = 2000)        // the card formatted, the numbers again: another recording
+        val resized = Clip("VID00001.mov", movie(101))
+        assertEquals(emptyList(), collector.plan(card(rerecorded)).done)
+        assertEquals(emptyList(), collector.plan(card(resized)).done)
+    }
+
+    @Test
+    fun `a clip in a batch done and in one not done stays`() {
+        val up = Clip("VID00001.mov", movie(100))
+        val id = collected(Stage.DONE, up)
+        val copy = store.now.batch(id)!!.items.single()
+        store.update { s -> s.copy(batches = s.batches + Batch("20261212-100000-aaaaaa", "", "2026-12-12", "2026-12-12T10:00:00+01:00", listOf(copy), Stage.PENDING)) }
+        assertEquals(emptyList(), collector.plan(card(up)).done)
+    }
+
+    @Test
+    fun `a clip taken out of its batch before it went up stays, though another card's clip by its name went up`() {
+        val other = Clip("VID00001.mov", movie(90), modified = 500)              // another card, the same numbers
+        collected(Stage.DONE, other)
+        val mine = Clip("VID00001.mov", movie(100))
+        val id = collected(Stage.PENDING, mine)
+        store.updateBatch(id) { it.copy(items = emptyList()) }                   // the pilot took it out
+        assertEquals(emptyList(), collector.plan(card(mine)).done)
+    }
+
+    @Test
+    fun `freeing the card deletes what was done with and says what it took`() {
+        val up = Clip("VID00001.mov", movie(100))
+        val also = Clip("VID00002.mov", movie(110))
+        val waiting = Clip("VID00003.mov", movie(120))
+        collected(Stage.DONE, up, also)
+        collected(Stage.PENDING, waiting)
+        val freed = collector.free(card(up, also, waiting))
+        assertTrue(up.deleted && also.deleted)
+        assertFalse(waiting.deleted)
+        assertEquals(Freed(2, up.size + also.size, emptyList()), freed)
+    }
+
+    @Test
+    fun `a clip the card will not let go is said, and the others still go`() {
+        val stuck = Clip("VID00001.mov", movie(100)).also { it.refuse = true }
+        val up = Clip("VID00002.mov", movie(110))
+        collected(Stage.DONE, stuck, up)
+        val freed = collector.free(card(stuck, up))
+        assertTrue(up.deleted)
+        assertFalse(stuck.deleted)
+        assertEquals(Freed(1, up.size, listOf("VID00001.mov: the card is write-protected")), freed)
     }
 }

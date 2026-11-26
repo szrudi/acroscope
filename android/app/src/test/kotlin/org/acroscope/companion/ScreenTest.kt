@@ -250,6 +250,45 @@ class ScreenTest {
 
     private val erased get() = org.acroscope.companion.core.Msp.DATAFLASH_ERASE.toString()
 
+    /** Two clips on the card: the first went up in a batch the server reported done, the second waits to go up. */
+    private fun upAndWaiting(writable: Boolean): Pair<FakeFile, FakeFile> {
+        val up = FakeFile("VID00001.mov", movie(100))
+        val waiting = FakeFile("VID00002.mov", movie(120))
+        w.card(up, writable = writable)
+        w.graph.collector.collect(w.cards.open(TREE), Long.MAX_VALUE)
+        w.store.updateBatch(w.store.now.batches.single().id) { it.copy(stage = org.acroscope.companion.core.Stage.DONE) }
+        w.card(up, waiting, writable = writable)
+        w.graph.collector.collect(w.cards.open(TREE), Long.MAX_VALUE)
+        return up to waiting
+    }
+
+    @Test
+    fun `clips that went up can be deleted from the card once changes to it are allowed`() {
+        upAndWaiting(writable = false)
+        show()
+        assertTrue("1 clip" in text("free-note") && "went up to the server" in text("free-note"), text("free-note"))
+        assertFalse(seen("free"))
+        click("allow-changes")
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT_TREE, asked.single().action)    // the card's folder asked for again, with changes
+    }
+
+    @Test
+    fun `free the card asks first, and deletes only what went up`() {
+        val (up, waiting) = upAndWaiting(writable = true)
+        show()
+        click("free")
+        assertTrue("Delete 1 clip" in text("free-ask"), text("free-ask"))
+        click("free-no")
+        wait { seen("free") && !seen("free-ask") }
+        assertFalse(up.deleted)                                                  // no without a yes
+        click("free")
+        click("free-yes")
+        wait { seen("free-status") && "deleted 1 clip" in text("free-status") }
+        assertTrue(up.deleted)
+        assertFalse(waiting.deleted)                                             // still to go up: it stays
+        wait { !seen("free-note") && !seen("free") }                             // nothing left that went up
+    }
+
     @Test
     fun `a quad that restarts under the erase and comes back empty is erased`() {
         val fc = saved()
