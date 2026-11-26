@@ -251,6 +251,20 @@ class ScreenTest {
     private val erased get() = org.acroscope.companion.core.Msp.DATAFLASH_ERASE.toString()
 
     @Test
+    fun `while the flash is erased the screen says to keep the quad plugged in, and the quad's line says it is erasing`() {
+        val fc = saved()
+        fc.eraseNeverEnds = true
+        click("erase")
+        wait { seen("erase-warning") }
+        assertTrue("keep it plugged in" in text("erase-warning"), text("erase-warning"))
+        assertTrue("OTTO: erasing its flash" in text("quad"), text("quad"))
+        assertFalse("can be erased" in text("quad"))
+        fc.eraseNeverEnds = false
+        wait { seen("erase-status") && "flash is erased" in text("erase-status") }
+        assertFalse(seen("erase-warning"))                                      // done: the warning goes
+    }
+
+    @Test
     fun `the erase is withdrawn when the saved log is taken off the phone`() {
         val fc = saved()
         val batch = w.store.now.batches.single()

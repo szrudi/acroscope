@@ -125,13 +125,18 @@ fun Screen(g: Graph, openCard: (Intent) -> Unit, pickLogs: () -> Unit, beforeJob
                 item {
                     Section("Collect") {
                         Text(g.session.describe(card), Modifier.testTag("card"))
-                        Text(g.session.describe(quad, flash), Modifier.testTag("quad"))
+                        Text(g.session.describe(quad, flash, erasing = erase is Work.Running), Modifier.testTag("quad"))
                         heat?.let { t ->
                             if (hot) Text("the quad's core is at $t °C: unplug it and let it cool", Modifier.testTag("heat"), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
                             else Dim("the quad's core is at $t °C", Modifier.testTag("heat"))
                         }
                         Progress(collect, Modifier.testTag("collect-status"))
-                        Progress(erase, Modifier.testTag("erase-status"))
+                        (erase as? Work.Running)?.let { e ->                 // unplugging now leaves the flash half erased: hard to miss
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(e.what, Modifier.testTag("erase-warning"), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                LinearProgressIndicator(Modifier.fillMaxWidth())
+                            }
+                        } ?: Progress(erase, Modifier.testTag("erase-status"))
                         val something = ((card as? CardView.Open)?.clips ?: 0) > 0 || (quad is QuadView.Ready && flash != 0L)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             (card as? CardView.Locked)?.let { c -> Button({ openCard(c.request) }, Modifier.testTag("allow")) { Text("Allow the card") } }
