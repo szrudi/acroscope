@@ -19,6 +19,7 @@ import org.acroscope.companion.core.DropException
 import org.acroscope.companion.core.Format
 import org.acroscope.companion.core.Item
 import org.acroscope.companion.core.Pairing
+import org.acroscope.companion.core.Seen
 import org.acroscope.companion.core.UploadResult
 import java.io.IOException
 import java.io.InputStream
@@ -31,7 +32,9 @@ sealed interface CardView {
     data class Locked(val label: String, val request: Intent) : CardView
     /** `done`: the clips on it the server reported done, which may be deleted from it (with changes allowed, `writable`). */
     data class Open(val label: String, val tree: Uri, val clips: Int, val bytes: Long, val collected: Int, val others: List<String>,
-                    val done: Int = 0, val doneBytes: Long = 0, val writable: Boolean = false, val request: Intent? = null) : CardView
+                    val done: List<Seen> = emptyList(), val writable: Boolean = false, val request: Intent? = null) : CardView {
+        val doneBytes: Long get() = done.sumOf { it.size }
+    }
     data class Unreadable(val label: String, val why: String) : CardView
 }
 
@@ -75,6 +78,8 @@ class Session(private val g: Graph) {
     @Volatile private var held: Held? = null
     /** The quad's view is worked out and shown in one step: one worked out before a save ended must not cover it. */
     private val seeing = Any()
+    /** The card's view likewise: one read before a free deleted must not land after the view read once it did. */
+    private val looking = Any()
     /** The quad's core temperature as last read, in °C: while it is plugged in and the screen is there to show it. */
     val heat = MutableStateFlow<Int?>(null)
     /** How much log is on the quad's flash as last read, in bytes: 0 is an empty flash, null is not known (not asked
@@ -123,9 +128,12 @@ class Session(private val g: Graph) {
         is QuadView.Saved -> view.name
     }
 
-    fun lookAtCard() = scope.launch {
+    fun lookAtCard() = scope.launch { showCard(plug = true) }
+
+    /** Read the card and show it; `plug`: a look from outside, where another card (or none) takes the last lines. */
+    private fun showCard(plug: Boolean) = synchronized(looking) {
         val now = see()
-        if (plugged(now) != plugged(card.value)) settle(collect, free)
+        if (plug && plugged(now) != plugged(card.value)) settle(collect, free)
         card.value = now
     }
 
@@ -134,7 +142,8 @@ class Session(private val g: Graph) {
         is CardState.NeedsAccess -> CardView.Locked(s.label, s.request)
         is CardState.Ready -> try {
             val plan = g.collector.plan(g.cards.open(s.tree))
-            CardView.Open(s.label, s.tree, plan.clips.size, plan.bytes, plan.collected, plan.others, plan.done.size, plan.doneBytes, s.writable, s.request)
+            CardView.Open(s.label, s.tree, plan.clips.size, plan.bytes, plan.collected, plan.others,
+                plan.done.map { Seen(it.name, it.size, it.modified) }, s.writable, s.request)
         } catch (e: Exception) {
             CardView.Unreadable(s.label, e.message ?: e.javaClass.simpleName)
         }
@@ -248,22 +257,22 @@ class Session(private val g: Graph) {
         lookAtCard()
     }
 
-    /** Delete from the card the clips the server reported done; the pilot pressed for it and said yes. */
-    fun freeCard() = scope.launch {
-        val open = card.value as? CardView.Open ?: return@launch
+    /** Delete from the card the clips the server reported done that `asked`, the card as the question showed it, named;
+     *  the pilot pressed for it and said yes. */
+    fun freeCard(asked: CardView.Open) = scope.launch {
         synchronized(seeing) {
-            if (free.value is Work.Running || collect.value is Work.Running || !open.writable || open.done == 0) return@launch
-            free.value = Work.Running("deleting ${open.done} clip${if (open.done == 1) "" else "s"} the server has from the card", 0, 0)
+            if (free.value is Work.Running || collect.value is Work.Running || !asked.writable || asked.done.isEmpty()) return@launch
+            free.value = Work.Running("deleting ${asked.done.size} clip${if (asked.done.size == 1) "" else "s"} the server has from the card: keep it in", 0, 0)
         }
         free.value = try {
-            val out = g.collector.free(g.cards.open(open.tree))
+            val out = g.collector.free(g.cards.open(asked.tree), asked.done)
             val said = "deleted ${out.count} clip${if (out.count == 1) "" else "s"} (${Format.bytes(out.bytes)}) from the card"
             if (out.failed.isEmpty()) Work.Finished(said, true)
             else Work.Finished("$said; not deleted: ${out.failed.joinToString("; ")}", false)
         } catch (e: Exception) {
             Work.Finished("nothing was deleted: ${e.message ?: e.javaClass.simpleName}", false)
         }
-        card.value = see()
+        showCard(plug = false)
     }
 
     fun setEvent(name: String) {
@@ -274,9 +283,11 @@ class Session(private val g: Graph) {
     fun startCollect() {
         val open = (card.value as? CardView.Open)?.takeIf { it.clips > 0 }
         val log = quad.value is QuadView.Ready && flash.value != 0L
-        if ((open == null && !log) || collect.value is Work.Running) return
-        settle(erase, upload)
-        collect.value = Work.Running(if (log) "asking the quad" else "reading the card", 0, open?.bytes ?: 0)
+        synchronized(seeing) {
+            if ((open == null && !log) || collect.value is Work.Running || free.value is Work.Running) return
+            settle(erase, upload, free)
+            collect.value = Work.Running(if (log) "asking the quad" else "reading the card", 0, open?.bytes ?: 0)
+        }
         g.runner.collect(open?.tree)
     }
 
@@ -309,7 +320,7 @@ class Session(private val g: Graph) {
         }
         val done = Work.Finished(said.joinToString("\n").ifEmpty { "nothing to collect" }, ok)
         collect.value = done
-        card.value = see()
+        showCard(plug = false)
         showQuad()
         kick()
         return done
@@ -440,6 +451,7 @@ class Session(private val g: Graph) {
     fun askServer() = scope.launch {
         try { g.uploader.refresh() } catch (e: IOException) { }
         events.value = g.uploader.events()
+        lookAtCard().join()                                 // a batch reported done may have freed clips on the card
     }
 
     fun retry(batch: String) = scope.launch {
@@ -478,13 +490,14 @@ class Session(private val g: Graph) {
         is QuadView.Saved -> if (erasing) "${view.name}: erasing its flash" else "${view.name}: its log is saved, its flash can be erased"
     }
 
-    fun describe(view: CardView): String = when (view) {
+    /** The card's line; `freeing` while clips are deleted from it. */
+    fun describe(view: CardView, freeing: Boolean = false): String = when (view) {
         CardView.None -> "no card plugged in"
         is CardView.Locked -> "${view.label}: allow the app to read it"
         is CardView.Unreadable -> "${view.label}: could not be read (${view.why})"
         is CardView.Open -> (if (view.clips == 0) "${view.label}: nothing new" else "${view.label}: ${view.clips} new clip${if (view.clips == 1) "" else "s"}, ${Format.bytes(view.bytes)}") +
             (if (view.collected > 0) ", ${view.collected} collected before" else "") +
             (if (view.others.isNotEmpty()) "\nalso on the card, not collected: ${view.others.take(5).joinToString(", ")}${if (view.others.size > 5) " and ${view.others.size - 5} more" else ""}" else "") +
-            (if (view.clips == 0) "\nthe app has nothing open on it: eject it, then pull it" else "")
+            (if (freeing) "\nthe app is deleting from it: keep it in" else if (view.clips == 0) "\nthe app has nothing open on it: eject it, then pull it" else "")
     }
 }

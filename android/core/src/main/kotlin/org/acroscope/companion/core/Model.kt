@@ -17,6 +17,10 @@ data class Item(
     val collectedAt: String,
     /** A clip without its index: the DVR lost power while recording it (see [Mp4]). */
     val unfinalised: Boolean = false,
+    /** A clip's time on the card and its [Fingerprint] at the collect: what says the card still holds this very
+     *  recording once it went up. A clip collected before they were kept has neither and is never freed. */
+    val modified: Long? = null,
+    val fingerprint: String? = null,
 )
 
 /** Where a batch is: on the phone (perhaps partly uploaded), handed to the server with the phone's copy kept until
@@ -66,6 +70,11 @@ data class Batch(
 @Serializable
 data class Seen(val name: String, val size: Long, val modified: Long)
 
+/** A clip collected, with its [Fingerprint]: kept like [Seen], whatever becomes of its batch, so another recording by
+ *  its name, size and time is told from it. */
+@Serializable
+data class Print(val clip: Seen, val fingerprint: String)
+
 @Serializable
 data class Settings(
     val url: String? = null,
@@ -85,6 +94,7 @@ data class State(
     val settings: Settings = Settings(),
     val batches: List<Batch> = emptyList(),
     val seen: List<Seen> = emptyList(),
+    val prints: List<Print> = emptyList(),
 ) {
     fun batch(id: String): Batch? = batches.firstOrNull { it.id == id }
     val pending: List<Batch> get() = batches.filter { it.stage == Stage.PENDING }.sortedBy { it.id }}

@@ -18,11 +18,16 @@ What it does now (0.3):
   (the DVR lost power while recording) is collected and flagged. A collect that does not fit on the phone is
   refused before it starts. With nothing left to collect the card's line says the app has nothing open on it;
   **Eject the card…** opens the phone's own storage screen, where it is ejected (an app may not eject a card).
-- **Free the card.** The clips on the card whose batch the server reported done (by name, size and time, and in no
-  batch still on its way) can be deleted from it: **Free the card…**, then **Delete** after a question that says
-  how many and how much. Nothing is deleted by itself, nothing still on its way and nothing but those clips. It needs
-  the card's folder allowed once more, this time with changes (**Allow changes to the card**). A clip deleted on
-  the server since counts as done too.
+- **Free the card.** The clips on the card that went up in a batch the server reported done, and that no batch
+  still on its way holds, can be deleted from it: **Free the card…**, then **Delete** after a question that says
+  how many and how much. Nothing is deleted by itself, nothing still on its way, and nothing but the clips the
+  question named. A clip is told by its name, size and time on the card, and by a fingerprint of its first and last
+  MiB taken at the collect and checked against the card again right before it goes, so another recording that
+  happens to share the name, size and time stays, and is collected as new. It needs the card's folder allowed once more, this time with
+  changes (**Allow changes to the card**). While it deletes, the card is not to be ejected and nothing else starts
+  on it. A clip deleted on the server since counts as done too: the card's copy only has to last until the server
+  has the clip. What it does not reach: clips collected before 0.3.6 (no fingerprint was kept), and clips of batches
+  older than the last 20 the phone remembers. The server keeping the fingerprints would lift both (#94).
 - **The log off the quad.** With the quad on USB, **Start** saves its blackbox flash first (MSP, as the
   Configurator's "save flash to file" does: the used part only), named
   `BTFL_BLACKBOX_LOG_<CRAFT>_<date>_<time>_<board>.bbl` with the phone's time. The file is kept only when it is as
