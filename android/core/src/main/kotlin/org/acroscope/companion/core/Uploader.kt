@@ -53,20 +53,20 @@ class Uploader(private val store: Store, private val drop: (Pairing) -> Drop) {
         fun handIn(server: Drop, id: String): Boolean {
             val mine = sent.getOrPut(id) { mutableSetOf() }
             while (true) {
-                val b = store.now.batch(id)?.takeIf { it.stage == Stage.PENDING } ?: return false
-                val left = b.items.filterNot { it in mine }
-                if (left.isEmpty()) {
-                    var closed = false
-                    store.update { s ->
-                        val now = s.batch(id)
-                        if (now == null || !now.items.all { it in mine }) s
-                        else s.copy(batches = s.batches.map { if (it.id == id) it.copy(closed = true).also { closed = true } else it })
-                    }
-                    if (closed) break else continue
+                // what is left to send, and the close when nothing is, decided in one change of the state: a file
+                // placed by a collect comes before it (and is sent) or after it (and starts another batch)
+                var b: Batch? = null
+                var left: List<Item> = emptyList()
+                store.update { s ->
+                    b = s.batch(id)?.takeIf { it.stage == Stage.PENDING }
+                    left = b?.items.orEmpty().filterNot { it in mine }
+                    if (b == null || left.isNotEmpty()) s else s.copy(batches = s.batches.map { if (it.id == id) it.copy(closed = true) else it })
                 }
+                val batch = b ?: return false
+                if (left.isEmpty()) break
                 for (i in left.sortedWith(compareBy({ it.kind != Kind.LOG }, { it.name }))) {      // the logs first: small, and ingest wants them first
                     if (store.now.batch(id)?.items?.contains(i) != true) continue                    // taken out meanwhile
-                    broken(b, i)?.let { throw Broken(it) }
+                    broken(batch, i)?.let { throw Broken(it) }
                     val base = before
                     val all = total()
                     server.upload(id, i.name, File(store.dir(id), i.name), { progress(UploadProgress(id, i.name, base + it, all)) }, stop)

@@ -48,6 +48,18 @@ class AutoUploadTest {
     private fun notes() = shadowOf(context.getSystemService(android.app.NotificationManager::class.java)).allNotifications.map { shadowOf(it).contentText.toString() }
 
     @Test
+    fun `the collect job, as the app enqueues it, is told which card to read`() {
+        w.card(FakeFile("VID00001.mov", movie(100)))
+        WorkRunner(context).collect(TREE)
+        val end = System.currentTimeMillis() + 10_000
+        while (androidx.work.WorkManager.getInstance(context).getWorkInfosForUniqueWork("collect").get().none { it.state.isFinished }) {
+            check(System.currentTimeMillis() < end) { "the collect job did not finish" }
+            Thread.sleep(20)
+        }
+        assertEquals(listOf("VID00001.mov"), w.store.now.batches.single().items.map { it.name })
+    }
+
+    @Test
     fun `at home the batch goes up, and a look at the server is asked for`() {
         val id = pending()
         assertEquals(Result.success(), auto())
