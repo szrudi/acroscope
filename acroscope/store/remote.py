@@ -140,6 +140,15 @@ class Remote:
     def batches(self) -> list[dict]:
         return self._call("GET", "/api/inbox")
 
+    def devices(self) -> list[dict]:
+        return self._call("GET", "/api/devices")["devices"]
+
+    def add_device(self, name: str) -> dict:
+        return self._call("POST", "/api/devices", {"name": name})
+
+    def revoke_device(self, device: str) -> bool:
+        return self._call("DELETE", "/api/devices/" + urllib.parse.quote(device, safe=""))["revoked"]
+
     def names_on(self, date: str) -> list[str]:
         return [v["name"] for s in self.sessions() for v in self.load(s["session"])["videos"] if (v.get("name") or "").startswith(date + "_")]
 

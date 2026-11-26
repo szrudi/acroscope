@@ -39,6 +39,19 @@ SHARE_URL = os.environ.get("ACROSCOPE_SHARE_URL", "").strip().rstrip("/")
 SHARE_PUSH = os.environ.get("ACROSCOPE_SHARE_PUSH", "").strip()
 SHARE_REVOKE = os.environ.get("ACROSCOPE_SHARE_REVOKE", "").strip()
 
+# The drop (#75): where a paired device's batch is staged until it is whole (a sibling of inbox/ on the same
+# filesystem: the commit is one rename), the bytes all devices together may have staged, and the room the data dir
+# keeps free of staged files.
+DROP_DIR = DATA_DIR / "drop"
+# Where a device reaches the drop when that is not where the player is: a host of its own in front of /drop/, so the
+# player's host keeps its login on every path. It goes into the pairing code, and a request under that host's name
+# (whatever the port) is served the drop and nothing else: a name that is the drop's alone, never the player's. The
+# host is the operator's (set in the environment), not this repo's; unset, the code names the address the
+# configuration page was opened at.
+DROP_URL = os.environ.get("ACROSCOPE_DROP_URL", "").strip().rstrip("/")
+DROP_QUOTA = int(os.environ.get("ACROSCOPE_DROP_QUOTA") or 50 << 30)
+DROP_MIN_FREE = int(os.environ.get("ACROSCOPE_DROP_MIN_FREE") or 5 << 30)
+
 # Encoding the player relies on (Chrome on Linux has no HEVC): H.264, keyframe every 0.5 s at 60 fps.
 H264_ARGS = ["-c:v", "libx264", "-preset", "medium", "-crf", "23", "-pix_fmt", "yuv420p",
              "-g", "30", "-keyint_min", "30", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"]

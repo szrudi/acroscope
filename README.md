@@ -39,6 +39,8 @@ blackbox/*.bbl                               full flash dumps, many arms per fil
 inbox/<batch>/                               what the laptop drops: VID*.mov off the card, *.bbl off a quad, an optional
                                              import.json ({date, session, imported_at, host}) and a .done marker written
                                              last (optionally a manifest {"files": {name: size}}); consumed by ingest
+drop/<device>/<batch>/                       what a paired device has sent of a batch so far (see *The drop*); whole and
+                                             committed, it becomes inbox/<batch>/ in one step
 originals/<session>/<id>.mov                 the originals, kept 90 days after the compressed clip verified
 originals/.ingest/<batch>/                   a batch's clips taken out of the inbox and their encodes, until each is in place
                                              (what a crashed ingest left there, the retry finishes)
@@ -60,6 +62,52 @@ place when the session has a log (its arms to see while the next one compresses)
 planned whole (and, when the batch brought a log, the session's clips without a match: a log may come after its
 clips), replacing the early matches except where they were changed by hand meanwhile. A failed batch stays in
 `inbox/` with its error shown; a retry does not import a clip or a log twice.
+
+**The drop** (`acroscope/ingest/drop.py`, its routes in `acroscope/server/drop.py`): the inbox's second door, for a
+device that has no rsync, such as a phone with the companion app (#75). The device is paired once (`acroscope devices
+add <name>`, or the configuration page's **devices** tab) and gets a token, shown that one time and kept by the
+server only as a hash; revoking the device stops the token. With it the device uploads a batch's files one at a
+time over HTTP, each resumable from the last byte that arrived (the protocol is [tus](https://tus.io) 1.0.0: core,
+creation, termination), and then commits the batch with its manifest:
+
+```
+POST   /drop/batches/<batch>/files           Upload-Length, Upload-Metadata: filename <base64>   -> 201, Location
+HEAD   /drop/batches/<batch>/files/<name>                                                         -> Upload-Offset
+PATCH  /drop/batches/<batch>/files/<name>    Upload-Offset, the next piece of the file           -> 204, Upload-Offset
+DELETE /drop/batches/<batch>/files/<name>    take the file back
+POST   /drop/batches/<batch>/commit          {"files": {name: bytes}}                            -> the batch's status
+GET    /drop/batches                         this device's batches and their status   POST /drop/batches/<batch>/retry
+GET    /drop/device                          who the token is, the quota and what is staged
+GET    /drop/events                          what the recent sessions were called
+```
+
+Every request carries `Authorization: Bearer <token>` (and the tus ones `Tus-Resumable: 1.0.0`); without a valid
+token every path under `/drop/` answers 401. A body comes with its `Content-Length`: a chunked one is refused. Where a reverse proxy with a login stands in front of the player, the
+drop needs a way past it (a background upload cannot sign in): a host of its own that serves `/drop/*` and nothing
+else, with `ACROSCOPE_DROP_URL` set to it so the pairing code sends the app there (unset, the code names the address
+the configuration page was opened at). So that such a host is no way around the login, a request under its name is
+served the drop and nothing else. For a host name, the name is what counts, whatever the port: `ACROSCOPE_DROP_URL`
+names a host that is the drop's alone, never the player's. For an IP address, the address and its port count (the server
+is reached by address too, on a port of its own). `serve` does not start when no host can be read from the
+variable. The proxy hands the name on, as the `Host` (Caddy does by itself) or as `X-Forwarded-Host`. A proxy that
+sends a `Host` of its own and takes a client's `X-Forwarded-Host` as it came (Caddy's `trusted_proxies` reaching the
+clients' networks) leaves the choice of name to the client: on the drop's site, do neither. And the server answers
+404 to any path with a `.` or `..` segment on every route, also one behind an encoded slash, a `;` or a `#`
+(`/api/sessions/../../drop/x` matches a proxy's `/drop/*` with its dots resolved and arrives as written). Until the commit the files are staged under `drop/<device>/<batch>/`,
+outside the inbox; the commit checks every file against the manifest, writes `.done` with it and renames the folder to
+`inbox/<batch>/`, so ingest finds exactly what the laptop's push leaves there and nothing half-arrived is ever in
+the inbox. A device is trusted like the push user, no further: a batch is named as the laptop names one
+(`YYYYmmdd-HHMMSS-<suffix>`) and its id is used once, a file is one ingest takes (`VID*.mov`, `*.bbl`, `import.json`)
+under a plain name, the declared sizes count against a quota (`ACROSCOPE_DROP_QUOTA`, 50 GB for all devices together)
+and the room the disk keeps (`ACROSCOPE_DROP_MIN_FREE`, 5 GB), and a device reaches only its own staging. The quota is
+on what is staged (a committed batch leaves it, and one device can hold all of it); what a device can put on the disk
+in all is bounded by the room kept free. Nothing is
+read back or listed through this door; a device hears about its own batches (status, what went wrong without the
+server's folders in it, what they became) and
+the recent event names. A piece whose sender goes silent is let go after a minute, or as soon as the device is back with the
+next piece for that file (it starts where the file ends: the old sender is stopped and the new one goes on from
+there); a sender that breaks off in a piece is no error, what came is kept. A staged batch nothing was
+added to for 7 days is dropped by the nightly housekeeping. `tests/drop_client.py` is the device's side in plain stdlib.
 
 Everything acroscope knows about a session (its clips with duration and codec, its blackbox files, the matches
 video <-> arm + offset, the moments, the notes) is in one SQLite database (`ACROSCOPE_DB`, default
@@ -95,14 +143,15 @@ acroscope/
   store/     the data layer: db (the SQLite database), remote (the same methods over the API), sessions (store(), the
              resolvers, the folder scan), edits (rename, re-date, move, merge, delete), upkeep (trash, backups)
   ingest/    1. a batch from inbox/ to numbered clips and attached logs: intake (the inbox's rules), encode (the
-             static cut), clock (re-timing), recut
+             static cut), clock (re-timing), recut; drop (a device's batch staged and handed to the inbox)
   match/     2. which arm is in which clip: pairing, planner (the session in one alignment), automatch, manual
   analyse/   3. what happened in an arm: metrics, lanes (the player's strip and sticks), events; tricks/ beside it is
              the trick engine
   review/    4. moments, tags, notes
   share/     5. a moment on a secret link
   cli/       the agent's surface: a module of commands per phase
-  server/    the player's and a remote CLI's surface: the HTTP handler, and jobs (child processes, the background)
+  server/    the player's and a remote CLI's surface: the HTTP handler, jobs (child processes, the background), and
+             drop (the paired devices' door)
   static/    the player, the configuration page, the share viewer
 ```
 
@@ -116,7 +165,7 @@ python3 -m venv .venv && .venv/bin/pip install -e .     # needs ffmpeg/ffprobe o
 ```
 
 Tests: `.venv/bin/python -m unittest discover tests` (the database, the API against a server child, ingest on a
-synthetic batch, the aligner, the real-data pins through a server when one is configured). The player's
+synthetic batch, the drop as a device uses it, the aligner, the real-data pins through a server when one is configured). The player's
 end-to-end tests run in a headless Chromium and skip until `scripts/browser-setup.sh` has run once (Playwright as the
 `e2e` extra, the browser and the libraries it needs under `~/.cache`, no root).
 
@@ -154,8 +203,11 @@ acroscope recut <session> <clip>                 compress a clip again from its 
                                                  footage, or a mis-stamped frame rate); moments and matches move with
                                                  it, a match across an old cut or on a changed clock is listed under
                                                  `check`
-acroscope housekeeping                           originals past retention go, trash/ days older than 7 go; the database
-                                                 is backed up into state/
+acroscope devices [add <name> | revoke <id>]     the devices that may upload through the drop; `add` prints the new
+                                                 device's token, once
+acroscope housekeeping                           originals past retention go, trash/ days older than 7 go, a batch a
+                                                 device staged and left for 7 days goes; the database is backed up
+                                                 into state/
 acroscope arms <bbl>                             list the arms (decodes the whole file into the cache once, ~30 s)
 acroscope fetch-log <bbl> [--to DIR]             the .bbl as it is, onto this machine (the player's ⤓; for blackbox_decode or
                                                  Blackbox Explorer); by file name or a fragment unique among the sessions' logs
@@ -216,6 +268,10 @@ POST /api/session/<s>/rename            {name}        POST /api/session/<s>/date
 POST /api/session/<s>/move              {video, to}   POST /api/session/<s>/merge  {into}
 DELETE /api/session/<s>/clip?video=     the clip into trash/<date>/<s>/, its matches and moments gone
 GET  /api/inbox                         batches and their status    POST /api/inbox/<batch>/retry
+GET  /api/devices                       the devices paired for the drop (never a token), and the drop's own address
+                                        when it has one                                       DELETE /api/devices/<id>   revoke one
+POST /api/devices                       {name}: a new device with its token, in this answer only
+     /drop/...                          the paired devices' own door, with their token: see *The drop*
 GET  /api/tricks[?craft=]               the tricks in force: params with default and source, presets, crafts (declared
                                         and seen in the logs), segments, tricks, the feature names per segment kind
 GET  /api/tricks/layer                  the pilot's layer kept in the database      POST /api/tricks/layer   {the layer, whole}
@@ -431,13 +487,14 @@ checklist.
 ## Configuration page
 
 `/config` (the ⚙ in the player's header) is where the pilot sets what the log cannot say, over the shipped tricks,
-in seven tabs: **profile** (the skill preset, every number with the shipped default and where the value in force came
+in eight tabs: **profile** (the skill preset, every number with the shipped default and where the value in force came
 from, filtered by number or trick), **drones** (the crafts seen in the logs by their header name: properties, a preset
 and numbers for that quad, its tricks on and off), **tricks** (the list in force with switches, each one's definition
 and examples, "check the examples" against the server's logs, and the tricks scored against a session's tagged
 moments: found, missed with arm and time, detections on no moment), **settings** (what this browser remembers, your layer
-exported as a tricks file or one imported, and the raw layer as the server keeps it), **tags** (the tag manager, moved here from the player), **shares** (what is published on a secret link, see *Sharing a trick*) and
-**osd** (the OSD profiles, checked on a frame of a clip, see *OSD profiles*). Every change goes to
+exported as a tricks file or one imported, and the raw layer as the server keeps it), **tags** (the tag manager, moved here from the player), **shares** (what is published on a secret link, see *Sharing a trick*),
+**osd** (the OSD profiles, checked on a frame of a clip, see *OSD profiles*) and **devices** (what may upload through
+the drop: pair one and read its code, once; revoke one; see *The drop*). Every change goes to
 the server as the whole layer, checked as a tricks file is; a refused one shows its message and changes nothing. The
 player's suggestions follow on the next look.
 

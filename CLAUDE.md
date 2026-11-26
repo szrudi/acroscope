@@ -9,11 +9,11 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   `gh` on this machine is logged in as `joan-grazo`, so issues and PRs filed from here carry that account.
 - Package layout (#60), by the workflow's phases: `sources/` (the raw inputs, read: blackbox, video, the OSD reader,
   osdprofile, betaflight) and `store/` (db, remote, sessions: `store()`, the resolvers, the scan; edits, upkeep)
-  underneath; the phases `ingest/` (the batch in `__init__`; intake, encode, clock, recut), `match/` (manual, pairing,
+  underneath; the phases `ingest/` (the batch in `__init__`; intake, encode, clock, recut, drop), `match/` (manual, pairing,
   planner, automatch), `analyse/` (metrics, lanes, events; `tricks/` beside it), `review/` (moments), `share/`; the
   surfaces on top, `cli/` (a module of commands per phase, each with its parser lines in `add()`; the groups are named
   like the packages they serve, so in `cli/__init__` a name like `store` or `share` is the group) and `server/` (the
-  handler; `jobs`: child processes, the CLI proxy, the background). A module imports from its own layer or an earlier
+  handler; `jobs`: child processes, the CLI proxy, the background; `drop`: the paired devices' door). A module imports from its own layer or an earlier
   one, never a later one (`tests/test_layers.py`; a new part of the package goes in its `LAYERS`); a layer that needs a
   later one's work runs it as a child (`python -m acroscope.cli`, as ingest runs automatch). New logic goes into the
   phases and the surfaces parse and print, so the CLI, the API and an MCP server can share it (#60 moved
@@ -42,6 +42,28 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   `ingest/intake.py` (`batch_entries`/`plain_name`/`_take`). A clip's file name is its id; its readable
   `<date>_NNN` name is a column; `sessions.resolve_clip`/`clip_path` take either, or the number. Never
   `video.resolve_video` in a command.
+- The drop (#75, `acroscope/ingest/drop.py`, routes `acroscope/server/drop.py`): the door a paired device (the
+  companion app) uploads through, tus 1.0.0 plus a commit; the README's *The drop* has the protocol and
+  `tests/drop_client.py` the device's side. Its rules, each pinned in `tests/test_drop.py` or `tests/test_drop_api.py`:
+  every path under `/drop/` asks for the device's token first (401 otherwise; the rest of the API is as open as it was);
+  a path with a `.` or `..` segment (in everything sent before the query, decoded: behind a `%2F`, a `;` or a `#` too) is a 404 on every route
+  (`Handler._drop`), which is what keeps a proxy's
+  login-free `/drop/*` rule from being a way to the API (the proxy matches the resolved path and forwards the written one);
+  files are staged in `drop/<device>/<batch>/files/`, root's own and never inside `inbox/`; the commit is one rename
+  with `.done` already written, onto nothing (a folder or a link by that name in the inbox refuses it); names go through
+  `drop.batch_ok`/`name_ok`/`device_ok` before any path is built; a batch id is used once, since the app deletes its
+  copy when the server reports that id done; a device sees and retries only its own batches (`batches.device`); a
+  body's end is known before any of it is read (a chunked one is refused, the connection ends); an answer carries the
+  drop's own words, never the system's (an `OSError` names the server's paths: those go to the log; a batch's
+  `error` from ingest is told without its folders, `drop._public`). The
+  server's part runs in request threads (the copying is I/O); nothing there decodes or probes what arrived. Tokens are
+  in the `devices` table as SHA-256 hashes: `db.add_device` returns the token once, nothing else may print or store it.
+  `ACROSCOPE_DROP_URL` is the drop's own address when it has a host of its own: it goes into the pairing code, and a
+  request that names it (in `Host`, `X-Forwarded-Host` or an absolute-form target; a host name by the name alone,
+  read as loosely as a proxy reads one: any port, case, brackets; an IP address with its port) gets `/drop/` and
+  nothing else (`Handler._at_the_drops_host`, `server.drop_host`), so the proxy and the server need not read a path
+  alike; never the player's name. `serve` refuses a value with no host in it. Like `ACROSCOPE_SHARE_URL`, it and the
+  vhost behind it are homelab settings (never in this repo).
 - OSD reader (`acroscope/sources/osd.py`): every layout is a profile derived from Betaflight's own (#10,
   `sources/osdprofile.py` over `sources/betaflight.py`: the dump's `osd_*_pos`/`osd_tim1`/`osd_tim2`, the `.mcm`
   font rendered into digit templates, the DVR's grid at x 3, y -4, 24 x 36 px; STATS rows found by their labels). The
@@ -80,7 +102,7 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   explicitly): what `acroscope tricks set | unset | on | off | skill` and the player's configuration page (#45)
   write, checked by `tricks.check_layer` before it is stored. A tricks file is the exchange format, not storage
   (Rudi, 2026-10-17): `tricks export | import` and the page's share row, `toml_out.py` writes it. `GET /api/tricks` is `tricks.describe()`. The player's `/config` page
-  (`acroscope/static/config.html`, one file like the player, seven tabs) edits that layer whole through
+  (`acroscope/static/config.html`, one file like the player, eight tabs) edits that layer whole through
   `POST /api/tricks/layer`; its tests (`tests/test_config_page.py`, Playwright like the player's) check each knob
   against what the server then holds.
 - Sharing (#57, `acroscope/share/`): `acroscope share <session> <moment>` renders `shares/<token>/` (a cut of the
@@ -178,5 +200,6 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
 - The container runs as root (the dataset is root-owned); a non-root user is a to-do with the homelab side.
 - No authentication on the server itself: the SSO guards only the player's URL; the container port (the door the
   CLI uses) answers every read and write to anything on the home network, by design. Path checks are the only
-  authorisation. Who reaches it is in the homelab README; the plan for a token, a localhost default bind and an
+  authorisation. The one exception is `/drop/`, which asks for a device token on every request; `POST /api/devices`,
+  which mints one, is as open as the rest. Who reaches it is in the homelab README; the plan for a token, a localhost default bind and an
   origin check on writes is in the 2026-10-17 comment on #10.

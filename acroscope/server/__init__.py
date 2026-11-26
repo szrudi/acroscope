@@ -4,6 +4,7 @@ uses these endpoints (remote.Remote). Writes go through the same functions as th
 
 The data dir is only walked in the background (jobs: a scan at start, every SCAN_EVERY seconds, and on request):
 a page open never waits on the Drive mount."""
+import ipaddress
 import json
 import math
 import mimetypes
@@ -14,16 +15,16 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit
 
-from . import jobs
+from . import drop, jobs
 from .. import ingest, share, tricks
 from ..analyse import events, lanes, metrics
 from ..match import manual
 from ..review import moments
 from ..sources import blackbox, osdprofile, video
 from ..store import db, edits, sessions
-from ..config import BLACKBOX_DIR, CACHE_DIR, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
+from ..config import BLACKBOX_DIR, CACHE_DIR, DROP_URL, SHARE_PUSH, SHARE_URL, VIDEOS_DIR
 
 
 STATIC = Path(__file__).parent.parent / "static"
@@ -113,20 +114,66 @@ def _under(root: Path, *parts: str) -> Path:
     return p
 
 
+def drop_host(url: str) -> tuple[str, int | None] | None:
+    """The drop's own host, from `ACROSCOPE_DROP_URL` (http or https, the scheme may be left out): (name, None) for a
+    host name, which is the drop's on any port; (address, port) for an IP address, which is the drop's on that port
+    only (the server is reached by address too, on a port of its own). None when no host can be read from it."""
+    if "://" in url:
+        if url.partition("://")[0].lower() not in ("http", "https"):
+            return None
+    elif not url.startswith("//") and not re.fullmatch(r"[^/:@\s]+(:[0-9]+)?(/.*)?", url):
+        return None
+    try:
+        u = urlsplit(url if "//" in url else "//" + url)
+        name, port = (u.hostname or "").rstrip("."), u.port
+    except ValueError:                     # a port that is no number, brackets that close nothing
+        return None
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return (name, None) if re.fullmatch(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*", name) else None
+    return name, port or {"http": 80, "https": 443}.get(u.scheme.lower(), 80)
+
+
+def _asked(host: str) -> tuple[str, str]:
+    """(name, port) of a Host, read as a proxy reads one to pick its site: a port split off where there is one (after
+    a name with no colon, or after brackets), then brackets taken off whatever they are round, the case and a final
+    dot left out."""
+    host = host.strip().lower()
+    m = re.fullmatch(r"(\[[^\]]*\]|[^:]*):([^:\]]*)", host)
+    name, port = m.groups() if m else (host, "")
+    return name.strip("[]").rstrip("."), port
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):  # quieter: only non-200s
-        if args and str(args[1]) not in ("200", "206", "304"):
-            super().log_message(fmt, *args)
+    def handle(self):
+        """A client that went away is no error: one that resets a connection it kept open and no longer wants (a phone
+        does, to an idle one), or leaves in the middle of an answer. There is nobody to answer and nothing to log."""
+        try:
+            super().handle()
+        except ConnectionError:
+            pass
+
+    def log_request(self, code="-", size="-"):  # quieter: what went well is not logged
+        if str(getattr(code, "value", code)) not in ("200", "201", "204", "206", "304"):     # 201, 204: the drop's, one per piece
+            super().log_request(code, size)
+
+    def log_message(self, fmt, *args):
+        # by its start: a request line is up to 64 kB of anybody's making, and every refusal is logged
+        super().log_message(fmt, *(a[:300] + "..." if isinstance(a, str) and len(a) > 300 else a for a in args))
 
     # ---- helpers
-    def _json(self, obj, code=200):
+    def _json(self, obj, code=200, close=False):
+        """`close`: the connection ends with this answer (the request's body was not read)."""
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if close:
+            self.send_header("Connection", "close")
         self.end_headers()
         if self.command != "HEAD":           # a HEAD with a body corrupts the next request on a keep-alive connection
             self.wfile.write(body)
@@ -197,10 +244,63 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or b"{}")
 
     # ---- routes
+    def _drop(self) -> bool:
+        """A request under /drop/ (the door a paired device uploads through, #75) goes to its own routes, which ask
+        for the device's token; True when the request was answered here.
+
+        A path with a . or .. segment is nowhere, on every route: a proxy that lets /drop/ past its login matches the
+        path decoded and with its dots resolved, and sends it on as written, so /api/sessions/../../drop/x would pass
+        as the drop's and be routed here as the API's. The dots are looked for as the proxy sees them: in everything
+        sent before the query, decoded as a whole. An encoded slash hides none (/api/sessions/x%2F..%2F..%2F..%2Fdrop),
+        and neither does a ; or a # that a URL parser cuts off as a parameter or a fragment
+        (/api/sessions;%2F..%2F..%2Fdrop).
+
+        Where the drop has a host of its own, a request under that host's name gets the drop and nothing else: that
+        host is then no way to the API even where the proxy and this server read a path differently. It holds as
+        long as the proxy hands the name on, as the Host or beside it (X-Forwarded-Host)."""
+        if any(seg in (".", "..") for seg in unquote(self.path.partition("?")[0]).split("/")):
+            self._json({"error": "not found"}, 404, close=True)
+            return True
+        parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/") if p]
+        if parts[:1] == ["drop"]:
+            drop.handle(self, parts[1:])
+            return True
+        if self._at_the_drops_host():
+            self._json({"error": "not found"}, 404, close=True)
+            return True
+        return False
+
+    def _at_the_drops_host(self) -> bool:
+        """The request names the drop's own host (`ACROSCOPE_DROP_URL`): in its Host, in the name a proxy says it was
+        asked under, or in a request target in absolute form. A host name by the name alone: a port says nothing about
+        the site a proxy picked. An address with its port: the server is reached by address on its own. An address
+        that names no host (serve does not start with one) leaves nothing but the drop."""
+        if not DROP_URL:
+            return False
+        own = drop_host(DROP_URL)
+        if own is None:
+            return True
+        asked = [self.headers.get("Host") or ""] + [name for line in self.headers.get_all("X-Forwarded-Host") or [] for name in line.split(",")]
+        if self.path.lower().startswith(("http://", "https://")):
+            asked.append(urlsplit(self.path).netloc.rpartition("@")[2])
+        name, port = own
+        for a, p in map(_asked, asked):
+            if a == name and (port is None or p == str(port) or (p == "" and port in (80, 443))):
+                return True
+        return False
+
     def do_HEAD(self):
         self.do_GET()
 
+    def do_PATCH(self):                         # only the drop has these two
+        if not self._drop():
+            self.send_error(501, f"Unsupported method ({self.command!r})")       # as for any method the server has not
+
+    do_OPTIONS = do_PATCH
+
     def do_GET(self):
+        if self._drop():
+            return
         u = urlparse(self.path)
         parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -233,6 +333,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(sessions.all_sessions())             # the database: never the Drive mount
             if parts == ["api", "inbox"]:
                 return self._json(ingest.list_inbox())
+            if parts == ["api", "devices"]:                             # what may upload through the drop; never a token
+                return self._json({"devices": sessions.store().devices(), "url": DROP_URL or None})
             if parts[:2] == ["api", "cli"] and len(parts) == 3:
                 j = jobs.job(parts[2])
                 return self._json(j if j else {"error": f"no job {parts[2]} (finished and fetched, or the server restarted)"}, 200 if j else 404)
@@ -332,6 +434,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def do_POST(self):
+        if self._drop():
+            return
         u = urlparse(self.path)
         parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
         q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}   # an empty etag= is a stale page, not none
@@ -349,6 +453,11 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:2] == ["api", "inbox"] and len(parts) == 4 and parts[3] == "retry":
                 sessions.store().set_batch(parts[2], status="pending", error=None)
                 return self._json({"ok": True})
+            if parts == ["api", "devices"]:                             # pair a device: its token is in this answer only
+                b = self._body()
+                if not isinstance(b, dict):
+                    return self._json({"error": "a device has a name: {name}"}, 400)
+                return self._json(sessions.store().add_device(b.get("name")))
             if parts == ["api", "tags"]:
                 b = self._body()
                 return self._json(sessions.store().set_tag(b["name"], b["category"], b.get("color")))
@@ -461,6 +570,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def do_DELETE(self):
+        if self._drop():
+            return
         u = urlparse(self.path)
         parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -478,6 +589,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"removed": n})
             if parts[:2] == ["api", "tags"] and len(parts) == 3:
                 return self._json({"removed": sessions.store().delete_tag(parts[2])})
+            if parts[:2] == ["api", "devices"] and len(parts) == 3:    # revoked: its token stops, what it had staged goes
+                return self._json({"revoked": ingest.drop.revoke(parts[2])})
             if parts == ["api", "tricks", "layer"]:
                 return self._json({"removed": sessions.store().delete_setting(tricks.LAYER_KEY)})
             if parts == ["api", "osd", "doc"]:
@@ -504,6 +617,8 @@ def layer_from_store():
 
 
 def serve(host="0.0.0.0", port=8070, warm: bool = True):
+    if DROP_URL and drop_host(DROP_URL) is None:
+        sys.exit(f"acroscope serve: ACROSCOPE_DROP_URL={DROP_URL!r} names no host (http(s)://<host>[:port], the drop's own)")
     if sessions.remote():
         sys.exit("acroscope serve: unset ACROSCOPE_URL, the server owns the database itself")
     tricks.LAYER_SOURCE = layer_from_store           # the OSD's profiles are read by the CLI children (cli.main), never here

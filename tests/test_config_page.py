@@ -139,10 +139,10 @@ class ConfigPageTest(unittest.TestCase):
 
     def test_tabs_and_the_way_in(self):
         page = self.open()
-        self.assertEqual(page.eval_on_selector_all("#tabs span", "els => els.map(e => e.dataset.tab)"), ["profile", "drones", "tricks", "settings", "tags", "shares", "osd"])
+        self.assertEqual(page.eval_on_selector_all("#tabs span", "els => els.map(e => e.dataset.tab)"), ["profile", "drones", "tricks", "settings", "tags", "shares", "osd", "devices"])
         self.assertEqual(page.get_attribute("section.on", "data-panel"), "profile")
         self.assertIn("15 of 15 tricks on", page.text_content("#status"))
-        for t in ("drones", "tricks", "settings", "tags", "osd", "shares"):
+        for t in ("drones", "tricks", "settings", "tags", "osd", "devices", "shares"):
             page.click(f"#tabs [data-tab={t}]")
             self.assertEqual(page.get_attribute("section.on", "data-panel"), t)
             if t == "osd":
@@ -170,10 +170,11 @@ class ConfigPageTest(unittest.TestCase):
         page.click("#tabs [data-tab=drones]")
         self.assertFalse(page.evaluate("() => document.documentElement.scrollWidth > innerWidth"))
         self.assertTrue(page.is_visible("#crafts [data-craft=OttO]"))
-        # seven tabs side by side on the phone: none wraps or spills (the labels shrink)
+        # eight tabs side by side on the phone: none wraps or spills (the labels shrink)
         boxes = page.eval_on_selector_all("#tabs span", "els => els.map(e => { const r = e.getBoundingClientRect(); return [r.left, r.right, r.height, e.scrollWidth <= e.clientWidth + 1]; })")
         self.assertTrue(all(b[3] for b in boxes), boxes)
         self.assertTrue(all(a[1] <= b[0] + 0.5 for a, b in zip(boxes, boxes[1:])), boxes)
+        self.assertEqual(len(boxes), 8)
         page.click("#tabs [data-tab=osd]")
         page.wait_for_selector("#oDump")
         self.assertFalse(page.evaluate("() => document.documentElement.scrollWidth > innerWidth"))
@@ -380,6 +381,123 @@ class ConfigPageTest(unittest.TestCase):
         page.wait_for_function("() => [...document.querySelectorAll('.shrow .st')].map(e => e.textContent).sort().join() === 'expired,revoked'")
         self.assertEqual(db.share("u" * 24)["state"], "revoked")
         self.assertIsNone(page.query_selector(".shrow [data-down]"))
+
+    # ---- devices --------------------------------------------------------------------------------------------------
+
+    def drop_status(self, token: str) -> int:
+        """What the drop's door answers to a token."""
+        try:
+            return urllib.request.urlopen(urllib.request.Request(self.url + "/drop/device", headers={"Authorization": "Bearer " + token})).status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def test_devices_tab(self):
+        """A device is paired here (#75): its code is shown once, it holds the server's address and a token the
+        drop takes; the list says what is paired and when it was last seen; a revoke stops the token."""
+        from urllib.parse import parse_qs, urlparse
+        devices = lambda: json.loads(urllib.request.urlopen(self.url + "/api/devices").read())["devices"]
+        before = devices()                                                  # what other tests paired (and revoked) stays listed
+        page = self.open("/config#devices")
+        page.wait_for_selector("#dvAdd")
+        page.wait_for_function("(n) => document.querySelector('#dvAt').textContent && document.querySelectorAll('.shrow[data-device]').length === n", arg=len(before))
+        if not before:
+            self.assertIn("no device paired", page.text_content("#dvList"))
+        page.click("#dvAdd")                                                # no name: refused, and nothing is made
+        page.wait_for_selector("#err.on")
+        self.assertIn("name", page.text_content("#err"))
+        self.assertEqual(devices(), before)
+        self.assertIsNone(page.query_selector("#dvLink"))
+        page.fill("#dvName", "field <b>phone</b>")
+        page.click("#dvAdd")
+        page.wait_for_selector("#dvLink")
+        self.assertFalse(page.is_visible("#err"))                           # the earlier refusal is not left standing
+        link = page.input_value("#dvLink")
+        self.assertTrue(link.startswith("acroscope://pair?"), link)
+        q = parse_qs(urlparse(link).query)
+        self.assertEqual((q["url"], set(q)), ([self.url], {"url", "token"}))   # where the app finds the server, and its token
+        token = q["token"][0]
+        self.assertEqual(page.get_attribute("#dvOpen", "href"), link)
+        self.assertEqual(page.input_value("#dvName"), "")
+        [d] = [x for x in devices() if x not in before]
+        self.assertEqual((d["name"], d["last_seen_at"], d["revoked_at"]), ("field <b>phone</b>", None, None))
+        def row(p, has="") -> list:
+            """The device's row as the page shows it, once the list is loaded (and says `has`)."""
+            p.wait_for_function("([id, has]) => { const e = document.querySelector(`.shrow[data-device=\"${id}\"]`); return e && e.textContent.includes(has); }",
+                                arg=[d["id"], has])
+            return p.eval_on_selector(f'.shrow[data-device="{d["id"]}"]', "e => [e.querySelector('.st').textContent, e.querySelector('.what b').textContent, e.querySelector('.what .dim').textContent]")
+        self.assertEqual(row(page)[:2], ["paired", "field <b>phone</b>"])    # the name as text, not as markup
+        self.assertIn("not seen yet", row(page)[2])
+        self.assertIn("field <b>phone</b> is paired", page.text_content("#dvCode"))
+        self.assertEqual(self.drop_status(token), 200)                      # the server holds it: the token opens the drop
+        page.click("#tabs [data-tab=tags]")                                 # another tab and back: the code is still to be read
+        page.click("#tabs [data-tab=devices]")
+        page.wait_for_selector("#dvLink")
+        self.assertEqual(page.input_value("#dvLink"), link)
+        today = page.evaluate("() => new Date().toLocaleDateString()")
+        self.assertIn(f"last seen {today}", row(page, "last seen")[2])      # and the device was seen meanwhile
+        again = self.open("/config#devices")                                # the page loaded again: the code was said once
+        again.wait_for_selector(f'.shrow[data-device="{d["id"]}"]')
+        self.assertIsNone(again.query_selector("#dvLink"))
+        self.assertNotIn(token, again.content())
+        self.assertEqual(row(again)[0], "paired")
+        again.once("dialog", lambda dlg: dlg.dismiss())                     # asked first: a no leaves it paired
+        again.click(f'[data-revoke="{d["id"]}"]')
+        self.assertEqual(self.drop_status(token), 200)
+        again.once("dialog", lambda dlg: dlg.accept())
+        again.click(f'[data-revoke="{d["id"]}"]')
+        self.assertEqual(row(again, "revoked")[0], "revoked")
+        self.assertEqual(self.drop_status(token), 401)
+        self.assertTrue(next(x for x in devices() if x["id"] == d["id"])["revoked_at"])
+        self.assertIsNone(again.query_selector(f'.shrow[data-device="{d["id"]}"] [data-revoke]'))
+        self.assertIn(f"revoked {today}", row(again)[2])
+        # the code box goes when its device is revoked on the page that still shows it
+        page.fill("#dvName", "second phone")
+        page.click("#dvAdd")
+        page.wait_for_function("() => document.querySelector('#dvCode').textContent.includes('second phone')")
+        second = [x for x in devices() if x["name"] == "second phone"][-1]
+        page.wait_for_function("(n) => document.querySelectorAll('.shrow[data-device]').length === n", arg=len(before) + 2)
+        self.assertEqual(page.eval_on_selector_all(".shrow[data-device]", "els => els.map(e => e.dataset.device)")[:2], [second["id"], d["id"]])   # the newest first
+        page.once("dialog", lambda dlg: dlg.accept())
+        page.click(f'[data-revoke="{second["id"]}"]')
+        page.wait_for_function("() => !document.querySelector('#dvLink')")
+        self.assertEqual([x["revoked_at"] is not None for x in devices() if x["id"] in (d["id"], second["id"])], [True, True])
+
+    def test_the_pairing_code_names_the_drops_own_address(self):
+        """A drop on a host of its own (the server says so): the code sends the app there, not to this page's host."""
+        page = self.open("/config#tags")
+
+        def with_address(route):
+            answer = route.fetch()
+            route.fulfill(response=answer, json={**answer.json(), "url": "https://drop.example.org"})
+        page.route("**/api/devices", lambda route: with_address(route) if route.request.method == "GET" else route.continue_())
+        page.click("#tabs [data-tab=devices]")
+        page.wait_for_function("() => document.querySelector('#dvAt') && document.querySelector('#dvAt').textContent.includes('drop.example.org')")
+        page.fill("#dvName", "phone for the drop's host")
+        page.click("#dvAdd")
+        page.wait_for_selector("#dvLink")
+        from urllib.parse import parse_qs, urlparse
+        self.assertEqual(parse_qs(urlparse(page.input_value("#dvLink")).query)["url"], ["https://drop.example.org"])
+        plain = self.open("/config#devices")                                 # and where the server names none, this page's own
+        plain.wait_for_selector(".shrow[data-device]")
+        self.assertIn(self.url.split("//")[1], plain.text_content("#dvAt"))
+        for d in json.loads(urllib.request.urlopen(self.url + "/api/devices").read())["devices"]:
+            urllib.request.urlopen(urllib.request.Request(f"{self.url}/api/devices/{d['id']}", method="DELETE"))
+
+    def test_devices_tab_on_the_phone(self):
+        page = self.open("/config#devices", size=PHONE)
+        page.wait_for_selector("#dvAdd")
+        page.fill("#dvName", "a phone with quite a long name, as long as a name may be here")
+        page.click("#dvAdd")
+        page.wait_for_selector("#dvLink")
+        page.wait_for_selector(".shrow[data-device]")
+        self.assertFalse(page.evaluate("() => document.documentElement.scrollWidth > innerWidth"))   # the code and the row stay on the screen
+        box = page.eval_on_selector("#dvLink", "e => { const r = e.getBoundingClientRect(); return [r.left, r.right, r.width]; }")
+        self.assertGreaterEqual(box[0], 0)
+        self.assertLessEqual(box[1], 412)
+        self.assertGreater(box[2], 100)
+        self.assertEqual(page.get_attribute("#dvName", "maxlength"), "60")
+        for d in json.loads(urllib.request.urlopen(self.url + "/api/devices").read())["devices"]:
+            urllib.request.urlopen(urllib.request.Request(f"{self.url}/api/devices/{d['id']}", method="DELETE"))
 
     # ---- osd -----------------------------------------------------------------------------------------------------
 

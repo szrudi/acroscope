@@ -34,7 +34,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import clock, encode, intake
+from . import clock, drop, encode, intake
 from ..sources import blackbox, osd, video
 from ..store import sessions
 from ..config import BLACKBOX_DIR, DATA_DIR, VIDEOS_DIR
