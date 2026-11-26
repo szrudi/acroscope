@@ -13,8 +13,8 @@ android {
         applicationId = "org.acroscope.companion"
         minSdk = 33
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
     }
     signingConfigs {
         // the debug key, in the repo on purpose: a debug build from any machine or from CI then updates the one on
