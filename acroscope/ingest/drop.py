@@ -16,6 +16,7 @@ database already has is refused.
 
 One process stages (the server); `expire` also runs from housekeeping, on batches nothing has touched for days.
 """
+import errno
 import json
 import os
 import re
@@ -27,7 +28,7 @@ from pathlib import Path
 from . import intake
 from .. import ingest
 from ..store import sessions
-from ..config import DROP_DIR, DROP_MIN_FREE, DROP_QUOTA
+from ..config import CACHE_DIR, DATA_DIR, DROP_DIR, DROP_MIN_FREE, DROP_QUOTA
 
 
 BATCH_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[a-z0-9]{1,16}")
@@ -36,6 +37,7 @@ MAX_FILE = 4 << 30         # bytes in one file: the largest a FAT32 card holds, 
 MAX_FILES = 500            # files in one batch
 MAX_BATCHES = 20           # batches one device has staged at a time
 STALE_DAYS = 7             # a staged batch nothing was added to for this long is dropped
+TAKEOVER = 5               # seconds a piece waits for the sender before it to let go of the file
 CHUNK = 1 << 20
 
 
@@ -60,7 +62,7 @@ class Busy(Refused):
 
 
 _meta = threading.Lock()         # held for every look at and change to what is declared
-_busy: set[Path] = set()         # the staged files a piece is arriving on
+_busy: dict[Path, object] = {}   # the staged files a piece is arriving on, each with the way to stop its sender (or None)
 
 
 # ---- names -------------------------------------------------------------------------------------------------------
@@ -72,8 +74,16 @@ def batch_ok(batch) -> str:
 
 
 def name_ok(name) -> str:
-    """A file a batch may hold: what ingest takes (a clip, a log, the sidecar), under a plain name."""
-    if not isinstance(name, str) or len(name) > 200 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+    """A file a batch may hold: what ingest takes (a clip, a log, the sidecar), under a plain name. One a file system
+    can hold (200 bytes, as it counts them; half a surrogate pair, which JSON can spell, is no text at all) and no
+    command takes for an option."""
+    if not isinstance(name, str) or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError(f"{name!r}: not a plain file name")
+    try:
+        long = len(name.encode()) > 200
+    except UnicodeEncodeError:
+        long = True
+    if long or name.startswith("-"):
         raise ValueError(f"{name!r}: not a plain file name")
     intake.plain_name(name)
     if name.startswith(".") or not (name == "import.json" or intake.CLIP_RE.match(name) or name.lower().endswith(".bbl")):
@@ -98,11 +108,13 @@ def _whole(n) -> bool:
 # ---- what is staged ----------------------------------------------------------------------------------------------
 
 def _lengths(d: Path) -> dict:
-    """{file name: declared length} of a staged batch."""
+    """{file name: declared length} of a staged batch. A list that is not there or cannot be read (cut short by a
+    crash) declares nothing: its files are sent again, and no other batch is held up by it."""
     try:
-        return json.loads((d / "lengths.json").read_text())
-    except FileNotFoundError:
+        lengths = json.loads((d / "lengths.json").read_text())
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         return {}
+    return lengths if isinstance(lengths, dict) and all(_whole(n) and n <= MAX_FILE for n in lengths.values()) else {}
 
 
 def _save_lengths(d: Path, lengths: dict) -> None:
@@ -115,7 +127,13 @@ def _all_staged() -> dict[Path, dict]:
     """{staging dir: its declared lengths}, every batch of every device."""
     if not DROP_DIR.is_dir():
         return {}
-    return {d: _lengths(d) for dev in sorted(DROP_DIR.iterdir()) if dev.is_dir() for d in sorted(dev.iterdir()) if d.is_dir()}
+    staged = {}
+    for dev in sorted(DROP_DIR.iterdir()):
+        try:
+            staged.update((d, _lengths(d)) for d in sorted(dev.iterdir()) if d.is_dir())
+        except (FileNotFoundError, NotADirectoryError):     # a device's folder that went with its last batch while this looked
+            pass
+    return staged
 
 
 def _arrived(d: Path, name: str) -> int:
@@ -133,9 +151,14 @@ def usage() -> dict:
     return {"quota": DROP_QUOTA, "staged": sum(sum(v.values()) for v in _all_staged().values()), "max_file": MAX_FILE}
 
 
-def _taken(batch: str) -> bool:
-    """A batch by that id is in the inbox or known to the database."""
-    return os.path.lexists(ingest.INBOX_DIR / batch) or sessions.store().batch(batch) is not None
+def _taken(batch: str, device: str) -> bool:
+    """A batch by that id was handed in: it is in the inbox, or the database knows it. Not so the device's own batch
+    whose commit was cut short before the move: the database has it, the inbox never did, and its device may go on
+    with it (the app sends the sidecar anew before every commit)."""
+    if os.path.lexists(ingest.INBOX_DIR / batch):       # a link there too: followed or not, the name is not free
+        return True
+    row = sessions.store().batch(batch)
+    return row is not None and not (row.get("device") == device and row["status"] == "pending")
 
 
 # ---- a file ------------------------------------------------------------------------------------------------------
@@ -151,12 +174,14 @@ def create(device: str, batch: str, name: str, length: int) -> int:
     with _meta:
         staged = _all_staged()
         mine = staged.get(d, {})
+        if _taken(batch, device):
+            raise Conflict(f"{batch}: a batch by that id was already handed in")
         if name in mine:
             if mine[name] != length:
                 raise Conflict(f"{name}: already declared with {mine[name]} bytes; take it back first to send another file")
+            (d / "files").mkdir(parents=True, exist_ok=True)       # there again, should its bytes have gone from under the name
+            os.close(os.open(d / "files" / name, os.O_WRONLY | os.O_CREAT, 0o644))
             return _arrived(d, name)
-        if _taken(batch):
-            raise Conflict(f"{batch}: a batch by that id was already handed in")
         if len(mine) >= MAX_FILES:
             raise Full(f"{batch}: a batch holds {MAX_FILES} files")
         if d not in staged and sum(1 for x in staged if x.parent == d.parent) >= MAX_BATCHES:
@@ -183,26 +208,41 @@ def offset(device: str, batch: str, name: str) -> tuple[int, int]:
     return _arrived(d, name), length
 
 
-def append(device: str, batch: str, name: str, at: int, stream, n: int) -> int:
+def append(device: str, batch: str, name: str, at: int, stream, n: int, stop=None) -> int:
     """`n` bytes from `stream` (a buffered reader: its read1 gives what has arrived) onto a staged file, which must
     end at `at`. Returns where it ends now: short of at + n when the stream ended early. What came is kept either
-    way, also when the stream breaks or goes silent and raises."""
+    way, also when the stream breaks or goes silent and raises.
+
+    `stop` ends this piece from outside: called from another thread, it makes `stream` end. A piece that fits a file
+    another one is still arriving on is its device come back (only that device reaches the file, and it knows where
+    the file ends): the sender before it is stopped and this piece goes on from there, instead of waiting until a
+    connection that died without a word is given up."""
     d, name = _stage(device, batch), name_ok(name)
     if not _whole(at) or not _whole(n):
         raise ValueError("an offset and a size are whole numbers of bytes")
     f = d / "files" / name
-    with _meta:
-        length = _lengths(d).get(name)
-        if length is None:
-            raise FileNotFoundError(f"{batch}/{name}: not declared")
-        if f in _busy:
-            raise Busy(f"{name}: another upload is writing it")
-        here = _arrived(d, name)
-        if at != here:
-            raise Conflict(f"{name}: {here} bytes are here, not {at}")
-        if at + n > length:
-            raise TooLarge(f"{name}: {at + n} bytes are more than the {length} declared")
-        _busy.add(f)
+    patience = time.monotonic() + TAKEOVER
+    while True:
+        with _meta:
+            length = _lengths(d).get(name)
+            if length is None:
+                raise FileNotFoundError(f"{batch}/{name}: not declared")
+            here = _arrived(d, name)
+            if at != here:
+                raise Conflict(f"{name}: {here} bytes are here, not {at}")
+            if at + n > length:
+                raise TooLarge(f"{name}: {at + n} bytes are more than the {length} declared")
+            if f not in _busy:
+                _busy[f] = stop
+                break
+            before = _busy[f]
+            if before is None or time.monotonic() >= patience:
+                raise Busy(f"{name}: another upload is writing it")
+            try:
+                before()                                # under the lock: it still holds the file, so this is its sender
+            except OSError:
+                pass
+        time.sleep(0.02)
     try:
         left = n
         with open(f, "r+b", buffering=0) as out:        # unbuffered: what arrived is in the file, and offset() says so
@@ -212,14 +252,19 @@ def append(device: str, batch: str, name: str, at: int, stream, n: int) -> int:
                     piece = stream.read1(min(CHUNK, left))
                     if not piece:
                         break
-                    out.write(piece)
+                    rest = memoryview(piece)
+                    while rest:                         # a write straight to the file may take part of it and say so
+                        took = out.write(rest)
+                        if not took:
+                            raise OSError(errno.ENOSPC, "the disk took nothing of a piece")
+                        rest = rest[took:]
                     left -= len(piece)
             finally:
                 os.fsync(out.fileno())
         return at + n - left
     finally:
         with _meta:
-            _busy.discard(f)
+            _busy.pop(f, None)
 
 
 def terminate(device: str, batch: str, name: str) -> None:
@@ -263,8 +308,24 @@ def _manifest(man) -> dict:
     return files
 
 
+# an absolute path in quotes (Python quotes one with an apostrophe in it with "), and its last part
+_QUOTED = re.compile(r"""'/[^'\n]*/([^/'\n]*)'|""" + r'"/[^"\n]*/([^/"\n]*)"')
+# the folders of one that stands bare, from where a word starts: after a space, a quote, a bracket or a separator
+_FOLDERS = re.compile(r"""(?<![^\s'"(\[=,|:])(?:~?/)?(?:[^/\s'"|:,()\[\]]+/)+""")
+
+
 def _public(b: dict) -> dict:
-    return {k: v for k, v in b.items() if k != "device"}
+    """A batch as its device is told of it: not who handed it in, and what went wrong without where. Ingest keeps the
+    system's own words for a failure and the inbox shows them whole; they name the folders the server keeps things
+    in. Those come out, the file's own name stays, and it is kept short."""
+    told = {k: v for k, v in b.items() if k != "device"}
+    if told.get("error"):
+        said = _QUOTED.sub(lambda m: m[0][0] + (m[1] if m[1] is not None else m[2]) + m[0][0], str(told["error"]))
+        for root in sorted({str(DATA_DIR), str(CACHE_DIR)}, key=len, reverse=True):     # by name: a space may be in one
+            said = said.replace(root + "/", "").replace(root, "")
+        said = _FOLDERS.sub("", said)
+        told["error"] = said if len(said) <= 300 else said[:300] + "..."
+    return told
 
 
 def _status(batch: str) -> dict:
@@ -298,9 +359,9 @@ def commit(device: str, batch: str, manifest: dict) -> dict:
             if size != here:
                 raise ValueError(f"{name}: {here} bytes are here, the manifest says {size}")
         target = ingest.INBOX_DIR / batch
-        mine_unmoved = row is not None and row.get("device") == device and row["status"] == "pending"
-        if os.path.lexists(target) or (row is not None and not mine_unmoved):
+        if _taken(batch, device):
             raise Conflict(f"{batch}: a batch by that id was already handed in")
+        _save_lengths(d, {name: lengths[name] for name in want})     # first: whatever fails next, nothing gone is still declared
         for f in files.iterdir():
             if f.name not in want:
                 f.unlink()
@@ -361,8 +422,27 @@ def expire(days: float = STALE_DAYS, now: float | None = None, log=print) -> lis
 
 
 def forget(device: str) -> None:
-    """Everything a device has staged, gone."""
-    shutil.rmtree(DROP_DIR / device_ok(device), ignore_errors=True)
+    """Everything a device has staged, gone. Under the lock a commit holds, so not from under a batch on its way into
+    the inbox; and the pieces arriving for the device are stopped first, as a piece come back stops the one before
+    it. One that cannot be stopped is waited for as long as a takeover waits.
+
+    That is so in the server. From another process (the CLI on the server's own host) the lock and the senders are
+    not this one's: the token stops at once, the folder goes as it stands."""
+    root = DROP_DIR / device_ok(device)
+    patience = time.monotonic() + TAKEOVER
+    while True:
+        with _meta:
+            arriving = [stop for f, stop in _busy.items() if root in f.parents]
+            if not arriving or time.monotonic() >= patience:
+                shutil.rmtree(root, ignore_errors=True)
+                return
+            for stop in arriving:
+                try:
+                    if stop is not None:
+                        stop()
+                except OSError:
+                    pass
+        time.sleep(0.02)
 
 
 def revoke(device: str) -> bool:

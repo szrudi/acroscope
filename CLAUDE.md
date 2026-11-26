@@ -46,17 +46,24 @@ architecture, the data layout, the CLI and the API). This file is for the sessio
   companion app) uploads through, tus 1.0.0 plus a commit; the README's *The drop* has the protocol and
   `tests/drop_client.py` the device's side. Its rules, each pinned in `tests/test_drop.py` or `tests/test_drop_api.py`:
   every path under `/drop/` asks for the device's token first (401 otherwise; the rest of the API is as open as it was);
-  a path with a `.` or `..` segment (in the whole path decoded, so behind a `%2F` too) is a 404 on every route
+  a path with a `.` or `..` segment (in everything sent before the query, decoded: behind a `%2F`, a `;` or a `#` too) is a 404 on every route
   (`Handler._drop`), which is what keeps a proxy's
   login-free `/drop/*` rule from being a way to the API (the proxy matches the resolved path and forwards the written one);
   files are staged in `drop/<device>/<batch>/files/`, root's own and never inside `inbox/`; the commit is one rename
   with `.done` already written, onto nothing (a folder or a link by that name in the inbox refuses it); names go through
   `drop.batch_ok`/`name_ok`/`device_ok` before any path is built; a batch id is used once, since the app deletes its
-  copy when the server reports that id done; a device sees and retries only its own batches (`batches.device`). The
+  copy when the server reports that id done; a device sees and retries only its own batches (`batches.device`); a
+  body's end is known before any of it is read (a chunked one is refused, the connection ends); an answer carries the
+  drop's own words, never the system's (an `OSError` names the server's paths: those go to the log; a batch's
+  `error` from ingest is told without its folders, `drop._public`). The
   server's part runs in request threads (the copying is I/O); nothing there decodes or probes what arrived. Tokens are
   in the `devices` table as SHA-256 hashes: `db.add_device` returns the token once, nothing else may print or store it.
-  `ACROSCOPE_DROP_URL` is the drop's own address when it has a host of its own (it goes into the pairing code); like
-  `ACROSCOPE_SHARE_URL`, it and the vhost behind it are homelab settings (never in this repo).
+  `ACROSCOPE_DROP_URL` is the drop's own address when it has a host of its own: it goes into the pairing code, and a
+  request that names it (in `Host`, `X-Forwarded-Host` or an absolute-form target; a host name by the name alone,
+  read as loosely as a proxy reads one: any port, case, brackets; an IP address with its port) gets `/drop/` and
+  nothing else (`Handler._at_the_drops_host`, `server.drop_host`), so the proxy and the server need not read a path
+  alike; never the player's name. `serve` refuses a value with no host in it. Like `ACROSCOPE_SHARE_URL`, it and the
+  vhost behind it are homelab settings (never in this repo).
 - The companion app (#75, `android/`, its own README): Kotlin, two Gradle modules. `core` is plain JVM with no Android
   import in it (names and rules mirrored from the server in `Names`, the collector, the batch edits, the upload client
   `DropClient` and its orchestration, and `Msp`/`Blackbox`: the laptop's `bf-blackbox.py` ported with its vectors,

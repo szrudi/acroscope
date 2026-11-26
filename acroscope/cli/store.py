@@ -116,8 +116,9 @@ def cmd_housekeeping(a):
          "trash_emptied": upkeep.cleanup_trash(log=lambda m: print(m, file=sys.stderr)),
          "shares_taken_down": share.cleanup_expired(log=lambda m: print(m, file=sys.stderr)),
          "shares_refreshed": share.refresh_pages(log=lambda m: print(m, file=sys.stderr)),
-         "staged_dropped": ingest.drop.expire(log=lambda m: print(m, file=sys.stderr)),
-         "backup": str(upkeep.backup_db() or "")})
+         "backup": str(upkeep.backup_db() or ""),
+         # after the backup: it reads what devices left behind, and whatever that does to it, the database was copied
+         "staged_dropped": ingest.drop.expire(log=lambda m: print(m, file=sys.stderr))})
 
 
 def add(sp) -> None:

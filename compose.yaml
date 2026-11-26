@@ -23,6 +23,9 @@ services:
       # the drop (#75): where a paired device reaches /drop/ when that has a host of its own (it goes into the pairing
       # code); like the share URL it names the host, so it comes from the stack's environment. Unset: where the player is.
       ACROSCOPE_DROP_URL: ${ACROSCOPE_DROP_URL:-}
+      # bytes all devices together may have staged (unset: 50 GB) and bytes the data dir keeps free of them (unset: 5 GB)
+      ACROSCOPE_DROP_QUOTA: ${ACROSCOPE_DROP_QUOTA:-}
+      ACROSCOPE_DROP_MIN_FREE: ${ACROSCOPE_DROP_MIN_FREE:-}
   shares:
     # the shares dir as a static site (#57), read-only, on :8071: what a public vhost on a domain of its own proxies
     # to (that vhost is the host's, outside this repo). It is the only thing a share's visitor reaches; the acroscope

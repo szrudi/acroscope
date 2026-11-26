@@ -82,21 +82,32 @@ GET    /drop/events                          what the recent sessions were calle
 ```
 
 Every request carries `Authorization: Bearer <token>` (and the tus ones `Tus-Resumable: 1.0.0`); without a valid
-token every path under `/drop/` answers 401. Where a reverse proxy with a login stands in front of the player, the
+token every path under `/drop/` answers 401. A body comes with its `Content-Length`: a chunked one is refused. Where a reverse proxy with a login stands in front of the player, the
 drop needs a way past it (a background upload cannot sign in): a host of its own that serves `/drop/*` and nothing
 else, with `ACROSCOPE_DROP_URL` set to it so the pairing code sends the app there (unset, the code names the address
-the configuration page was opened at). So that such a rule is no way around the login, the server answers 404 to any
-path with a `.` or `..` segment, also one behind an encoded slash, on every route (`/api/sessions/../../drop/x`
-matches a proxy's `/drop/*` with its dots resolved and arrives as written). Until the commit the files are staged under `drop/<device>/<batch>/`,
+the configuration page was opened at). So that such a host is no way around the login, a request under its name is
+served the drop and nothing else. For a host name, the name is what counts, whatever the port: `ACROSCOPE_DROP_URL`
+names a host that is the drop's alone, never the player's. For an IP address, the address and its port count (the server
+is reached by address too, on a port of its own). `serve` does not start when no host can be read from the
+variable. The proxy hands the name on, as the `Host` (Caddy does by itself) or as `X-Forwarded-Host`. A proxy that
+sends a `Host` of its own and takes a client's `X-Forwarded-Host` as it came (Caddy's `trusted_proxies` reaching the
+clients' networks) leaves the choice of name to the client: on the drop's site, do neither. And the server answers
+404 to any path with a `.` or `..` segment on every route, also one behind an encoded slash, a `;` or a `#`
+(`/api/sessions/../../drop/x` matches a proxy's `/drop/*` with its dots resolved and arrives as written). Until the commit the files are staged under `drop/<device>/<batch>/`,
 outside the inbox; the commit checks every file against the manifest, writes `.done` with it and renames the folder to
 `inbox/<batch>/`, so ingest finds exactly what the laptop's push leaves there and nothing half-arrived is ever in
 the inbox. A device is trusted like the push user, no further: a batch is named as the laptop names one
 (`YYYYmmdd-HHMMSS-<suffix>`) and its id is used once, a file is one ingest takes (`VID*.mov`, `*.bbl`, `import.json`)
 under a plain name, the declared sizes count against a quota (`ACROSCOPE_DROP_QUOTA`, 50 GB for all devices together)
-and the room the disk keeps (`ACROSCOPE_DROP_MIN_FREE`, 5 GB), and a device reaches only its own staging. Nothing is
-read back or listed through this door; a device hears about its own batches (status, error, what they became) and
-the recent event names. A piece whose sender goes silent is let go after a minute, and a staged batch nothing was
-added to for 7 days is dropped by the nightly housekeeping. `tests/drop_client.py` is the device's side in sixty lines.
+and the room the disk keeps (`ACROSCOPE_DROP_MIN_FREE`, 5 GB), and a device reaches only its own staging. The quota is
+on what is staged (a committed batch leaves it, and one device can hold all of it); what a device can put on the disk
+in all is bounded by the room kept free. Nothing is
+read back or listed through this door; a device hears about its own batches (status, what went wrong without the
+server's folders in it, what they became) and
+the recent event names. A piece whose sender goes silent is let go after a minute, or as soon as the device is back with the
+next piece for that file (it starts where the file ends: the old sender is stopped and the new one goes on from
+there); a sender that breaks off in a piece is no error, what came is kept. A staged batch nothing was
+added to for 7 days is dropped by the nightly housekeeping. `tests/drop_client.py` is the device's side in plain stdlib.
 
 **The companion app** (`android/`, see its [README](android/README.md)) is the device this door was built for: an
 Android app that collects the DVR clips from the goggles' card and the blackbox log (off the quad over USB, or a

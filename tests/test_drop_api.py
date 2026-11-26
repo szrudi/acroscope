@@ -4,14 +4,17 @@ arrived. The staging rules themselves are in tests/test_drop.py."""
 import base64
 import errno
 import http.client
+import io
 import json
 import os
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -129,9 +132,12 @@ class DropApiTest(unittest.TestCase):
     def test_dots_in_a_path_lead_nowhere(self):
         """A reverse proxy that lets /drop/ past its login matches on the path with its dots resolved, and sends the
         path on as it was written: /api/sessions/../../drop/x would pass as the drop's and be served as the session
-        list. So a path with a . or .. segment, written plainly or percent-encoded, is nowhere, whatever it names."""
+        list. So a path with a . or .. segment, written plainly or percent-encoded, is nowhere, whatever it names.
+        The dots are looked for in the path as it was sent: behind a ; or a # a URL parser would cut off as a
+        parameter or a fragment, the proxy still sees them."""
         sessions_ = self.api("GET", "/api/sessions")
         self.assertEqual(sessions_[0], 200)
+        paired = self.paired()
         for who in (None, self.dev["token"]):
             c = DropClient(self.url, who)
             for method, path in (("GET", "/api/sessions/../../drop/device"), ("GET", "/api/sessions/%2e%2e/%2E%2E/drop/device"),
@@ -140,15 +146,56 @@ class DropApiTest(unittest.TestCase):
                                  ("GET", "/api/sessions/x%2F..%2F..%2F..%2Fdrop%2Fy"), ("GET", "/api/sessions/x%2f%2e%2e%2f..%2F..%2Fdrop"),
                                  ("GET", "/api/sessions%2F..%2F..%2Fdrop%2Fy"), ("GET", "/api/inbox/x%2F."),
                                  ("POST", "/api/scan/../../drop/x"), ("DELETE", "/api/tags/../../drop/x"), ("PATCH", "/api/x/../../drop/x"),
-                                 ("OPTIONS", "/api/x/../../drop/x")):
+                                 ("OPTIONS", "/api/x/../../drop/x"),
+                                 ("GET", "/api/sessions;%2F..%2F..%2Fdrop%2Fy"), ("GET", "/api/sessions;/../../drop/y"), ("GET", "/api/sessions;x=1/../../drop/y"),
+                                 ("POST", "/api/devices;%2F..%2F..%2Fdrop%2Fy"), ("DELETE", "/api/tags/x;%2F..%2F..%2F..%2Fdrop"),
+                                 ("GET", "/api/sessions#/../../drop/y"), ("GET", "/api/sessions%3F/../../drop/y"), ("GET", "/drop/device;/../../api/sessions")):
                 status, h, body = c.request(method, path, b"{}" if method in ("POST", "PATCH") else None)
                 self.assertEqual((status, h.get("connection")), (404, "close"), (who, method, path))
                 self.assertEqual(body, b"" if method == "HEAD" else b'{"error": "not found"}', (who, method, path))
         self.assertEqual(self.api("GET", "/api/sessions"), sessions_)          # a plain path is served as ever
+        self.assertEqual(self.paired(), paired)                                # and nobody was paired by a path that led nowhere
         self.assertEqual(self.c.request("GET", "/drop/device")[0], 200)
-        self.assertEqual(self.api("GET", "/api/session/..hidden")[0], 404)     # dots inside a name are a name (one that is not there)
+        status, h, body = DropClient(self.url, None).request("GET", "/api/session/..hidden")
+        self.assertEqual((status, h.get("connection")), (404, None))           # dots inside a name are a name: one that is not there,
+        self.assertIn("..hidden", json.loads(body)["error"])                   # as the route itself says
+        self.assertEqual(self.api("GET", "/api/sessions?from=/../x"), sessions_)   # and the query is no path
         self.assertEqual(self.api("DELETE", "/api/tags/deg%2Fs"), (200, {"removed": False}))   # and a slash inside one is a name too
         self.assertEqual(self.api("GET", "/api/sessions/%252e%252e/x")[0], 200)   # encoded twice: not dots to anyone
+
+    def paired(self) -> list:
+        return [(d["id"], d["revoked_at"]) for d in self.api("GET", "/api/devices")[1]["devices"]]
+
+    def test_the_drops_own_host_serves_the_drop_and_nothing_else(self):
+        """Where the drop has a host of its own (`ACROSCOPE_DROP_URL`), a request that arrives under that host's name
+        gets the drop and nothing else, however its path is spelled: the proxy in front and this server then need not
+        read a path alike for that host to be no way to the API."""
+        spare = self.pair("a phone nobody uses")                               # one a slip here may revoke
+        paired = self.paired()
+        nobody = DropClient(self.url, None)
+        # the name as a proxy reads a Host to pick its site: whatever the case, the port, a final dot, and brackets
+        # round it, which a proxy takes off unseen
+        names = [{"Host": host} for host in ("drop.example.org", "DROP.example.org", "drop.example.org:443", "drop.example.org.", "drop.example.org.:8070",
+                                             "drop.example.org:x", "[drop.example.org]", "[drop.example.org]:443", "[drop.example.org", "drop.example.org]",
+                                             " drop.example.org")]
+        # and where the proxy sends its own Host on, the name it was asked under comes beside it
+        names += [{"Host": "upstream:8070", "X-Forwarded-Host": "drop.example.org"}, {"Host": "upstream:8070", "X-Forwarded-Host": "edge.example.org, Drop.Example.Org:443"}]
+        for hdrs in names:
+            for method, path in (("GET", "/api/sessions"), ("HEAD", "/api/sessions"), ("GET", "/"), ("GET", "/config"), ("GET", "/api/devices"),
+                                 ("POST", "/api/devices"), ("DELETE", f"/api/devices/{spare['id']}"), ("GET", "/video/x/y.mp4"),
+                                 ("PATCH", "/api/x"), ("OPTIONS", "/api/x"), ("GET", "/dropped"), ("GET", "/Drop/device")):
+                status, h, body = nobody.request(method, path, b'{"name": "x"}' if method == "POST" else None, hdrs)
+                self.assertEqual((status, h.get("connection")), (404, "close"), (hdrs, method, path))
+                self.assertEqual(body, b"" if method == "HEAD" else b'{"error": "not found"}', (hdrs, method, path))
+            self.assertEqual(self.c.request("GET", "/drop/device", headers=hdrs)[0], 200, hdrs)     # the drop itself,
+            self.assertEqual(nobody.request("GET", "/drop/device", headers=hdrs)[0], 401, hdrs)     # which asks for the token
+        self.assertEqual(self.paired(), paired)                                # nobody was paired or revoked through it
+        # a request target in absolute form names the host it is for, whatever the Host says
+        answer = self.raw(b"GET http://drop.example.org/api/sessions HTTP/1.1\r\nHost: player.example.org\r\n\r\n")
+        self.assertEqual(answer[:12], b"HTTP/1.1 404", answer[:200])
+        for hdrs in ({"Host": "player.example.org"}, {"Host": "drop.example.org.evil.example"}, {"Host": "xdrop.example.org"}, {"Host": ""}, {"Host": "[::1"},
+                     {"Host": "[::1]:8070"}, {"Host": "player.example.org", "X-Forwarded-Host": "player.example.org"}):
+            self.assertEqual(nobody.request("GET", "/api/sessions", headers=hdrs)[0], 200, hdrs)   # under any other name, or none, the server is as it was
 
     def test_the_device_asks_who_it_is(self):
         status, me = self.c.json("GET", "/drop/device")
@@ -283,6 +330,71 @@ class DropApiTest(unittest.TestCase):
         status, h, body = self.c.request("OPTIONS", f"/drop/batches/{b}/files", tus=False)
         self.assertEqual((status, body), (204, b""))
         self.assertEqual((h["tus-version"], h["tus-extension"], h["tus-max-size"], h["tus-resumable"]), ("1.0.0", "creation,termination", str(4 << 30), "1.0.0"))
+
+    def raw(self, request: bytes) -> bytes:
+        """Bytes sent as they are on a connection of their own: everything that comes back until the server ends it."""
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as s:
+            s.sendall(request)
+            out = b""
+            while got := s.recv(65536):
+                out += got
+            return out
+
+    def test_a_body_whose_end_cannot_be_told_ends_the_connection(self):
+        """A chunked body, or a length that is no number: nothing of it is read, the answer says so and the connection
+        ends with it. Otherwise what was left of the body would be taken for the next request."""
+        b = batch_id()
+        self.c.push(b, {"VID00001.mov": CLIP, "import.json": b"{}"})         # handed in: a commit again would be answered 200
+        up = self.c.create(batch_id(), "VID00001.mov", 100)
+        auth = f"Host: x\r\nAuthorization: Bearer {self.dev['token']}\r\nTus-Resumable: 1.0.0\r\n".encode()
+        manifest = json.dumps({"files": {"VID00001.mov": len(CLIP), "import.json": 2}}).encode()
+        chunked = b"%x\r\n%s\r\n0\r\n\r\n" % (len(manifest), manifest)
+        smuggled = b"1 GET /drop/device HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer " + self.dev["token"].encode() + b"\r\n\r\n"
+        piece = b"64\r\n" + b"a" * 100 + b"\r\n0\r\n\r\n"
+        for request, want in ((b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Transfer-Encoding: chunked\r\n\r\n" + chunked, b"411"),
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Transfer-Encoding: chunked\r\n\r\n" + smuggled, b"411"),
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Content-Length: abc\r\n\r\n" + manifest + b"\r\n", b"400"),
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Content-Length: +5\r\n\r\n" + manifest + b"\r\n", b"400"),
+                              (b"PATCH " + up.encode() + b" HTTP/1.1\r\n" + auth + b"Upload-Offset: 0\r\nContent-Type: application/offset+octet-stream\r\n"
+                               b"Content-Length: 100\r\nTransfer-Encoding: chunked\r\n\r\n" + piece, b"411"),
+                              (b"GET /drop/device HTTP/1.1\r\n" + auth + b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n", b"411"),
+                              # a header given twice is read by its first here and by its last elsewhere
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Content-Length: 2\r\nContent-Length: %d\r\n\r\n" % len(manifest) + manifest, b"400"),
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Transfer-Encoding:\r\nTransfer-Encoding: chunked\r\n\r\n" + chunked, b"411"),
+                              (b"GET /drop/device HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", b"401"),
+                              # a header line the parser cannot read (a space before its colon): it and every one after
+                              # it are gone from the headers, which the proxy would not have let through
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Transfer-Encoding : chunked\r\n\r\n" + chunked, b"400"),
+                              (b"POST /drop/batches/%s/commit HTTP/1.1\r\n" % b.encode() + auth + b"Content-Length: %d\xa0\r\n\r\n" % len(manifest) + manifest, b"400")):
+            answer = self.raw(request)
+            self.assertEqual(answer[:12], b"HTTP/1.1 " + want, request[:60])
+            self.assertEqual(answer.count(b"HTTP/1."), 1, answer)            # one request, one answer: nothing of the body was read as another
+            self.assertIn(b"Connection: close", answer.split(b"\r\n\r\n")[0], request[:60])
+        self.assertEqual(self.c.offset(up), 0)                               # and no framing was taken for a file's bytes
+
+    def test_what_a_tus_client_says_besides_the_name(self):
+        """Upload-Metadata is a list of pairs: a tus library sends the file's type along, before or after its name."""
+        b = batch_id()
+        name, kind = base64.b64encode(b"VID00001.mov").decode(), base64.b64encode(b"video/quicktime").decode()
+        for meta in (f"filetype {kind},filename {name}", f"filename {name},filetype {kind}", f"is_draft, filename {name} ,filetype {kind}"):
+            status, h, _ = self.c.request("POST", f"/drop/batches/{b}/files", headers={"Upload-Length": "10", "Upload-Metadata": meta})
+            self.assertEqual((status, h.get("location")), (201, upload_url(b, "VID00001.mov")), meta)
+
+    def test_a_name_that_needs_escaping_goes_up_under_itself(self):
+        """A log saved by hand is called what its pilot called it. The way to it is given percent-encoded and leads to
+        that file, not to a path cut at a # or a name read out of a %41."""
+        b = batch_id()
+        for name in ("dump #2 100%.bbl", "VID%41 a?b.mov", "flight é.bbl"):
+            up = self.c.create(b, name, 4)
+            self.assertEqual(up, upload_url(b, name))
+            self.assertNotIn(" ", up)
+            self.assertEqual(self.c.offset(up), 0)
+            self.assertEqual(self.c.patch(up, 0, b"abcd"), 4)
+            self.assertEqual((self.staged(self.dev, b) / name).read_bytes(), b"abcd")
+        self.assertEqual(sorted(p.name for p in self.staged(self.dev, b).iterdir()), ["VID%41 a?b.mov", "dump #2 100%.bbl", "flight é.bbl"])
+
+    def test_the_patience_and_the_bounds(self):
+        self.assertEqual((routes.STALL, drop.TAKEOVER, routes.DRAIN, routes.DRAIN_WAIT, routes.MAX_JSON), (60, 5, 2 << 20, 2, 1 << 20))
 
     def test_a_refused_piece_does_not_break_the_next_request(self):
         """One connection, kept alive: a piece that is refused ends it, so its unread bytes are never taken for the
@@ -449,6 +561,22 @@ class DropApiTest(unittest.TestCase):
         self.assertIn(b, r.stderr)
         self.assertEqual((self.c.request("HEAD", up)[0], self.c.request("HEAD", keep)[0]), (404, 200))
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a folder whatever its mode")
+    def test_housekeeping_backs_the_database_up_before_it_looks_at_the_drop(self):
+        """The drop's upkeep is the newest step of the nightly run and reads what devices left behind. Should it ever
+        fail, the database was backed up first."""
+        state = self.data / "state"
+        for old in state.glob("acroscope-*.db") if state.is_dir() else ():
+            old.unlink()
+        locked = self.data / "drop" / "d0000000000"
+        locked.mkdir(parents=True)
+        locked.chmod(0)
+        self.addCleanup(lambda: (locked.chmod(0o755), locked.rmdir()))
+        r = self.cli("housekeeping")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("PermissionError", r.stderr)
+        self.assertEqual(len(list(state.glob("acroscope-*.db"))), 1)
+
     # ---- and then ingest ---------------------------------------------------------------------------------------------------
 
     def test_what_a_device_sends_becomes_a_session(self):
@@ -501,6 +629,17 @@ class InProcessTest(unittest.TestCase):
         """A phone that left the Wi-Fi sends no FIN: its connection would hold the file until the kernel gave up.
         After STALL seconds without a byte the piece ends, what came is kept, and the file is free for the resume."""
         b = "20261011-100000-stall"
+        up, s = self.half_sent(b)
+        self.assertEqual(self.c.request("DELETE", up)[0], 423)               # the silent one holds the file
+        s.settimeout(10)
+        answer = s.recv(4096)                                                # until its patience is over
+        self.assertEqual(answer[:12], b"HTTP/1.1 408")                       # and it is told, had it still listened
+        self.assertIn(b"Connection: close", answer)
+        self.assertEqual(self.c.patch(up, 300, b"b" * 700), 1000)            # what came was kept and the file is free
+        self.assertEqual(self.staged(b, "VID00001.mov").read_bytes(), b"a" * 300 + b"b" * 700)
+
+    def half_sent(self, b: str) -> tuple[str, socket.socket]:
+        """A file of 1000 bytes declared and a connection that is inside its first piece: 300 bytes sent, 700 owed."""
         up = self.c.create(b, "VID00001.mov", 1000)
         s = socket.create_connection(self.srv.server_address)
         self.addCleanup(s.close)
@@ -510,17 +649,39 @@ class InProcessTest(unittest.TestCase):
             if self.c.offset(up) == 300:
                 break
             time.sleep(0.02)
-        status, _, _ = self.c.request("PATCH", up, b"b" * 700, {**self.octets, "Upload-Offset": "300"})
-        self.assertEqual(status, 423)                                        # the silent one still holds it
-        deadline = time.time() + 10
-        while time.time() < deadline and status != 204:
-            time.sleep(0.1)
-            status, _, _ = self.c.request("PATCH", up, b"b" * 700, {**self.octets, "Upload-Offset": "300"})
-        self.assertEqual(status, 204)
-        self.assertEqual(self.staged(b, "VID00001.mov").read_bytes(), b"a" * 300 + b"b" * 700)
-        answer = s.recv(4096)
-        self.assertEqual(answer[:12], b"HTTP/1.1 408")                       # and the silent one was told, had it still listened
-        self.assertIn(b"Connection: close", answer)
+        return up, s
+
+    def test_the_device_come_back_takes_its_file_over(self):
+        """The phone is back on the Wi-Fi within the minute and sends the next piece. Its old connection is still
+        counted as silent, not gone (a real phone waited 42 s here, asking 21 times): the new piece ends the old
+        request at once and goes on from the last byte that arrived."""
+        with mock.patch.object(routes, "STALL", 30):
+            up, s = self.half_sent("20261011-100000-back")
+            started = time.monotonic()
+            self.assertEqual(self.c.patch(up, 300, b"b" * 700), 1000)
+            self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(self.staged("20261011-100000-back", "VID00001.mov").read_bytes(), b"a" * 300 + b"b" * 700)
+        s.settimeout(5)
+        self.assertEqual(s.recv(4096), b"")                                  # the old connection was closed under its sender
+
+    def test_a_sender_that_breaks_off_in_a_piece_is_no_error(self):
+        """A connection reset in the middle of a piece is how an upload is interrupted, not a fault of the server's:
+        there is nobody to answer, nothing is logged (a real phone's left a 500 in the log), what came is kept and
+        the next piece goes on from there."""
+        seen, errors = [], []
+        self.srv.handle_error = lambda request, client: errors.append(client)
+        with mock.patch.object(server.Handler, "log_request", lambda h, code="-", size="-": seen.append((h.requestline, str(code)))), \
+                mock.patch.object(server.Handler, "log_message", lambda h, fmt, *args: seen.append((fmt % args, "logged"))):
+            up, s = self.half_sent("20261011-100000-reset")
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            s.close()                                                        # a reset, not a goodbye
+            for _ in range(100):                                             # until the broken request has let go of the file
+                if not drop._busy:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(self.c.patch(up, 300, b"b" * 700), 1000)
+        self.assertEqual(errors, [])
+        self.assertEqual([code for line, code in seen if line.startswith("PATCH") or code == "logged"], ["204"])     # the piece that went on, and no error
 
     def test_a_full_disk_is_said_as_no_room(self):
         """The disk filled up under a piece (the room was there when the file was declared): 507, as when the quota
@@ -530,25 +691,249 @@ class InProcessTest(unittest.TestCase):
         with mock.patch.object(drop, "append", side_effect=OSError(errno.ENOSPC, "No space left on device")):
             status, h, body = self.c.request("PATCH", up, b"0123456789", {**self.octets, "Upload-Offset": "0"})
         self.assertEqual((status, h.get("connection"), json.loads(body)), (507, "close", {"error": "no room on the server's disk"}))
+        # not every disk error is a full disk, and what went wrong inside is the log's to say, not the answer's: the
+        # system's words name where the server keeps things
         for boom, said in ((RuntimeError("something else"), "RuntimeError: something else"),
-                           (OSError(errno.EACCES, "Permission denied"), "PermissionError: [Errno 13] Permission denied")):   # not every disk error is a full disk
-            with mock.patch.object(drop, "append", side_effect=boom):
+                           (OSError(errno.EACCES, "Permission denied", "/srv/data/drop/d0/x"), "PermissionError: [Errno 13] Permission denied: '/srv/data/drop/d0/x'")):
+            seen, kinds = [], []
+            with mock.patch.object(drop, "append", side_effect=boom), mock.patch.object(server.Handler, "log_message", lambda h, fmt, *args: (seen.append(fmt % args), kinds.extend(map(type, args)))):
                 status, h, body = self.c.request("PATCH", up, b"0123456789", {**self.octets, "Upload-Offset": "0"})
-            self.assertEqual((status, h.get("connection"), json.loads(body)), (500, "close", {"error": said}))
+            self.assertEqual((status, h.get("connection"), json.loads(body)), (500, "close", {"error": "the server failed; its log says why"}))
+            self.assertIn("drop: " + said, seen)
+            self.assertEqual(set(kinds), {str})                               # text, which the log cuts when it is long: not the error itself
         self.assertEqual(self.c.patch(up, 0, b"0123456789"), 10)
+
+    def test_a_disk_that_fills_under_a_piece_is_said_at_once(self):
+        """The disk fills while a piece is being written, after some or all of its bytes were read. The answer does
+        not wait for bytes the device has no more of: what was read is counted, so only what is really still on the
+        connection is waited for."""
+        b = "20261011-100000-under"
+        patience = mock.patch.object(routes, "STALL", 6)                     # what an answer must not wait for
+        patience.start()
+        self.addCleanup(patience.stop)
+        up = self.c.create(b, "VID00001.mov", 1000)
+        with mock.patch.object(drop.os, "fsync", side_effect=OSError(errno.ENOSPC, "No space left on device")):   # every byte read, then no room
+            started = time.monotonic()
+            status, h, body = self.c.request("PATCH", up, b"a" * 1000, {**self.octets, "Upload-Offset": "0"})
+        self.assertLess(time.monotonic() - started, 3)                       # not after STALL
+        self.assertEqual((status, h.get("connection"), json.loads(body)), (507, None, {"error": "no room on the server's disk"}))
+        self.assertEqual(self.c.request("DELETE", up)[0], 204)               # and the file is not left busy
+        up = self.c.create(b, "VID00001.mov", 1000)
+        real_open, calls = open, []
+
+        class Filling:
+            """The staged file, on a disk that takes the first write and no more."""
+            def __init__(self, f): self.f = f
+            def __enter__(self): return self
+            def __exit__(self, *a): self.f.close()
+            def seek(self, n): return self.f.seek(n)
+            def fileno(self): return self.f.fileno()
+            def write(self, piece):
+                calls.append(len(piece))
+                if len(calls) > 1:
+                    raise OSError(errno.ENOSPC, "No space left on device")
+                return self.f.write(piece)
+
+        def fake(path, mode="r", **kw):
+            return Filling(real_open(path, mode, **kw)) if mode == "r+b" else real_open(path, mode, **kw)
+
+        with mock.patch.object(drop, "CHUNK", 100), mock.patch.object(drop, "open", fake, create=True):
+            started = time.monotonic()
+            status, h, body = self.c.request("PATCH", up, b"a" * 1000, {**self.octets, "Upload-Offset": "0"})
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual((status, h.get("connection")), (507, "close"))      # 800 bytes of the piece were never read: the connection ends
+        self.assertEqual(self.c.offset(up), 100)                             # what the disk took is what is here
+        self.assertEqual(self.c.patch(up, 100, b"b" * 900), 1000)
+
+    def test_a_refusal_does_not_wait_for_a_body_in_no_hurry(self):
+        """Before a refusal is answered, what was sent of the request's body is read and thrown away so that the answer
+        arrives. That takes a moment at most: somebody without a token, feeding a long body a byte at a time, holds
+        nothing."""
+        with mock.patch.object(routes, "DRAIN_WAIT", 0.4), mock.patch.object(routes, "STALL", 6):
+            s = socket.create_connection(self.srv.server_address)
+            self.addCleanup(s.close)
+            s.sendall(b"POST /drop/x HTTP/1.1\r\nHost: x\r\nContent-Length: 2000000\r\n\r\n")
+            stop = threading.Event()
+
+            def trickle():
+                while not stop.wait(0.1):
+                    try:
+                        s.sendall(b"x")
+                    except OSError:
+                        return
+
+            t = threading.Thread(target=trickle, daemon=True)
+            t.start()
+            started = time.monotonic()
+            s.settimeout(5)
+            answer = s.recv(4096)
+            took = time.monotonic() - started
+            stop.set()
+            t.join(2)
+        self.assertEqual(answer[:12], b"HTTP/1.1 401")
+        self.assertIn(b"Connection: close", answer)
+        self.assertLess(took, 3)                                             # the body never stops coming, and STALL is 6 here
+
+    def test_a_refusal_does_not_wait_for_a_body_that_never_comes(self):
+        """Declared and not sent: the answer waits DRAIN_WAIT for it, not the patience a piece in the middle gets."""
+        with mock.patch.object(routes, "DRAIN_WAIT", 0.4), mock.patch.object(routes, "STALL", 6):
+            s = socket.create_connection(self.srv.server_address)
+            self.addCleanup(s.close)
+            started = time.monotonic()
+            s.sendall(b"POST /drop/x HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n")
+            s.settimeout(10)
+            answer = s.recv(4096)
+        self.assertEqual(answer[:12], b"HTTP/1.1 401")
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_what_is_read_before_a_refusal_is_bounded(self):
+        """A refused piece of any size: no more than DRAIN bytes of it are read before the answer, and the connection
+        ends with it."""
+        sent, timeouts = [], []
+        h = mock.Mock(rfile=io.BufferedReader(io.BytesIO(b"x" * (3 << 20))), wfile=io.BytesIO(), command="PATCH",
+                      _drop_unread=3 << 20, _drop_drain=routes.DRAIN, _drop_unframed=False)
+        h.send_header = lambda k, v: sent.append((k, v))
+        h.connection.settimeout = timeouts.append
+        with mock.patch.object(routes, "STALL", 60):
+            routes._send(h, 409, {"error": "x"})
+        self.assertEqual(h.rfile.tell(), 2 << 20)
+        self.assertIn(("Connection", "close"), sent)
+        self.assertEqual(timeouts[-1], 60)                                   # the answer itself is written with the usual patience,
+        self.assertTrue(len(timeouts) > 1 and all(0 < t <= routes.DRAIN_WAIT for t in timeouts[:-1]), timeouts)    # each read before it with what is left of DRAIN_WAIT
+
+    def test_the_drain_ends_at_its_deadline(self):
+        """The deadline can pass between two reads (a read that returned just in time): the drain ends there, and no
+        read is given what is left of a deadline already past."""
+        timeouts, clock = [], iter(i * 0.15 for i in range(1000))
+        h = mock.Mock(rfile=io.BufferedReader(io.BytesIO(b"x" * (3 << 20))), wfile=io.BytesIO(), command="PATCH",
+                      _drop_unread=3 << 20, _drop_drain=routes.DRAIN, _drop_unframed=False)
+        h.connection.settimeout = timeouts.append
+        with mock.patch.object(routes, "DRAIN_WAIT", 0.4), mock.patch.object(routes, "time", types.SimpleNamespace(monotonic=lambda: next(clock))):
+            routes._drain(h)
+        self.assertEqual(h.rfile.tell(), 2 << 16)                            # two reads in 0.4 s of a clock 0.15 s a look
+        self.assertTrue(all(t > 0 for t in timeouts), timeouts)
+
+    def test_a_connection_kept_open_is_given_its_patience_back(self):
+        """STALL is for the middle of a request. Between two requests a device may keep its connection as long as it
+        likes: the next one on it is answered."""
+        c = http.client.HTTPConnection(*self.srv.server_address, timeout=10)
+        self.addCleanup(c.close)
+        hdrs = {"Authorization": f"Bearer {self.dev['token']}"}
+        c.request("GET", "/drop/device", headers=hdrs)
+        self.assertEqual(c.getresponse().read() and 200, 200)
+        time.sleep(routes.STALL + 0.5)
+        c.request("GET", "/drop/device", headers=hdrs)                       # on the same connection
+        r = c.getresponse()
+        r.read()
+        self.assertEqual(r.status, 200)
+
+    def test_what_the_system_says_of_a_missing_file_is_not_passed_on(self):
+        up = self.c.create("20261011-100000-gone", "VID00001.mov", 10)
+        self.staged("20261011-100000-gone", "VID00001.mov").unlink()         # under a declared file: it is not here, and no path says where
+        status, _, body = self.c.request("PATCH", up, b"0123456789", {**self.octets, "Upload-Offset": "0"})
+        self.assertEqual((status, json.loads(body)), (404, {"error": "not found"}))
+        status, _, body = self.c.request("HEAD", upload_url("20261011-100000-gone", "VID00002.mov"))
+        self.assertEqual(status, 404)
+        status, body = self.c.json("POST", "/drop/batches/20261011-100000-none/commit", {"files": {"VID00001.mov": 1}})
+        self.assertEqual((status, body), (404, {"error": "20261011-100000-none: nothing staged"}))     # what the drop itself says is said
+
+    def test_a_manifest_as_long_as_a_full_batch(self):
+        """A batch may hold 500 files; its manifest is taken whole (it is a few kilobytes), one nested without end is
+        no manifest."""
+        b = "20261011-100000-many"
+        names = {f"VID{n:05d}.mov": 0 for n in range(drop.MAX_FILES - 1)} | {"import.json": 2}
+        self.assertGreater(len(json.dumps({"files": names})), 9_000)
+        self.assertEqual(self.c.json("POST", f"/drop/batches/{b}/commit", {"files": names}), (404, {"error": f"{b}: nothing staged"}))
+        self.c.create(b, "VID00000.mov", 0)
+        status, _, body = self.c.request("POST", f"/drop/batches/{b}/commit", b"[" * 100_000, {"Content-Type": "application/json"})
+        self.assertEqual(status, 400)
+        self.assertIn("manifest", json.loads(body)["error"])
+
+    def test_a_client_that_drops_an_idle_connection_is_no_error(self):
+        """A phone resets a connection it kept open and no longer wants (seen on the first upload from a real one:
+        six tracebacks in the server's log for six such resets). Between two requests that is nothing: no error to
+        handle, nothing to log, and the server goes on answering."""
+        errors = []
+        self.srv.handle_error = lambda request, client: errors.append(client)
+        for path in ("/api/store", "/drop/device"):
+            s = socket.create_connection(self.srv.server_address)
+            s.sendall(f"GET {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {self.dev['token']}\r\n\r\n".encode())
+            self.assertEqual(s.recv(4096)[:15], b"HTTP/1.1 200 OK")              # answered, and the connection is kept
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            s.close()                                                        # a reset, not a goodbye
+        time.sleep(0.5)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.c.request("GET", "/drop/device")[0], 200)
 
     def test_a_drop_without_an_address_of_its_own_says_none(self):
         """The drop is reached where the server is, unless `ACROSCOPE_DROP_URL` says it has a host of its own."""
         api = DropClient(self.c.url.geturl(), None)
         self.assertEqual(api.json("GET", "/api/devices"), (200, {"devices": [{"id": self.dev["id"], "name": "phone", "created_at": self.dev["created_at"],
                                                                               "last_seen_at": None, "revoked_at": None}], "url": None}))
+        for host in ("drop.example.org", "", ".", "[", ":", "[]:"):          # and no host is the drop's alone, not the one without a name either
+            self.assertEqual(api.request("GET", "/api/devices", headers={"Host": host})[0], 200, host)
+        for url in ("drop.example.org", "https://drop.example.org:8443/", "//drop.example.org", "https://user@Drop.Example.Org.", "drop.example.org:8443/x",
+                    "https://drop.example.org?x", "https://drop.example.org#top", "https://u:p@ss@drop.example.org"):   # however the address was written
+            with mock.patch.object(server, "DROP_URL", url):
+                self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 404, url)
+                self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "player.example.org"})[0], 200, url)
+        # an address is the drop's on its own port only: the server is reached by address too, on its own port
+        for url, theirs, others in (("http://10.0.0.5:8072", ("10.0.0.5:8072",), ("10.0.0.5:8070", "10.0.0.5", "10.0.0.50:8072")),
+                                    ("https://10.0.0.5", ("10.0.0.5", "10.0.0.5:443"), ("10.0.0.5:8070",)),
+                                    ("http://[2001:db8::5]", ("[2001:db8::5]", "[2001:db8::5]:80", "[2001:DB8::5]"), ("[2001:db8::7]", "[2001:db8::5]:8070", "[2001:db8::]"))):
+            with mock.patch.object(server, "DROP_URL", url):
+                for host in theirs:
+                    self.assertEqual(api.request("GET", "/api/devices", headers={"Host": host})[0], 404, (url, host))
+                for host in others:
+                    self.assertEqual(api.request("GET", "/api/devices", headers={"Host": host})[0], 200, (url, host))
+        # one with no host to be read is no drop's address: the server will not start with it, and a request is
+        # never taken for one not the drop's
+        for url in ("https://[x", "https://u:p/w@drop.example.org", "https:/drop.example.org", "https://", ":8070", "drop example.org", "ftp://drop.example.org"):
+            with mock.patch.object(server, "DROP_URL", url):
+                self.assertIsNone(server.drop_host(url), url)
+                self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "player.example.org"})[0], 404, url)
+                with mock.patch.object(server, "ThreadingHTTPServer") as srv, self.assertRaises(SystemExit) as no:
+                    server.serve(port=0)
+                self.assertIn("ACROSCOPE_DROP_URL", str(no.exception.code))
+                srv.assert_not_called()
         with mock.patch.object(server, "DROP_URL", "https://drop.example.org"):
             self.assertEqual(api.json("GET", "/api/devices")[1]["url"], "https://drop.example.org")
+            self.assertEqual(api.request("GET", "/api/devices", headers={"Host": "drop.example.org"})[0], 404)
+            self.assertEqual(self.c.request("GET", "/drop/device", headers={"Host": "drop.example.org"})[0], 200)
 
     def test_the_scheme_in_any_case(self):
         for scheme in ("bearer", "BEARER"):
             status, _, _ = DropClient(self.c.url.geturl(), None).request("GET", "/drop/device", headers={"Authorization": f"{scheme} {self.dev['token']}"})
             self.assertEqual(status, 200, scheme)
+
+
+class LogTest(unittest.TestCase):
+    def line(self, fmt: str, *args) -> str:
+        h = server.Handler.__new__(server.Handler)
+        h.client_address = ("192.0.2.7", 40000)
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            h.log_message(fmt, *args)
+        return err.getvalue()
+
+    def test_a_long_request_line_is_logged_by_its_start(self):
+        """A request line is up to 64 kB of anybody's making, and every refusal is logged: the log keeps its start."""
+        said = self.line('"%s" %s %s', "GET /drop/" + "a" * 60_000 + " HTTP/1.1", "401", "-")
+        self.assertLess(len(said), 500)
+        self.assertIn('"GET /drop/aaaa', said)
+        self.assertTrue(said.rstrip().endswith('..." 401 -'), said[-40:])
+        self.assertIn("192.0.2.7", said)
+        self.assertLess(len(self.line("drop: %s: %s", "OSError", "x" * 60_000)), 500)       # what an error says of itself likewise
+        short = "GET /drop/batches/20261011-100000-ab12/files/VID00001.mov HTTP/1.1"
+        self.assertIn(f'"{short}" 404 -', self.line('"%s" %s %s', short, "404", "-"))          # a line of ordinary length is whole
+        self.assertIn("x" * 300 + " ", self.line("%s %s", "x" * 300, "404"))                    # to the last character it may have
+        self.assertIn("drop: KeyError: 200", self.line("drop: %s: %s", "KeyError", "200"))     # an error whose text is a status is an error
+        for code, logged in ((204, False), (201, False), (200, False), (404, True), (500, True)):   # and what went well is not logged, as ever
+            h = server.Handler.__new__(server.Handler)
+            h.client_address, h.requestline = ("192.0.2.7", 40000), short
+            with mock.patch("sys.stderr", io.StringIO()) as err:
+                h.log_request(code)
+            self.assertEqual(bool(err.getvalue()), logged, code)
+        self.assertIn("Request timed out: TimeoutError('timed out')", self.line("Request timed out: %r", TimeoutError("timed out")))   # nor is a line of one value a line too short
 
 
 if __name__ == "__main__":
